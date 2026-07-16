@@ -28,7 +28,7 @@ final class SegmentDownloader {
   void startDirect(String directUrl,Uri destination,Listener listener){start(directUrl,destination,0,listener,true,"update-download");}
 
   private void start(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded,String threadName){
-    new Thread(()->{Transfer stats=new Transfer();Exception failure=null;try{download(url,destination,expectedTotal,listener,guarded,stats);}catch(Exception error){failure=error;}int outcome=terminal.claim();active=null;if(failure==null&&outcome==0){listener.completed();return;}if(stats.total>0)listener.progress(Math.min(stats.done,stats.total),stats.total);if(outcome==1)listener.paused(stats.done,stats.total);else if(outcome==2)listener.cancelled(stats.done,stats.total);else listener.failed(rootMessage(failure==null?new IOException("下载终态冲突"):failure));},threadName).start();
+    new Thread(()->{try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);}catch(RuntimeException ignored){}Transfer stats=new Transfer();Exception failure=null;try{download(url,destination,expectedTotal,listener,guarded,stats);}catch(Exception error){failure=error;}int outcome=terminal.claim();active=null;if(failure==null&&outcome==0){listener.completed();return;}if(stats.total>0)listener.progress(Math.min(stats.done,stats.total),stats.total);if(outcome==1)listener.paused(stats.done,stats.total);else if(outcome==2)listener.cancelled(stats.done,stats.total);else listener.failed(rootMessage(failure==null?new IOException("下载终态冲突"):failure));},threadName).start();
   }
 
   private static final class Transfer { long done,total; }

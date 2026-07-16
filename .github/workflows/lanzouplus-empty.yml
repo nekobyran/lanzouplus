@@ -1,0 +1,422 @@
+name: LanzouPlus empty Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate the empty source or publish a signed release
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - release
+      version:
+        description: Semantic version used by release mode
+        required: false
+        type: string
+      commit:
+        description: Exact main commit to build
+        required: true
+        type: string
+
+concurrency:
+  group: lanzouplus-empty-${{ inputs.mode }}-${{ inputs.commit }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and validate empty release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.inspect.outputs.version }}
+      asset-suffix: ${{ steps.inspect.outputs.asset-suffix }}
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate commit, version and public-source boundary
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git fetch --no-tags origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$EXPECTED_COMMIT"
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          root = pathlib.Path.cwd()
+          build = (root / "app/build.gradle.kts").read_text(encoding="utf-8")
+          versions = re.findall(r'\bversionName\s*=\s*"([^"]+)"', build)
+          codes = re.findall(r'\bversionCode\s*=\s*(\d+)', build)
+          if len(versions) != 1 or len(codes) != 1 or int(codes[0]) <= 0:
+              raise SystemExit("public Android version metadata is invalid")
+          expected = os.environ.get("EXPECTED_VERSION", "")
+          mode = os.environ.get("MODE", "validate")
+          if mode == "release" and (not re.fullmatch(r"\d+\.\d+\.\d+", expected) or versions[0] != expected):
+              raise SystemExit("release input version does not match app/build.gradle.kts")
+          for name in ("s", "r", "u"):
+              path = root / "app/src/empty/assets" / name
+              if not path.is_file() or path.stat().st_size != 0:
+                  raise SystemExit(f"empty asset {name} must exist and contain zero bytes")
+          if (root / "app/src/full").exists():
+              raise SystemExit("the public repository must not contain app/src/full")
+          forbidden_suffixes = {".apk", ".aab", ".apks", ".idsig", ".jks", ".keystore", ".p12", ".pfx", ".pem", ".key"}
+          forbidden_names = {"local.properties"}
+          for path in root.rglob("*"):
+              if ".git" in path.parts or not path.is_file():
+                  continue
+              if path.suffix.lower() in forbidden_suffixes or path.name in forbidden_names or path.name == ".env" or path.name.startswith(".env."):
+                  raise SystemExit(f"forbidden signing or local-sensitive file: {path.relative_to(root)}")
+          print(f"validated public empty source version={versions[0]} versionCode={codes[0]}")
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      - name: Install Android 36 build tools
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+
+      - name: Clean-build the empty release
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean assembleEmptyRelease
+
+      - name: Inspect unsigned APK and select truthful asset suffix
+        id: inspect
+        run: |
+          set -euo pipefail
+          mkdir -p ci
+          unsigned="$(find app/build/outputs/apk/empty/release -maxdepth 1 -type f -name '*-unsigned.apk' -print -quit)"
+          test -n "$unsigned"
+          cp "$unsigned" ci/LanzouPlus-unsigned.apk
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import zipfile
+
+          apk = pathlib.Path("ci/LanzouPlus-unsigned.apk")
+          build = pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8")
+          version = re.findall(r'\bversionName\s*=\s*"([^"]+)"', build)[0]
+          with zipfile.ZipFile(apk) as archive:
+              entries = {item.filename: item for item in archive.infolist()}
+              for name in ("assets/s", "assets/r", "assets/u"):
+                  if name not in entries or entries[name].file_size != 0:
+                      raise SystemExit(f"built APK contains a non-empty {name}")
+              if any(part == "full" for name in entries for part in name.split("/")):
+                  raise SystemExit("built APK contains a full-flavor path")
+              abis = sorted({name.split("/")[1] for name in entries if name.startswith("lib/") and name.endswith(".so") and len(name.split("/")) > 2})
+          suffix = "android-arm64" if abis == ["arm64-v8a"] else "android"
+          with pathlib.Path("ci/metadata.txt").open("w", encoding="utf-8") as output:
+              output.write(f"version={version}\nasset-suffix={suffix}\nabis={','.join(abis) or 'none'}\n")
+          with pathlib.Path(__import__('os').environ['GITHUB_OUTPUT']).open("a", encoding="utf-8") as output:
+              output.write(f"version={version}\nasset-suffix={suffix}\n")
+          print(f"asset suffix={suffix}; native ABIs={abis or ['none']}")
+          PY
+
+      - name: Upload unsigned build for the release job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lanzouplus-empty-unsigned-${{ github.run_id }}
+          path: |
+            ci/LanzouPlus-unsigned.apk
+            ci/metadata.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Sign and publish the empty release
+    if: inputs.mode == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      ASSET_SUFFIX: ${{ needs.build.outputs.asset-suffix }}
+      EXPECTED_COMMIT: ${{ inputs.commit }}
+      EXPECTED_CERT_SHA256: 4111dddd807b75eb1100ef5067f55874cc860314283829e379902b438d066fed
+    steps:
+      - name: Check out source and annotated release tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the unsigned build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lanzouplus-empty-unsigned-${{ github.run_id }}
+          path: ci
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install signing tools and lossless APK optimizer
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.0.0" >/dev/null
+          python -m pip install --disable-pip-version-check --require-hashes --requirement tools/requirements-size.txt
+
+      - name: Repack and align the empty APK
+        run: |
+          set -euo pipefail
+          test "$VERSION" = "${{ inputs.version }}"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          git fetch --no-tags origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$EXPECTED_COMMIT"
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          mkdir -p dist
+          cp ci/LanzouPlus-unsigned.apk dist/repacked.apk
+          python tools/repack_release_apk.py dist/repacked.apk
+          "$build_tools/zipalign" -f -p 4 dist/repacked.apk dist/aligned.apk
+
+      - name: Sign and verify the final APK
+        id: signed
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.LANZOUPLUS_SIGNING_KEY_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.LANZOUPLUS_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SIGNING_KEY_BASE64"
+          test -n "$SIGNING_PASSWORD"
+          test "$VERSION" = "${{ inputs.version }}"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          tag="v$VERSION"
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          test "$(git cat-file -t "refs/tags/$tag")" = tag
+          test "$(git rev-list -n 1 "$tag")" = "$EXPECTED_COMMIT"
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          key_path="$RUNNER_TEMP/lanzouplus-release.p12"
+          trap 'rm -f "$key_path"' EXIT
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > "$key_path"
+          asset="LanzouPlus-$VERSION-$ASSET_SUFFIX.apk"
+          "$build_tools/apksigner" sign \
+            --ks "$key_path" --ks-type PKCS12 --ks-key-alias lanzouplus-release \
+            --ks-pass env:SIGNING_PASSWORD --key-pass env:SIGNING_PASSWORD \
+            --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
+            --out "dist/$asset" dist/aligned.apk
+          verification="$("$build_tools/apksigner" verify --verbose --print-certs "dist/$asset")"
+          cert="$(printf '%s\n' "$verification" | sed -nE 's/.*certificate SHA-256 digest:[[:space:]]*([0-9a-fA-F]{64}).*/\1/p' | head -n1 | tr '[:upper:]' '[:lower:]')"
+          test "$cert" = "$EXPECTED_CERT_SHA256"
+          badging="$("$build_tools/aapt" dump badging "dist/$asset")"
+          printf '%s\n' "$badging" | grep -Eq "^package: name='cc\.nkbr\.lanzouplus'.*versionName='$VERSION'"
+          python3 - "$asset" <<'PY'
+          import pathlib
+          import sys
+          import zipfile
+          asset = sys.argv[1]
+          path = pathlib.Path("dist") / asset
+          if path.stat().st_size >= 1024 * 1024:
+              raise SystemExit("final APK exceeds the 1 MiB limit")
+          with zipfile.ZipFile(path) as archive:
+              entries = {item.filename: item for item in archive.infolist()}
+              for name in ("assets/s", "assets/r", "assets/u"):
+                  if name not in entries or entries[name].file_size != 0:
+                      raise SystemExit(f"signed APK contains a non-empty {name}")
+              if any(part == "full" for name in entries for part in name.split("/")):
+                  raise SystemExit("signed APK contains a full-flavor path")
+              abis = sorted({name.split("/")[1] for name in entries if name.startswith("lib/") and name.endswith(".so") and len(name.split("/")) > 2})
+          expected_suffix = "android-arm64" if abis == ["arm64-v8a"] else "android"
+          if not asset.endswith(f"-{expected_suffix}.apk"):
+              raise SystemExit("final APK architecture does not match the asset suffix")
+          PY
+          sha256="$(sha256sum "dist/$asset" | cut -d' ' -f1)"
+          bytes="$(stat -c '%s' "dist/$asset")"
+          {
+            echo "asset=$asset"
+            echo "release-asset=LanzouPlus.apk"
+            echo "sha256=$sha256"
+            echo "bytes=$bytes"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload the versioned signed build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.signed.outputs.asset }}
+          path: dist/${{ steps.signed.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build release notes from the annotated tag
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          git for-each-ref --format='%(contents)' "refs/tags/$tag" > dist/tag-notes.md
+          test -s dist/tag-notes.md
+          cp dist/tag-notes.md dist/release-notes.md
+          cat >> dist/release-notes.md <<EOF
+
+          ---
+
+          ## Build / 构建
+
+          - Version / 版本：$VERSION
+          - Release asset / 兼容下载名：${{ steps.signed.outputs.release-asset }}
+          - Versioned Actions artifact / 版本化构建产物：${{ steps.signed.outputs.asset }}
+          - SHA-256：${{ steps.signed.outputs.sha256 }}
+          - Package / 包名：cc.nkbr.lanzouplus
+          - Empty source / 空源版：s/r/u = 0 bytes
+
+          The source archives attached by GitHub are generated from the same annotated tag.
+          GitHub 自动附带的源码压缩包来自同一 annotated tag。
+          EOF
+
+      - name: Create or replace the GitHub Release
+        env:
+          ASSET: ${{ steps.signed.outputs.release-asset }}
+          INTERNAL_ASSET: ${{ steps.signed.outputs.asset }}
+          SHA256: ${{ steps.signed.outputs.sha256 }}
+          BYTES: ${{ steps.signed.outputs.bytes }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          cp "dist/$INTERNAL_ASSET" "dist/$ASSET"
+          release_json="$RUNNER_TEMP/release.json"
+          release_error="$RUNNER_TEMP/release.error"
+          created_draft=false
+          set +e
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json" 2> "$release_error"
+          release_status=$?
+          set -e
+          if [ "$release_status" -eq 0 ]; then
+            :
+          elif grep -Eq 'HTTP 404|Not Found' "$release_error"; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+              --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md --draft --verify-tag
+            created_draft=true
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
+          else
+            cat "$release_error" >&2
+            exit "$release_status"
+          fi
+
+          asset_state="$RUNNER_TEMP/asset-state.txt"
+          python3 - "$release_json" "$ASSET" "$SHA256" "$BYTES" "$VERSION" > "$asset_state" <<'PY'
+          import json
+          import pathlib
+          import sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected, digest, size, version = sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
+          assets = release.get("assets", [])
+          stage_prefix = f"{expected}.stage-"
+          unexpected = [item.get("name", "") for item in assets if item.get("name") != expected and not item.get("name", "").startswith(stage_prefix)]
+          if unexpected:
+              raise SystemExit(f"unexpected existing release assets: {unexpected}")
+          target = next((item for item in assets if item.get("name") == expected), None)
+          matches = bool(target and target.get("size") == size and target.get("digest") == f"sha256:{digest}")
+          reusable = sorted(
+              (item for item in assets if item.get("name", "").startswith(stage_prefix) and item.get("size") == size and item.get("digest") == f"sha256:{digest}"),
+              key=lambda item: item.get("id", 0),
+          )
+          print(f"{target.get('id', 0) if target else 0}\t{1 if matches else 0}\t{reusable[-1].get('id', 0) if reusable else 0}")
+          PY
+          IFS=$'\t' read -r target_id target_matches reusable_stage_id < "$asset_state"
+          if [ "$target_matches" != 1 ]; then
+            if [ "$reusable_stage_id" != 0 ]; then
+              stage_id="$reusable_stage_id"
+            else
+              stage_asset="$ASSET.stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              cp "dist/$ASSET" "dist/$stage_asset"
+              gh release upload "$tag" "dist/$stage_asset" --repo "$GITHUB_REPOSITORY"
+              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
+              stage_id="$(python3 - "$release_json" "$stage_asset" "$SHA256" "$BYTES" <<'PY'
+          import json
+          import pathlib
+          import sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          name, digest, size = sys.argv[2], sys.argv[3], int(sys.argv[4])
+          matches = [item for item in release.get("assets", []) if item.get("name") == name]
+          if len(matches) != 1 or matches[0].get("size") != size or matches[0].get("digest") != f"sha256:{digest}":
+              raise SystemExit("staged release asset failed digest or size verification")
+          print(matches[0]["id"])
+          PY
+              )"
+            fi
+            test -n "$stage_id"
+            if [ "$target_id" != 0 ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$target_id"
+            fi
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$stage_id" -f name="$ASSET" >/dev/null
+          fi
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
+          python3 - "$release_json" "$ASSET" > "$RUNNER_TEMP/obsolete-assets.txt" <<'PY'
+          import json
+          import pathlib
+          import sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = sys.argv[2]
+          for item in release.get("assets", []):
+              if item.get("name") != expected:
+                  print(item["id"])
+          PY
+          while IFS= read -r obsolete_id; do
+            if [ -n "$obsolete_id" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$obsolete_id"
+            fi
+          done < "$RUNNER_TEMP/obsolete-assets.txt"
+
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+            --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md \
+            --draft=false --prerelease=false --latest --verify-tag
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
+          python3 - "$release_json" "$ASSET" "$SHA256" "$BYTES" "$EXPECTED_COMMIT" "$VERSION" <<'PY'
+          import json
+          import pathlib
+          import sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          name, sha256, size, commit, version = sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6]
+          assets = release.get("assets", [])
+          if len(assets) != 1 or assets[0].get("name") != name:
+              raise SystemExit("release must contain exactly the expected APK")
+          if assets[0].get("size") != size or assets[0].get("digest") != f"sha256:{sha256}":
+              raise SystemExit("release asset size or digest mismatch")
+          if release.get("tag_name") != f"v{version}" or release.get("name") != f"LanzouPlus {version}":
+              raise SystemExit("release tag or title mismatch")
+          if "## Build / 构建" not in release.get("body", ""):
+              raise SystemExit("release title or notes mismatch")
+          if release.get("target_commitish") != commit or release.get("draft") or release.get("prerelease"):
+              raise SystemExit("release target or publication state mismatch")
+          PY
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object | select(.type == "tag") | .sha')" != ""
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object | select(.type == "tag") | .sha')"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.object | select(.type == "commit") | .sha')" = "$EXPECTED_COMMIT"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$EXPECTED_COMMIT"

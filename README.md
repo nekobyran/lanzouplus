@@ -74,3 +74,6 @@ JDK 17 and the Android SDK are required:
 The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, and `c` must remain zero-byte files.
 
 Only import directories or rules you trust and are authorized to use. Do not post passwords, authenticated sessions, private directories, signing files, or exploitable security details in public issues or logs.
+
+##赞助(subscription)
+(https://github.com/nekobyran/lanzouplus/blob/e61e81b8bea3030a4c7aa9c544e802a9d907c2ba/Screenshot_2026-07-17-22-38-28-48_3915bacb930634b7e206116f9dc9486f.jpg)

@@ -44,6 +44,9 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 © 2026 nekobyran。除非另有书面授权，保留全部权利。
 
+## 赞助(subscription)
+![图片](https://github.com/nekobyran/lanzouplus/blob/e61e81b8bea3030a4c7aa9c544e802a9d907c2ba/Screenshot_2026-07-17-22-38-28-48_3915bacb930634b7e206116f9dc9486f.jpg)
+
 ---
 
 ## English

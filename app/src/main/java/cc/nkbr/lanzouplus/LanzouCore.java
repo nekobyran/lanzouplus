@@ -687,7 +687,7 @@ final class LanzouCore {
     LinkedHashMap<String,Models.Item> items=new LinkedHashMap<>();
     if(page==1){
       if(session.target.folderId.isEmpty())for(Models.Item folder:staticFolders(session))items.put(folder.url,folder);
-      if(!session.folderEndpoint.isEmpty()){int[] count=strictFolders?new int[1]:null;List<Models.Item> folders=apiFolders(session,deadline,1,strictFolders,count,profile);out.apiFolderCount=count==null?folders.size():count[0];for(Models.Item folder:folders)items.put(folder.url,folder);}
+      if(!session.folderEndpoint.isEmpty()){int[] count=new int[1];List<Models.Item> folders=apiFolders(session,deadline,1,true,count,profile);out.apiFolderCount=count[0];for(Models.Item folder:folders)items.put(folder.url,folder);}
     }
     Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));
     JSONObject data=postListing(session,form,deadline,page,profile);JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);if(state==1&&(array==null||page>1&&array.length()==0))throw new IOException("目录分页返回空内容");
@@ -707,8 +707,8 @@ final class LanzouCore {
     DirectLink target=parseFolderTarget(url);String key=target.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+ua;long now=System.currentTimeMillis();pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);
     if(!force&&hit!=null&&now-hit.createdAt<SESSION_TTL_MS)return hit;if(hit!=null)browseSessions.remove(key,hit);
     DirectLink session=new DirectLink();session.target=target;session.ua=ua;session.page=getGuarded(target.rootUrl,deadline,userAgent(ua));requireLanzouPage(session.page.url);requireActiveShare(session.page);session.template=pageTemplate(session.page.html);sourceProfile(target.rootUrl).observeTemplate(ua,session.template);session.createdAt=now;
-    session.endpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/filemoreajax.php");session.folderEndpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/foldermoreajax.php");
-    session.fid=cap(session.endpoint,"[?&]file=([^&#]+)");session.form=formValues(session.page.html);session.form.put("fid",session.fid);session.form.put("lx",firstNonEmpty(session.form.get("lx"),"2"));session.form.put("rep",firstNonEmpty(session.form.get("rep"),"0"));session.form.put("up",firstNonEmpty(session.form.get("up"),"1"));session.form.put("vip",firstNonEmpty(session.form.get("vip"),"0"));
+    session.endpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?(?:file|uid)=[0-9A-Za-z_-]+[^'\"]*)['\"]"),"/filemoreajax.php");session.folderEndpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/foldermoreajax.php");
+    session.fid=cap(session.endpoint,"[?&]file=([^&#]+)");String uid=cap(session.endpoint,"[?&]uid=([^&#]+)");session.form=formValues(session.page.html);if(!uid.isEmpty())session.form.put("uid",uid);session.form.put("fid",uid.isEmpty()?session.fid:"1");session.form.put("lx",firstNonEmpty(session.form.get("lx"),uid.isEmpty()?"2":"1"));session.form.put("rep",firstNonEmpty(session.form.get("rep"),"0"));session.form.put("up",firstNonEmpty(session.form.get("up"),"1"));session.form.put("vip",firstNonEmpty(session.form.get("vip"),"0"));
     if(!target.folderId.isEmpty()){session.form.put("folder_id",target.folderId);session.form.put("ls","1");}
     if(!password.isEmpty()){session.form.put("pwd",password);session.form.put("ls","1");}
     String searchEndpoint=searchEndpoint(session.page),searchSign=searchSign(session.page.html);
@@ -724,14 +724,15 @@ final class LanzouCore {
   private static Models.Folder copyFolder(Models.Folder value){Models.Folder out=new Models.Folder();out.title=value.title;out.publisher=value.publisher;out.avatarUrl=value.avatarUrl;out.description=value.description;out.saveUrl=value.saveUrl;out.url=value.url;out.password=value.password;out.folderId=value.folderId;out.remoteSearch=value.remoteSearch;out.failedMembers=value.failedMembers;return out;}
 
   private static List<Models.Item> staticFolders(DirectLink session)throws Exception{
-    List<Models.Item> out=new ArrayList<>();String block=elementByIdInner(session.page.html,"folder");if(block.isEmpty())return out;
-    Matcher opens=parsePattern("(?is)<div[^>]*class=[\"'][^\"']*\\bmbxfolder\\b[^\"']*[\"'][^>]*>").matcher(block);
+    LinkedHashMap<String,Models.Item> found=new LinkedHashMap<>();String block=elementByIdInner(session.page.html,"folder");if(block.isEmpty())return new ArrayList<>();
+    Matcher opens=parsePattern("(?is)<div[^>]*class=[\"'][^\"']*\\b(?:mbxfolder|folderlink)\\b[^\"']*[\"'][^>]*>").matcher(block);
     while(opens.find()){
-      String inner=balancedDivInner(block,opens.end());String href=cap(inner,"(?is)<a[^>]+href=[\"']([^\"']+)");if(href.isEmpty())continue;String filename=divInner(inner,"filename"),description=strip(divInner(filename,"filesize"));String title=cap(filename,"(?is)^\\s*([^<]+)");if(title.isEmpty()){title=strip(filename);if(!description.isEmpty())title=title.replace(description,"").trim();}title=strip(title);if(title.isEmpty())continue;
-      Models.Item item=new Models.Item();item.folder=true;item.title=title;item.description=description;item.size=description;item.url=new URL(new URL(session.page.url),href).toString();item.shareUrl=item.url;item.iconUrl="https://images.bakstotre.com/assets/images/type/folder.gif";item.source=session.metadata.title;item.password=session.metadata.password;out.add(item);
+      String inner=balancedDivInner(block,opens.end());String href=cap(inner,"(?is)<a[^>]+href=[\"']([^\"']+)");Models.Item item=staticFolderItem(session,href,inner);if(item!=null)found.putIfAbsent(item.url,item);
     }
-    return out;
+    Matcher anchors=parsePattern("(?is)<a\\b[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a\\s*>").matcher(block);while(anchors.find()){Models.Item item=staticFolderItem(session,unescape(anchors.group(1).trim()),anchors.group(2));if(item!=null)found.putIfAbsent(item.url,item);}return new ArrayList<>(found.values());
   }
+
+  private static Models.Item staticFolderItem(DirectLink session,String href,String inner)throws Exception{if(href==null||href.isEmpty())return null;URL resolved=new URL(new URL(session.page.url),href);if(!resolved.getProtocol().equalsIgnoreCase("https")||!LANZOU_HOST.matcher(resolved.getHost()).matches()||!resolved.getPath().matches("(?i)/(?:b[0-9a-z]+|[su]/[0-9a-z%._-]+)"))return null;String filename=divInner(inner,"filename");if(filename.isEmpty())filename=inner;String description=strip(divInner(filename,"filesize"));String title=cap(filename,"(?is)^\\s*([^<]+)");if(title.isEmpty()){title=strip(filename);if(!description.isEmpty())title=title.replace(description,"").trim();}title=strip(title);if(title.isEmpty())return null;Models.Item item=new Models.Item();item.folder=true;item.title=title;item.description=description;item.size=description;item.url=resolved.toString();item.shareUrl=item.url;item.iconUrl="https://images.bakstotre.com/assets/images/type/folder.gif";item.source=session.metadata.title;item.password=session.metadata.password;return item;}
 
   private static List<Models.Item> apiFolders(DirectLink session,long deadline,int page,boolean strict,int[] rawCount,SourceProfile profile)throws Exception{
     List<Models.Item> out=new ArrayList<>();try{

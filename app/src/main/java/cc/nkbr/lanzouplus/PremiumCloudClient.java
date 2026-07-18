@@ -21,14 +21,17 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -132,6 +135,18 @@ final class PremiumCloudClient {
     int code(){return code;}
     boolean needsCredentials(){return code==ERROR_CREDENTIALS_REQUIRED||code==ERROR_CREDENTIALS_UNREADABLE;}
     boolean sessionExpired(){return sessionExpired;}
+  }
+
+  static final class CancelToken {
+    private final Object lock=new Object();
+    private final Set<HttpURLConnection> connections=new HashSet<>();
+    private boolean cancelled;
+
+    void check()throws CloudException{synchronized(lock){if(cancelled)throw new CloudException(ERROR_NETWORK,"操作已中断");}}
+    boolean isCancelled(){synchronized(lock){return cancelled;}}
+    void register(HttpURLConnection connection)throws CloudException{synchronized(lock){if(cancelled){connection.disconnect();throw new CloudException(ERROR_NETWORK,"操作已中断");}connections.add(connection);}}
+    void unregister(HttpURLConnection connection){if(connection==null)return;synchronized(lock){connections.remove(connection);}}
+    void cancel(){List<HttpURLConnection> active;synchronized(lock){if(cancelled)return;cancelled=true;active=new ArrayList<>(connections);connections.clear();}for(HttpURLConnection connection:active)try{connection.disconnect();}catch(RuntimeException ignored){}}
   }
 
   /** Fast local check used to decide whether the account dialog is needed. */
@@ -247,8 +262,12 @@ final class PremiumCloudClient {
   }
 
   SaveResult saveFromShare(String saveUrl,String loginName)throws CloudException{
-    String name=normalizedName(loginName),auth=resolveTransferAuth(saveUrl);
-    return saveAuth(auth,name);
+    return saveFromShare(saveUrl,loginName,null);
+  }
+
+  SaveResult saveFromShare(String saveUrl,String loginName,CancelToken cancel)throws CloudException{
+    check(cancel);String name=normalizedName(loginName),auth=resolveTransferAuth(saveUrl,cancel);check(cancel);
+    return saveAuth(auth,name,cancel);
   }
 
   /** Resolve the share authorization once, then save with all accounts in parallel or order. */
@@ -268,10 +287,14 @@ final class PremiumCloudClient {
     });
   }
 
-  private SaveResult saveAuth(String auth,String loginName)throws CloudException{
+  private SaveResult saveAuth(String auth,String loginName)throws CloudException{return saveAuth(auth,loginName,null);}
+
+  private SaveResult saveAuth(String auth,String loginName,CancelToken cancel)throws CloudException{
+    check(cancel);
     ensureLoggedIn(loginName);
+    check(cancel);
     Credentials credentials=credentials(loginName);
-    ApiReply reply=transfer(auth,credentials.appToken);
+    ApiReply reply=transfer(auth,credentials.appToken,cancel);
     if(reply.expired()){
       synchronized(accountLock(loginName)){
         credentials=credentials(loginName);
@@ -282,7 +305,7 @@ final class PremiumCloudClient {
           vault.accounts.put(loginName,credentials);persist(vault);sessions.remove(loginName);
         }
       }
-      reply=transfer(auth,credentials.appToken);
+      check(cancel);reply=transfer(auth,credentials.appToken,cancel);
     }
     requireSuccess(reply,"保存失败");
     return new SaveResult(true,reply.message.isEmpty()?"保存成功":redact(reply.message));
@@ -316,19 +339,28 @@ final class PremiumCloudClient {
   }
 
   private ApiReply transfer(String auth,String token)throws CloudException{
+    return transfer(auth,token,null);
+  }
+
+  private ApiReply transfer(String auth,String token,CancelToken cancel)throws CloudException{
     JSONObject body=new JSONObject();
     try{body.put("auth",auth);}catch(Exception impossible){throw new CloudException(ERROR_PROTOCOL,"保存参数无效");}
-    return request("POST",TRANSFER,body,token);
+    return request("POST",TRANSFER,body,token,cancel);
   }
 
   private String resolveTransferAuth(String saveUrl)throws CloudException{
+    return resolveTransferAuth(saveUrl,null);
+  }
+
+  private String resolveTransferAuth(String saveUrl,CancelToken cancel)throws CloudException{
+    check(cancel);
     URI current=parseOfficialUri(saveUrl);
     String direct=extractAuth(current.toString());
     if(!direct.isEmpty())return direct;
     for(int redirect=0;redirect<MAX_REDIRECTS;redirect++){
       HttpURLConnection connection=null;
       try{
-        connection=(HttpURLConnection)current.toURL().openConnection();
+        connection=(HttpURLConnection)current.toURL().openConnection();if(cancel!=null)cancel.register(connection);
         connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(15_000);connection.setReadTimeout(15_000);
         connection.setRequestMethod("GET");connection.setRequestProperty("Accept","text/html,application/json;q=0.9,*/*;q=0.8");
         connection.setRequestProperty("User-Agent",userAgent());connection.setRequestProperty("Referer",WEB_ORIGIN+"/");
@@ -349,16 +381,24 @@ final class PremiumCloudClient {
         auth=extractAuth(current.toString());if(!auth.isEmpty())return auth;
       }catch(CloudException error){throw error;
       }catch(Exception error){throw new CloudException(ERROR_NETWORK,"保存入口连接失败",error);
-      }finally{if(connection!=null)connection.disconnect();}
+      }finally{if(cancel!=null)cancel.unregister(connection);if(connection!=null)connection.disconnect();}
     }
     throw new CloudException(ERROR_PROTOCOL,"未能从保存入口取得授权信息，请刷新源后重试");
   }
 
   private ApiReply request(String method,String path,JSONObject body,String token)throws CloudException{
-    return requestWithUuid(method,path,body,token,ensureUuid());
+    return request(method,path,body,token,null);
+  }
+
+  private ApiReply request(String method,String path,JSONObject body,String token,CancelToken cancel)throws CloudException{
+    check(cancel);return requestWithUuid(method,path,body,token,ensureUuid(),cancel);
   }
 
   private ApiReply requestWithUuid(String method,String path,JSONObject body,String token,String uuid)throws CloudException{
+    return requestWithUuid(method,path,body,token,uuid,null);
+  }
+
+  private ApiReply requestWithUuid(String method,String path,JSONObject body,String token,String uuid,CancelToken cancel)throws CloudException{
     HttpURLConnection connection=null;
     try{
       StringBuilder url=new StringBuilder(API_ORIGIN).append(path).append('?');
@@ -366,7 +406,7 @@ final class PremiumCloudClient {
       query(url,"devModel","Android");query(url,"devVersion",Build.VERSION.RELEASE);
       query(url,"appVersion","");query(url,"timestamp",encryptWebTimestamp(System.currentTimeMillis()));
       query(url,"appToken",token==null?"":token);query(url,"extra","2");
-      connection=(HttpURLConnection)new URL(url.toString()).openConnection();
+      connection=(HttpURLConnection)new URL(url.toString()).openConnection();if(cancel!=null)cancel.register(connection);
       connection.setConnectTimeout(15_000);connection.setReadTimeout(30_000);connection.setRequestMethod(method);
       connection.setRequestProperty("Accept","application/json");connection.setRequestProperty("User-Agent",userAgent());
       connection.setRequestProperty("Origin",WEB_ORIGIN);connection.setRequestProperty("Referer",WEB_ORIGIN+"/");
@@ -385,8 +425,10 @@ final class PremiumCloudClient {
       return new ApiReply(status,code,message,root);
     }catch(CloudException error){throw error;
     }catch(Exception error){throw new CloudException(ERROR_NETWORK,"网络请求失败，请稍后重试",error);
-    }finally{if(connection!=null)connection.disconnect();}
+    }finally{if(cancel!=null)cancel.unregister(connection);if(connection!=null)connection.disconnect();}
   }
+
+  private static void check(CancelToken cancel)throws CloudException{if(cancel!=null)cancel.check();}
 
   private String ensureUuid()throws CloudException{
     String uuid=preferences.getString(PREF_UUID,"");if(validUuid(uuid))return uuid;
@@ -593,6 +635,12 @@ final class PremiumCloudClient {
     if(length<2)return value;if(length<=4)return value.charAt(0)+"***"+value.charAt(length-1);
     int head=length>=8?3:1,tail=length>=8?4:1;
     return value.substring(0,head)+"****"+value.substring(length-tail);
+  }
+
+  String accountFingerprint(String account)throws CloudException{
+    String name=normalizedName(account),salt=preferences.getString(PREF_UUID,"");
+    try{byte[] digest=MessageDigest.getInstance("SHA-256").digest((salt+'\n'+name).getBytes(StandardCharsets.UTF_8));StringBuilder out=new StringBuilder(digest.length*2);for(byte value:digest)out.append(String.format(Locale.ROOT,"%02x",value&255));return out.toString();}
+    catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"账号标识生成失败",error);}
   }
   private static String redact(String message){
     if(message==null||message.isEmpty())return "操作失败";

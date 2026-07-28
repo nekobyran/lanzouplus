@@ -40,9 +40,11 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 - 不要在 issue、日志或提交中公开密码、登录态、私有目录和签名文件。
 - 安全问题请通过[正式发布页](https://lanzouplus.nkbr.cc/)所列作者渠道联系，不要公开披露利用细节。
 
-作者：nekobyran · Bilibili UID：607234739
+## 开源许可证
 
-© 2026 nekobyran。除非另有书面授权，保留全部权利。
+本项目采用 [MIT License](LICENSE)。允许个人与商业使用、修改及再分发；复制或分发本软件及其重要部分时，必须保留原版权声明与许可声明。
+
+作者：nekobyran · Bilibili UID：607234739
 
 ## 赞助(subscription)
 ![图片](https://github.com/nekobyran/lanzouplus/blob/e61e81b8bea3030a4c7aa9c544e802a9d907c2ba/Screenshot_2026-07-17-22-38-28-48_3915bacb930634b7e206116f9dc9486f.jpg)
@@ -75,5 +77,9 @@ JDK 17 and the Android SDK are required:
 ```
 
 The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, and `c` must remain zero-byte files.
+
+### License
+
+Licensed under the [MIT License](LICENSE). Commercial use, modification, and redistribution are permitted, provided that the original copyright notice and license notice are retained in all copies or substantial portions of the software.
 
 Only import directories or rules you trust and are authorized to use. Do not post passwords, authenticated sessions, private directories, signing files, or exploitable security details in public issues or logs.

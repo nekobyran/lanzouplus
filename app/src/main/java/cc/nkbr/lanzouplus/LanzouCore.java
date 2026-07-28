@@ -82,6 +82,7 @@ final class LanzouCore {
   private static final class SourceRetestUnit{final SourceRetestPlan plan;final int memberIndex;SourceRetestUnit(SourceRetestPlan plan,int memberIndex){this.plan=plan;this.memberIndex=memberIndex;}}
   private static final class SourceRetestUnitResult{final SourceRetestUnit unit;final Models.Source official;final Models.SourceMember member;final String error;SourceRetestUnitResult(SourceRetestUnit unit,Models.Source official,Models.SourceMember member,String error){this.unit=unit;this.official=official;this.member=member;this.error=error;}boolean success(){return error.isEmpty();}}
   private static final class SourceRetestAggregate{final SourceRetestPlan plan;final Models.Source value;int remaining,failures;SourceRetestAggregate(SourceRetestPlan plan,int remaining){this.plan=plan;this.value=copySource(plan.source);this.remaining=remaining;}}
+  private static final class UserSourceInput{final String url,password;UserSourceInput(String url,String password){this.url=url;this.password=password;}}
   static final class SourceProfile{
     volatile byte directoryUa=UA_UNKNOWN,searchUa=UA_UNKNOWN,directorySeen,directoryAvailable,searchSeen,searchAvailable,androidTemplate=TEMPLATE_UNKNOWN,desktopTemplate=TEMPLATE_UNKNOWN;
     private int androidInitial=UNKNOWN_INITIAL_PAGE_INTERVAL_MS,androidNext=UNKNOWN_NEXT_PAGE_INTERVAL_MS,desktopInitial=UNKNOWN_INITIAL_PAGE_INTERVAL_MS,desktopNext=UNKNOWN_NEXT_PAGE_INTERVAL_MS;
@@ -282,7 +283,7 @@ final class LanzouCore {
     try{for(Models.Source source:sources())if(source.kind!=Models.SOURCE_COMPOSITE)existing.put(source.url,source);}catch(IOException ignored){}
     Set<String> seen=new HashSet<>();int lineNumber=0;
     try(BufferedReader reader=new BufferedReader(new StringReader(raw))){
-      for(String rawLine;(rawLine=reader.readLine())!=null;){lineNumber++;String line=rawLine.trim();if(line.isEmpty())continue;BatchSource row=new BatchSource(lineNumber);rows.add(row);try{int split=firstWhitespace(line);String password="";if(split>=0){password=line.substring(split).trim();line=line.substring(0,split);if(firstWhitespace(password)>=0)throw new IOException("每行仅支持链接和一个密码");}row.url=normalizeUserSourceUrl(line);row.password=password;if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");Models.Source duplicate=existing.get(row.url);if(duplicate!=null){row.source=duplicate;row.duplicate=true;}else if(!seen.add(row.url))row.duplicate=true;}catch(Exception error){row.error=safeBatchError(error);}}
+      for(String rawLine;(rawLine=reader.readLine())!=null;){lineNumber++;String line=rawLine.trim();if(line.isEmpty())continue;BatchSource row=new BatchSource(lineNumber);rows.add(row);try{int split=firstWhitespace(line);String password="";if(split>=0){password=line.substring(split).trim();line=line.substring(0,split);if(firstWhitespace(password)>=0)throw new IOException("每行仅支持链接和一个密码");}UserSourceInput input=parseUserSourceInput(line,password);row.url=input.url;row.password=input.password;Models.Source duplicate=existing.get(row.url);if(duplicate!=null){row.source=duplicate;row.duplicate=true;}else if(!seen.add(row.url))row.duplicate=true;}catch(Exception error){row.error=safeBatchError(error);}}
     }catch(IOException impossible){return batchResult(rows);}
     List<BatchSource> pending=new ArrayList<>();for(BatchSource row:rows)if(row.error==null&&!row.duplicate)pending.add(row);
     // Zero admits the whole batch immediately; the physical pool remains bounded so
@@ -317,8 +318,7 @@ final class LanzouCore {
   }
 
   private Models.Source resolveUserSource(String url,String password)throws Exception{
-    String normalized=normalizeUserSourceUrl(url),pwd=password==null?"":password.trim();
-    if(pwd.length()>64||containsControl(pwd))throw new IOException("密码格式无效");
+    UserSourceInput input=parseUserSourceInput(url,password);String normalized=input.url,pwd=input.password;
     Exception singleError;try{return singleSource(normalized,pwd,probeSingleSource(normalized,pwd));}catch(Exception error){singleError=error;}
     try{return detectSource(normalized,pwd);}catch(Exception directoryError){if(singleError instanceof ShareCancelledException)throw singleError;if(directoryError instanceof ShareCancelledException)throw directoryError;throw directoryError;}
   }
@@ -569,7 +569,31 @@ final class LanzouCore {
   private static boolean capabilityAllowed(byte seen,byte available,byte ua){byte bit=uaBit(ua);return(seen&bit)==0||(available&bit)!=0;}
   private static boolean containsControl(String value){for(int i=0;i<value.length();i++)if(Character.isISOControl(value.charAt(i)))return true;return false;}
   private static String normalizeUserSourceUrl(String raw)throws IOException{
-    try{String value=(raw==null?"":raw.trim()).replace('。','.').replace('．','.');URI uri=new URI(value);String scheme=uri.getScheme(),host=uri.getHost(),path=uri.getRawPath();boolean typo=host!=null&&LANZOU_TYPO_HOST.matcher(host.toLowerCase(Locale.ROOT)).matches();if(scheme==null||(!scheme.equalsIgnoreCase("http")&&!scheme.equalsIgnoreCase("https"))||host==null||(!LANZOU_HOST.matcher(host).matches()&&!typo)||uri.getRawUserInfo()!=null||uri.getPort()!=-1)throw new IOException("请输入有效的蓝奏目录链接");if(path==null||path.isEmpty()||path.equals("/"))throw new IOException("请输入蓝奏目录分享链接");return CANONICAL_SOURCE_ORIGIN+path;}catch(IOException error){throw error;}catch(Exception ignored){throw new IOException("请输入有效的蓝奏目录链接");}
+    return parseUserSourceInput(raw,"").url;
+  }
+  private static UserSourceInput parseUserSourceInput(String raw,String explicitPassword)throws IOException{
+    try{
+      String value=(raw==null?"":raw.trim()).replace('。','.').replace('．','.');
+      URI uri=new URI(value);String scheme=uri.getScheme(),host=uri.getHost(),path=uri.getRawPath();
+      boolean typo=host!=null&&LANZOU_TYPO_HOST.matcher(host.toLowerCase(Locale.ROOT)).matches();
+      if(scheme==null||(!scheme.equalsIgnoreCase("http")&&!scheme.equalsIgnoreCase("https"))||host==null||(!LANZOU_HOST.matcher(host).matches()&&!typo)||uri.getRawUserInfo()!=null||uri.getPort()!=-1)throw new IOException("请输入有效的蓝奏目录链接");
+      if(path==null||path.isEmpty()||path.equals("/"))throw new IOException("请输入蓝奏目录分享链接");
+      String embeddedPassword="",rawQuery=uri.getRawQuery();boolean passwordSeen=false;StringBuilder keptQuery=new StringBuilder();
+      if(rawQuery!=null&&!rawQuery.isEmpty())for(String part:rawQuery.split("&",-1)){
+        int equals=part.indexOf('=');String rawName=equals<0?part:part.substring(0,equals);
+        String name=URLDecoder.decode(rawName,StandardCharsets.UTF_8.name());
+        if(name.equalsIgnoreCase("pwd")){
+          if(passwordSeen)throw new IOException("链接中存在多个 pwd 密码参数");
+          passwordSeen=true;embeddedPassword=URLDecoder.decode(equals<0?"":part.substring(equals+1),StandardCharsets.UTF_8.name());
+        }else{if(keptQuery.length()>0)keptQuery.append('&');keptQuery.append(part);}
+      }
+      String password=explicitPassword==null?"":explicitPassword.trim();
+      if(passwordSeen&&!password.isEmpty()&&!password.equals(embeddedPassword))throw new IOException("链接密码与单独填写的密码不一致");
+      if(password.isEmpty()&&passwordSeen)password=embeddedPassword;
+      if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");
+      String normalized=CANONICAL_SOURCE_ORIGIN+path+(keptQuery.length()==0?"":"?"+keptQuery);
+      return new UserSourceInput(normalized,password);
+    }catch(IOException error){throw error;}catch(Exception ignored){throw new IOException("请输入有效的蓝奏目录链接");}
   }
 
   Models.Folder browse(String url,String password,boolean refresh) throws Exception {

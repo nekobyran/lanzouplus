@@ -10,7 +10,8 @@ final class DirectLinkResolver implements AutoCloseable {
   interface Ticket { boolean cancel(); }
   interface Clock { long now(); }
   static final long TTL_MS=60*60*1000L;
-  static final int DEFAULT_PARALLELISM=5,MAX_PARALLELISM=128;
+  static final int DEFAULT_PARALLELISM=5,MAX_PARALLELISM=128,MAX_WORKERS=128;
+  private static final long WORKER_STACK_BYTES=524288L;
   private static final String PREFS="direct_links",DIRECT="d:",TIME="t:",PARALLELISM="parallelism";
   private final LanzouCore core;
   private final SharedPreferences prefs;
@@ -25,7 +26,7 @@ final class DirectLinkResolver implements AutoCloseable {
   DirectLinkResolver(Context context,LanzouCore core,Clock clock){
     this.core=core;this.clock=clock;this.prefs=context.getApplicationContext().getSharedPreferences(PREFS,Context.MODE_PRIVATE);
     int workers=effectiveParallelism(configuredParallelism());
-    executor=new ThreadPoolExecutor(workers,workers,20,TimeUnit.SECONDS,new PriorityBlockingQueue<>(),r->{Thread t=new Thread(r,"lanzou-resolve");t.setDaemon(true);return t;});
+    executor=new ThreadPoolExecutor(workers,workers,20,TimeUnit.SECONDS,new PriorityBlockingQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-resolve",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
     executor.allowCoreThreadTimeOut(true);cleanupExpired();
   }
 
@@ -92,12 +93,12 @@ final class DirectLinkResolver implements AutoCloseable {
   }
 
   @Override public void close(){List<Callback> callbacks=new ArrayList<>();synchronized(lock){if(closed)return;closed=true;for(Request request:inflight.values())if(!request.done){request.done=true;callbacks.addAll(request.callbacks);}inflight.clear();}executor.shutdownNow();for(Callback callback:callbacks)try{callback.failed("直链解析已取消");}catch(RuntimeException ignored){}}
-  private static String rootMessage(Throwable error){Throwable current=error;while(current.getCause()!=null)current=current.getCause();String value=current.getMessage();return value==null?current.getClass().getSimpleName():value;}
+  private static String failureMessage(Throwable error){Throwable current=error;while(current.getCause()!=null)current=current.getCause();String value=current.getMessage();if(value==null||value.trim().isEmpty())value=current.getClass().getSimpleName();return value.startsWith("无法解析下载链接：")?value:"无法解析下载链接："+value;}
   private static final class Cache { final String url;final long at;Cache(String url,long at){this.url=url;this.at=at;} }
   private final class Request implements Runnable,Comparable<Request> {
     final String url;final List<Callback> callbacks=new ArrayList<>();volatile boolean confirmed,running,done;volatile long order;
     Request(String url,boolean confirmed,long order){this.url=url;this.confirmed=confirmed;this.order=order;}
     @Override public int compareTo(Request other){if(confirmed!=other.confirmed)return confirmed?-1:1;return Long.compare(order,other.order);}
-    @Override public void run(){running=true;try{LanzouCore.DirectLink link=core.resolveDirect(url);if(link==null||link.url==null||link.url.isEmpty())throw new IllegalStateException("未解析到下载直链");long at=clock.now();finished(this,link.url,at,null);}catch(Exception error){finished(this,null,0,rootMessage(error));}}
+    @Override public void run(){running=true;try{LanzouCore.DirectLink link=core.resolveDirect(url);if(link==null||link.url==null||link.url.isEmpty())throw new IllegalStateException("未解析到下载直链");long at=clock.now();finished(this,link.url,at,null);}catch(Exception error){finished(this,null,0,failureMessage(error));}}
   }
 }

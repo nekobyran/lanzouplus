@@ -180,7 +180,7 @@ final class PremiumSaveCoordinator {
       this.listener=listener;
       parallelism=clampParallelism(requestedParallelism);
       ThreadFactory factory=r->{Thread thread=new Thread(r,"premium-save");thread.setDaemon(true);return thread;};
-      executor=Executors.newFixedThreadPool(MAX_PARALLELISM,factory);
+      executor=Executors.newCachedThreadPool(factory);
       LinkedHashSet<String> names=new LinkedHashSet<>();
       if(accounts!=null)for(String account:accounts)if(!clean(account).isEmpty())names.add(clean(account));
       if(requests!=null)for(Request request:requests)if(request!=null)for(String account:names){
@@ -308,7 +308,8 @@ final class PremiumSaveCoordinator {
     }
 
     private void pumpLocked(){
-      while(!finished&&!cancelled&&!paused&&active<parallelism&&!pending.isEmpty()){
+      int limit=parallelism==0?Integer.MAX_VALUE:parallelism;
+      while(!finished&&!cancelled&&!paused&&active<limit&&!pending.isEmpty()){
         Unit unit=pending.removeFirst();
         if(blockedAccounts.contains(unit.account)&&!unit.probe){capacityUnits.add(unit);continue;}
         active++;
@@ -395,7 +396,7 @@ final class PremiumSaveCoordinator {
     return task;
   }
 
-  static int clampParallelism(int value){return Math.max(MIN_PARALLELISM,Math.min(MAX_PARALLELISM,value));}
+  static int clampParallelism(int value){return value==0?0:Math.max(MIN_PARALLELISM,Math.min(MAX_PARALLELISM,value));}
 
   static boolean indicatesCapacity(String message){
     String value=clean(message).toLowerCase(Locale.ROOT).replaceAll("\\s+","");

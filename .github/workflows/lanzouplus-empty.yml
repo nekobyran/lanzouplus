@@ -93,6 +93,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Prove unlimited premium-save semantics
+        run: |
+          set -euo pipefail
+          python3 tools/test_premium_save_queue_semantics.py
+
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 

@@ -28,9 +28,9 @@ final class LanzouCore {
   private static final int CLASSIC_ANDROID_INITIAL_PAGE_INTERVAL_MS=1800,CLASSIC_ANDROID_NEXT_PAGE_INTERVAL_MS=500;
   private static final int CLASSIC_DESKTOP_INITIAL_PAGE_INTERVAL_MS=1800,CLASSIC_DESKTOP_NEXT_PAGE_INTERVAL_MS=500;
   private static final int UNKNOWN_INITIAL_PAGE_INTERVAL_MS=2100,UNKNOWN_NEXT_PAGE_INTERVAL_MS=1000;
-  private static final int MAX_PAGE_INTERVAL_MS=8400,MAX_BROWSE_SESSIONS=64,MAX_PROBE_WORKERS=32,COMPOSITE_WARM_WORKERS=32;
+  private static final int MAX_PAGE_INTERVAL_MS=8400,MAX_BROWSE_SESSIONS=64,MAX_PROBE_WORKERS=32,MAX_SOURCE_PROBE_PARALLELISM=128,COMPOSITE_WARM_WORKERS=32;
   private static final long SESSION_TTL_MS=5*60*1000L;
-  private static final long SOURCE_PROBE_TIMEOUT_MS=35*1000L,SOURCE_PROBE_UA_GAP_MS=2100L;
+  private static final long SOURCE_PROBE_TIMEOUT_MS=35*1000L;
   private static final int PAGE_SIZE=50;
   private static final int DIRECT_INITIAL_WAIT_MS=1900,DIRECT_RETRY_WAIT_MS=250;
   private static final String FOLDER_MARKER="#lanzou-folder=";
@@ -63,6 +63,8 @@ final class LanzouCore {
   private static final ConcurrentHashMap<String,Models.Source> SOURCE_OVERRIDES=new ConcurrentHashMap<>();
   private static final ConcurrentHashMap<String,Models.SourceMember> COMPOSITE_MEMBER_CACHE=new ConcurrentHashMap<>();
   private static final java.util.concurrent.atomic.AtomicBoolean COMPOSITE_WARM_RUNNING=new java.util.concurrent.atomic.AtomicBoolean(),COMPOSITE_WARM_REQUESTED=new java.util.concurrent.atomic.AtomicBoolean();
+  private static final java.util.concurrent.atomic.AtomicInteger SOURCE_UA_THREAD_SEQUENCE=new java.util.concurrent.atomic.AtomicInteger();
+  private static final ExecutorService SOURCE_UA_POOL=new ThreadPoolExecutor(0,MAX_SOURCE_PROBE_PARALLELISM*2,30L,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{Thread thread=new Thread(null,r,"lanzou-source-ua-"+SOURCE_UA_THREAD_SEQUENCE.incrementAndGet(),262144L);thread.setDaemon(true);return thread;},new ThreadPoolExecutor.CallerRunsPolicy());
   private static volatile List<Models.Source> BUILT_IN_SOURCE_CACHE;
   private static volatile byte[] BUILT_IN_SOURCE_HINTS;
   private final Context context;
@@ -108,7 +110,9 @@ final class LanzouCore {
   static final class ImportResult { final int added,duplicates,invalid;ImportResult(int added,int duplicates,int invalid){this.added=added;this.duplicates=duplicates;this.invalid=invalid;} }
   static final class AddResult {final int line;final String url;final Models.Source source;final String message;final boolean added,duplicate;AddResult(int line,String url,Models.Source source,String message,boolean added,boolean duplicate){this.line=line;this.url=url;this.source=source==null?null:copySource(source);this.message=message==null?"":message;this.added=added;this.duplicate=duplicate;}}
   static final class AddBatchResult {final int added,duplicates,failed,childAdded,childDuplicates,childEmpty,childFailed;final List<AddResult> lines;AddBatchResult(int added,int duplicates,int failed,int childAdded,int childDuplicates,int childEmpty,int childFailed,List<AddResult> lines){this.added=added;this.duplicates=duplicates;this.failed=failed;this.childAdded=childAdded;this.childDuplicates=childDuplicates;this.childEmpty=childEmpty;this.childFailed=childFailed;this.lines=Collections.unmodifiableList(lines);}}
+  interface AddProgress {void onProgress(int done,int total,String url,boolean success);}
   private static final class BatchSource {final int line;String url,password,error;Models.Source source;boolean added,duplicate,child;BatchSource(int line){this.line=line;}}
+  private static final class BatchProbeResult {final BatchSource row;final Models.Source source;final String error;BatchProbeResult(BatchSource row,Models.Source source,String error){this.row=row;this.source=source;this.error=error;}}
   private static final class ChildDiscovery {final List<BatchSource> rows=new ArrayList<>();int empty,failed;}
   private static final class FolderSeed {final Models.Item item;final String path;final boolean root;FolderSeed(Models.Item item,String path,boolean root){this.item=item;this.path=path;this.root=root;}}
   private interface ItemBatch { void accept(List<Models.Item> items); }
@@ -269,7 +273,8 @@ final class LanzouCore {
 
   /** Parse, probe concurrently through the single-source core, then persist all successes in one commit. */
   AddBatchResult addUserSourcesBatch(String raw,int concurrency)throws InterruptedException{return addUserSourcesBatch(raw,concurrency,false);}
-  AddBatchResult addUserSourcesBatch(String raw,int concurrency,boolean discoverNonEmptyChildren)throws InterruptedException{
+  AddBatchResult addUserSourcesBatch(String raw,int concurrency,boolean discoverNonEmptyChildren)throws InterruptedException{return addUserSourcesBatch(raw,concurrency,discoverNonEmptyChildren,null);}
+  AddBatchResult addUserSourcesBatch(String raw,int concurrency,boolean discoverNonEmptyChildren,AddProgress progress)throws InterruptedException{
     List<BatchSource> rows=new ArrayList<>();
     if(raw==null)return batchResult(rows);
     if(raw.length()>RULE_LIMIT){BatchSource row=new BatchSource(0);row.error="批量内容过大";rows.add(row);return batchResult(rows);}
@@ -280,11 +285,13 @@ final class LanzouCore {
       for(String rawLine;(rawLine=reader.readLine())!=null;){lineNumber++;String line=rawLine.trim();if(line.isEmpty())continue;BatchSource row=new BatchSource(lineNumber);rows.add(row);try{int split=firstWhitespace(line);String password="";if(split>=0){password=line.substring(split).trim();line=line.substring(0,split);if(firstWhitespace(password)>=0)throw new IOException("每行仅支持链接和一个密码");}row.url=normalizeUserSourceUrl(line);row.password=password;if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");Models.Source duplicate=existing.get(row.url);if(duplicate!=null){row.source=duplicate;row.duplicate=true;}else if(!seen.add(row.url))row.duplicate=true;}catch(Exception error){row.error=safeBatchError(error);}}
     }catch(IOException impossible){return batchResult(rows);}
     List<BatchSource> pending=new ArrayList<>();for(BatchSource row:rows)if(row.error==null&&!row.duplicate)pending.add(row);
-    int limit=concurrency<=0?Math.min(MAX_PROBE_WORKERS,pending.size()):Math.min(Math.max(1,concurrency),Math.min(MAX_PROBE_WORKERS,pending.size()));
-    ExecutorService workers=pending.isEmpty()?null:Executors.newFixedThreadPool(Math.max(1,limit));List<Future<Models.Source>> futures=new ArrayList<>();
+    // Zero admits the whole batch immediately; the physical pool remains bounded so
+    // a large paste cannot create thousands of Android threads.
+    int limit=concurrency<=0?Math.min(MAX_SOURCE_PROBE_PARALLELISM,pending.size()):Math.min(Math.max(1,concurrency),Math.min(MAX_SOURCE_PROBE_PARALLELISM,pending.size()));
+    ExecutorService workers=pending.isEmpty()?null:Executors.newFixedThreadPool(Math.max(1,limit));ExecutorCompletionService<BatchProbeResult> completed=workers==null?null:new ExecutorCompletionService<>(workers);List<Future<BatchProbeResult>> futures=new ArrayList<>();
     try{
-      if(workers!=null)for(BatchSource row:pending)futures.add(workers.submit(()->resolveUserSource(row.url,row.password)));
-      for(int i=0;i<futures.size();i++)try{pending.get(i).source=futures.get(i).get();}catch(ExecutionException error){pending.get(i).error=safeBatchError(error.getCause());}
+      if(completed!=null)for(BatchSource row:pending)futures.add(completed.submit(()->{try{return new BatchProbeResult(row,resolveUserSource(row.url,row.password),null);}catch(Exception error){return new BatchProbeResult(row,null,safeBatchError(error));}}));
+      for(int done=1;done<=pending.size();done++){BatchProbeResult result;try{result=completed.take().get();}catch(ExecutionException impossible){throw new IllegalStateException(impossible);}result.row.source=result.source;result.row.error=result.error;if(progress!=null)try{progress.onProgress(done,pending.size(),result.row.url,result.error==null);}catch(RuntimeException ignored){}}
     }finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);if(workers!=null)workers.shutdownNow();}
     ChildDiscovery discovered=new ChildDiscovery();if(discoverNonEmptyChildren){List<BatchSource> roots=new ArrayList<>(rows);for(BatchSource row:roots)if(row.source!=null&&row.error==null)try{ChildDiscovery value=discoverChildSources(row.source,row.line);discovered.rows.addAll(value.rows);discovered.empty+=value.empty;discovered.failed+=value.failed;}catch(Exception error){discovered.failed++;}rows.addAll(discovered.rows);pending.addAll(discovered.rows);}
     commitUserSourceBatch(pending);return batchResult(rows,discovered.empty,discovered.failed);
@@ -352,10 +359,13 @@ final class LanzouCore {
   }
 
   Models.SourceMember probeSingleSource(String rawUrl,String rawPassword)throws Exception{
-    String url=normalizeUserSourceUrl(rawUrl),password=rawPassword==null?"":rawPassword.trim();if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");Exception last=null;
-    for(byte ua=UA_ANDROID;ua<=UA_DESKTOP;ua++)try{long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS);DirectLink page=getGuarded(url,deadline,userAgent(ua));requireLanzouPage(page.url);requireActiveShare(page);if(isDirectorySharePage(page.html))return probeSingleDirectory(url,password,deadline,ua);if(!isSingleFileSharePage(page.html))throw new IOException("不是可识别的文件分享页");return probeSingleFile(url,password,page);}catch(Exception error){last=error;}
-    throw last==null?new IOException("单软件源暂不可用"):last;
+    String url=normalizeUserSourceUrl(rawUrl),password=rawPassword==null?"":rawPassword.trim();if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");ExecutorCompletionService<Models.SourceMember> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);List<Future<Models.SourceMember>> futures=new ArrayList<>(2);List<Exception> failures=new ArrayList<>(2);
+    for(byte ua=UA_ANDROID;ua<=UA_DESKTOP;ua++){byte selectedUa=ua;futures.add(completed.submit(()->{long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS);DirectLink page=getGuarded(url,deadline,userAgent(selectedUa));requireLanzouPage(page.url);requireActiveShare(page);if(isDirectorySharePage(page.html))return probeSingleDirectory(url,password,deadline,selectedUa);if(!isSingleFileSharePage(page.html))throw new IOException("不是可识别的文件分享页");return probeSingleFile(url,password,page);}));}
+    try{for(int i=0;i<2;i++)try{return completed.take().get();}catch(ExecutionException error){failures.add(error.getCause() instanceof Exception?(Exception)error.getCause():new IOException("单软件源暂不可用",error.getCause()));}}finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
+    throw preferredProbeError(failures);
   }
+
+  private static Exception preferredProbeError(List<Exception> errors){for(Exception error:errors)if(error instanceof ShareCancelledException)return error;for(Exception error:errors)if(sourceTestError(error).contains("密码"))return error;return errors.isEmpty()?new IOException("单软件源暂不可用"):errors.get(errors.size()-1);}
 
   private static boolean isDirectorySharePage(String html){return html.contains("filemoreajax.php")||!cap(html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?file=\\d+[^'\"]*)['\"]").isEmpty();}
 
@@ -381,7 +391,7 @@ final class LanzouCore {
   private static String firstSoftwareIcon(Models.Source source){if(source==null)return"";for(Models.SourceMember member:source.members)if(member.kind!=Models.MEMBER_FOLDER&&member.kind!=Models.MEMBER_REMOTE_FOLDER&&!member.iconUrl.isEmpty())return member.iconUrl;return"";}
 
   private Models.Source detectSource(String normalized,String pwd)throws Exception{
-    UaProbe android=probeSourceUa(normalized,pwd,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS),UA_ANDROID);if(android.session!=null)Thread.sleep(SOURCE_PROBE_UA_GAP_MS);UaProbe desktop=probeSourceUa(normalized,pwd,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS),UA_DESKTOP);SourceProfile profile=sourceProfile(normalized);byte androidBit=uaBit(UA_ANDROID),desktopBit=uaBit(UA_DESKTOP),directoryAvailable=(byte)((android.directory?androidBit:0)|(desktop.directory?desktopBit:0)),searchAvailable=(byte)((android.search?androidBit:0)|(desktop.search?desktopBit:0)),preferredDirectory=preferredUa(android.directory,android.items,android.elapsed,desktop.directory,desktop.items,desktop.elapsed),preferredSearch=preferredUa(android.search,0,android.elapsed,desktop.search,0,desktop.elapsed);
+    Future<UaProbe> androidTask=SOURCE_UA_POOL.submit(()->probeSourceUa(normalized,pwd,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS),UA_ANDROID)),desktopTask=SOURCE_UA_POOL.submit(()->probeSourceUa(normalized,pwd,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS),UA_DESKTOP));UaProbe android,desktop;try{android=androidTask.get();desktop=desktopTask.get();}finally{if(!androidTask.isDone())androidTask.cancel(true);if(!desktopTask.isDone())desktopTask.cancel(true);}SourceProfile profile=sourceProfile(normalized);byte androidBit=uaBit(UA_ANDROID),desktopBit=uaBit(UA_DESKTOP),directoryAvailable=(byte)((android.directory?androidBit:0)|(desktop.directory?desktopBit:0)),searchAvailable=(byte)((android.search?androidBit:0)|(desktop.search?desktopBit:0)),preferredDirectory=preferredUa(android.directory,android.items,android.elapsed,desktop.directory,desktop.items,desktop.elapsed),preferredSearch=preferredUa(android.search,0,android.elapsed,desktop.search,0,desktop.elapsed);
     synchronized(profile){profile.directorySeen|=directoryAvailable;profile.directoryAvailable|=directoryAvailable;profile.searchSeen|=searchAvailable;profile.searchAvailable|=searchAvailable;if(preferredDirectory!=UA_UNKNOWN)profile.directoryUa=preferredDirectory;if(preferredSearch!=UA_UNKNOWN)profile.searchUa=preferredSearch;}
     UaProbe chosen=profile.directoryUa==UA_DESKTOP?desktop:android;if(!chosen.directory)chosen=android.directory?android:desktop;if(!chosen.directory||chosen.session==null)throw probeFailure(android,desktop);Models.Folder folder=chosen.folder==null?copyFolder(chosen.session.metadata):chosen.folder;DirectLink session=chosen.session;
     String resolved=normalizeUserSourceUrl(session.page.url);
@@ -392,7 +402,7 @@ final class LanzouCore {
     return source;
   }
 
-  private static Exception probeFailure(UaProbe android,UaProbe desktop){if(android.error instanceof ShareCancelledException||desktop.error instanceof ShareCancelledException)return new ShareCancelledException();if(android.error!=null)return android.error;if(desktop.error!=null)return desktop.error;return new IOException("蓝奏目录暂不可用");}
+  private static Exception probeFailure(UaProbe android,UaProbe desktop){if(android.error instanceof ShareCancelledException||desktop.error instanceof ShareCancelledException)return new ShareCancelledException();if(android.error!=null&&sourceTestError(android.error).contains("密码"))return android.error;if(desktop.error!=null&&sourceTestError(desktop.error).contains("密码"))return desktop.error;if(android.error!=null)return android.error;if(desktop.error!=null)return desktop.error;return new IOException("蓝奏目录暂不可用");}
 
   private static int firstWhitespace(String value){for(int i=0;i<value.length();i++)if(Character.isWhitespace(value.charAt(i)))return i;return-1;}
   private static String safeBatchError(Throwable error){String value=sourceTestError(error).replace('\r',' ').replace('\n',' ').replace('\t',' ').trim();return value.length()>160?value.substring(0,160):value;}
@@ -432,8 +442,11 @@ final class LanzouCore {
     LinkedHashMap<String,Models.Source> merged=new LinkedHashMap<>();
     for(Models.Source source:builtInSources()){String id=sourceId(source);Models.Source value=copySource(source),override=SOURCE_OVERRIDES.get(id);if(override!=null)value=copySource(override);if(!removed.contains(id))merged.putIfAbsent(id,value);}
     for(Models.Source source:loadUserSources()){String id=sourceId(source);if(removed.contains(id))continue;Models.Source baseline=merged.get(id);merged.put(id,source.overlay&&baseline!=null&&baseline.kind==Models.SOURCE_COMPOSITE?mergeCompositeOverlay(baseline,source):source);}
-    return new ArrayList<>(merged.values());
+    return orderedSources(merged.values());
   }
+
+  private static int sourceOrderBucket(Models.Source source){if(source.kind==Models.SOURCE_COMPOSITE)return 3;if(source.kind==Models.SOURCE_SINGLE)return 2;return source.childDirectory?1:0;}
+  private static List<Models.Source> orderedSources(Collection<Models.Source> sources){List<Models.Source> ordered=new ArrayList<>(sources.size());for(int bucket=0;bucket<=3;bucket++)for(Models.Source source:sources)if(sourceOrderBucket(source)==bucket)ordered.add(source);return ordered;}
 
   private Models.Source builtInSource(String id)throws IOException{for(Models.Source source:builtInSources())if(sourceId(source).equals(id))return copySource(source);return null;}
   private static Models.Source mergeCompositeOverlay(Models.Source baseline,Models.Source overlay){Models.Source out=copySource(baseline);if(overlay.metadataOverride){out.title=overlay.title;out.publisher=overlay.publisher;out.description=overlay.description;}Set<String> ids=new HashSet<>();for(Models.SourceMember member:out.members)ids.add(member.id);for(Models.SourceMember member:overlay.members){Models.SourceMember added=copyMember(member);if(added.id.isEmpty()||ids.contains(added.id))added.id=newMemberId(out.members);ids.add(added.id);out.members.add(added);}String icon=firstSoftwareIcon(out);if(!icon.isEmpty())out.avatarUrl=icon;out.error=overlay.error;return out;}
@@ -631,6 +644,10 @@ final class LanzouCore {
     return browsePage(url,password,refresh,page,NO_DEADLINE);
   }
 
+  Models.Folder browseFreshPage(String url,String password,int page) throws Exception {
+    return browsePage(url,password,true,page,NO_DEADLINE,true);
+  }
+
   boolean hasFolderCache(String url,String password,int page){return folderCache(url,password,page).isFile();}
 
   boolean sameFolder(Models.Folder first,Models.Folder second)throws Exception{JSONObject a=toJson(first),b=toJson(second);a.remove("nextPageReadyAt");b.remove("nextPageReadyAt");return a.toString().equals(b.toString());}
@@ -751,7 +768,7 @@ final class LanzouCore {
     throw new IOException(data==null?errorMessage:data.optString("info","目录请求过快，请稍后重试"));
   }
 
-  private static String pageRateKey(DirectLink session){return originUnchecked(session.page.url)+'|'+session.fid+'|'+session.target.folderId;}
+  private static String pageRateKey(DirectLink session){return originUnchecked(session.page.url)+'|'+session.fid+'|'+session.target.folderId+'|'+session.ua;}
   private static void awaitPageSlot(String key,long deadline,long intervalMillis,BooleanSupplier cancelled)throws Exception{
     while(true){long wait;
       checkSearchCancelled(cancelled);

@@ -62,7 +62,7 @@ def _copy_info(source: zipfile.ZipInfo) -> zipfile.ZipInfo:
     target.internal_attr = source.internal_attr
     target.flag_bits = source.flag_bits & 0x800  # Preserve only the UTF-8 name bit.
     # resources.arsc must stay uncompressed so Android can memory-map it.  Every
-    # other current entry, including the JPEG launcher icon, is safe to deflate.
+    # other current entry, including compact launcher artwork, is safe to deflate.
     target.compress_type = (
         zipfile.ZIP_STORED
         if source.filename == "resources.arsc"

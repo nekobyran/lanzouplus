@@ -7,13 +7,20 @@ import java.io.*;
 import java.net.*;
 import java.nio.channels.*;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.*;
 
-/** Strict single-thread transfer engine with restart-safe Range continuation. */
+/** Bounded process-wide transfer engine with restart-safe Range continuation. */
 final class SegmentDownloader {
   interface Listener { void progress(long done,long total); void completed(); void failed(String error); default void paused(long done,long total){} default void cancelled(long done,long total){} }
   private static final String UA="Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36";
   private static final Pattern CONTENT_RANGE=Pattern.compile("(?i)bytes\\s+(\\d+)-(\\d+)/(\\d+)");
+  private static final int MAX_WORKERS=96;
+  private static final long WORKER_STACK_BYTES=524288L;
+  private static final AtomicInteger ACTIVE_WORKERS=new AtomicInteger();
+  private static final ThreadPoolExecutor WORKERS=new ThreadPoolExecutor(MAX_WORKERS,MAX_WORKERS,20L,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-download",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
+  static{WORKERS.allowCoreThreadTimeOut(true);}
   private final Context context;
   private final TransferTerminal terminal=new TransferTerminal();
   private volatile HttpURLConnection active;
@@ -23,13 +30,24 @@ final class SegmentDownloader {
   boolean cancel(){return stop(2);}
   private boolean stop(int mode){if(!terminal.request(mode))return false;HttpURLConnection connection=active;if(connection!=null)connection.disconnect();return true;}
 
-  void startResolved(String directUrl,Uri destination,long expectedTotal,Listener listener){start(directUrl,destination,expectedTotal,listener,false,"lanzou-download");}
+  void startResolved(String directUrl,Uri destination,long expectedTotal,Listener listener){start(directUrl,destination,expectedTotal,listener,false);}
   /** Downloads a trusted GitHub/official-site update URL without Lanzou resolution. */
-  void startDirect(String directUrl,Uri destination,Listener listener){start(directUrl,destination,0,listener,true,"update-download");}
+  void startDirect(String directUrl,Uri destination,Listener listener){start(directUrl,destination,0,listener,true);}
 
-  private void start(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded,String threadName){
-    new Thread(()->{try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);}catch(RuntimeException ignored){}Transfer stats=new Transfer();Exception failure=null;try{download(url,destination,expectedTotal,listener,guarded,stats);}catch(Exception error){failure=error;}int outcome=terminal.claim();active=null;if(failure==null&&outcome==0){listener.completed();return;}if(stats.total>0)listener.progress(Math.min(stats.done,stats.total),stats.total);if(outcome==1)listener.paused(stats.done,stats.total);else if(outcome==2)listener.cancelled(stats.done,stats.total);else listener.failed(rootMessage(failure==null?new IOException("下载终态冲突"):failure));},threadName).start();
+  private void start(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded){
+    WORKERS.execute(()->runTransfer(url,destination,expectedTotal,listener,guarded));
   }
+
+  private void runTransfer(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded){
+    ACTIVE_WORKERS.incrementAndGet();
+    try{
+      try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);}catch(RuntimeException ignored){}
+      Transfer stats=new Transfer();Exception failure=null;try{download(url,destination,expectedTotal,listener,guarded,stats);}catch(Exception error){failure=error;}
+      int outcome=terminal.claim();active=null;if(failure==null&&outcome==0){listener.completed();return;}if(stats.total>0)listener.progress(Math.min(stats.done,stats.total),stats.total);if(outcome==1)listener.paused(stats.done,stats.total);else if(outcome==2)listener.cancelled(stats.done,stats.total);else listener.failed(failureMessage(failure==null?new IOException("下载终态冲突"):failure));
+    }finally{ACTIVE_WORKERS.decrementAndGet();}
+  }
+
+  private static long progressIntervalMs(){int active=ACTIVE_WORKERS.get();return active>=64?750L:active>=24?500L:240L;}
 
   private static final class Transfer { long done,total; }
   private static final class Response {
@@ -43,13 +61,13 @@ final class SegmentDownloader {
   }
 
   private void download(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded,Transfer stats)throws Exception{
-    long existing=destinationLength(destination);Response response=existing>0?openResume(url,existing,expectedTotal,guarded):openFirst(url,guarded);active=response.connection;checkStopped();
+    checkStopped();long existing=destinationLength(destination);Response response=existing>0?openResume(url,existing,expectedTotal,guarded):openFirst(url,guarded);active=response.connection;checkStopped();
     long total=response.total,done=response.start;stats.total=total;stats.done=done;
     listener.progress(done,total);
     Sink destinationOut;
     try{destinationOut=openDestination(destination,response.start);}catch(Exception error){response.connection.disconnect();throw error;}
     try(Sink sink=destinationOut){
-      OutputStream out=sink.out;long lastEvent=0;byte[] buffer=new byte[65536];
+      OutputStream out=sink.out;long lastEvent=0;byte[] buffer=new byte[32768];
       while(done<total){
         checkStopped();
         if(response.start!=done||response.total!=total){response.connection.disconnect();throw new IOException("Range 连续性校验失败");}
@@ -57,7 +75,7 @@ final class SegmentDownloader {
         try(InputStream in=response.connection.getInputStream()){
           for(int count;(count=in.read(buffer))>0;){
             checkStopped();out.write(buffer,0,count);written+=count;done+=count;stats.done=done;
-            long now=System.currentTimeMillis();if(now-lastEvent>=240){lastEvent=now;listener.progress(Math.min(done,total),total);}
+            long now=System.currentTimeMillis();if(now-lastEvent>=progressIntervalMs()){lastEvent=now;listener.progress(Math.min(done,total),total);}
           }
         }finally{response.connection.disconnect();}
         if(written!=expected)throw new IOException(response.end+1<total?"Range 分段长度校验失败":"文件长度校验失败");
@@ -128,7 +146,7 @@ final class SegmentDownloader {
   }
 
   private static void rejectHtml(HttpURLConnection connection)throws IOException{String type=connection.getContentType();if(type!=null){type=type.toLowerCase(Locale.ROOT);if(type.contains("text/html")||type.contains("application/json"))throw new IOException("直链仍是验证页面");}}
-  private static String rootMessage(Throwable error){Throwable current=error;while(current.getCause()!=null)current=current.getCause();String message=current.getMessage();return message==null?current.getClass().getSimpleName():message;}
+  private static String failureMessage(Throwable error){Throwable current=error;while(current.getCause()!=null)current=current.getCause();String message=current.getMessage();if(message==null||message.trim().isEmpty())message=current.getClass().getSimpleName();return message.startsWith("无法下载：")?message:"无法下载："+message;}
 
   private static HttpURLConnection open(String value,String range,boolean guarded)throws Exception{
     if(!guarded){HttpURLConnection connection=connection(new URL(value),true);if(range!=null)connection.setRequestProperty("Range",range);return connection;}

@@ -44,14 +44,15 @@ final class Models {
   }
   /** Per-search tuning. LanzouCore consumes a clamped copy for every run. */
   static final class SearchOptions {
+    static final int MODE_MIXED=0,MODE_API=1,MODE_DIRECTORY=2;
     int concurrency=16;
     /** Fair active-source time slice; 0 keeps an active source until it finishes. */
     long sourceSwitchDelayMillis=0L;
     boolean untilLastPage=true;
     /** Search every nested folder discovered below a source. Session-only UI option. */
     boolean recursiveFolders;
-    /** Use only Lanzou's search API; never browse or paginate directory pages. */
-    boolean apiOnly;
+    /** Mixed by default; callers may select API-only or cached/live directory matching. */
+    int mode=MODE_MIXED;
     int maxPages;
 
     SearchOptions() {}
@@ -71,14 +72,17 @@ final class Models {
       return this;
     }
 
-    SearchOptions withApiOnly(boolean value){
-      apiOnly=value;
+    SearchOptions withMode(int value){
+      mode=value<MODE_MIXED||value>MODE_DIRECTORY?MODE_MIXED:value;
       return this;
     }
 
+    boolean apiOnly(){return mode==MODE_API;}
+    boolean directoryOnly(){return mode==MODE_DIRECTORY;}
+
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
-      return new SearchOptions(Math.max(1,Math.min(4096,concurrency)),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withApiOnly(apiOnly);
+      return new SearchOptions(Math.max(1,Math.min(4096,concurrency)),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode);
     }
   }
   interface Progress {

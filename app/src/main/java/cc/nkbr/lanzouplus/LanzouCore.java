@@ -2,6 +2,7 @@ package cc.nkbr.lanzouplus;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Base64;
 import org.json.*;
 import java.io.*;
 import java.net.*;
@@ -39,12 +40,16 @@ final class LanzouCore {
   private static final String USER_SOURCE_KEY="sources";
   private static final String REMOVED_SOURCE_KEY="removed";
   private static final String COMPOSITE_MEMBER_PREFS="composite-members-v1";
+  private static final String DIRECTORY_INDEX_PREFS="directory-index-v1";
   private static final String CANONICAL_SOURCE_ORIGIN="https://www.lanzouw.com";
   private static final int RULE_LIMIT=512*1024;
   private static final Pattern ICON_DATE=Pattern.compile("(?:^|/)(\\d{4})/(\\d{2})/(\\d{2})(?:/|$)");
   private static final Pattern INVALID_FILE_NAME=Pattern.compile("[\\\\/:*?\"<>|]");
   private static final Pattern LANZOU_TYPO_HOST=Pattern.compile("(?:[a-z0-9-]+\\.)*laozouw\\.com");
   private static final Pattern LANZOU_HOST=Pattern.compile("(?i)(?:[a-z0-9-]+\\.)*lanzou[a-z0-9]?\\.com");
+  private static final Pattern SMART_SOURCE_LINK=Pattern.compile("(?i)https?://(?:[a-z0-9-]+\\.)*(?:lanzou[a-z0-9]?|laozouw)\\.com/[a-z0-9._~%!$&()*+,;=:@/?#-]+");
+  private static final Pattern SMART_PASSWORD=Pattern.compile("(?i)(?:密码|提取码|访问码|口令|pwd|password)\\s*(?:为\\s*)?[:：=-]{0,3}\\s*([a-z0-9_-]{1,64})");
+  private static final Pattern TRAILING_PASSWORD=Pattern.compile("^\\s+([a-z0-9_-]{1,64})(?=\\s*(?:$|[,，;；]))",Pattern.CASE_INSENSITIVE);
   private static final ConcurrentHashMap<String,Pattern> PARSE_PATTERNS=new ConcurrentHashMap<>();
   private static final Object PAGE_RATE_LOCK=new Object();
   private static final Object USER_SOURCE_LOCK=new Object();
@@ -68,6 +73,9 @@ final class LanzouCore {
   private static volatile List<Models.Source> BUILT_IN_SOURCE_CACHE;
   private static volatile byte[] BUILT_IN_SOURCE_HINTS;
   private final Context context;
+  private final DirectCookiePool directCookiePool;
+  private volatile boolean directoryCachingEnabled=true;
+  private final java.util.concurrent.atomic.AtomicBoolean indexCancelled=new java.util.concurrent.atomic.AtomicBoolean();
   private final Object sourceNameIndexLock=new Object();
   private volatile List<SourceNameEntry> sourceNameIndex;
   private volatile int sourceNameIndexRevision;
@@ -75,7 +83,7 @@ final class LanzouCore {
   private final ThreadPoolExecutor searchPool=newSearchPool();
   private final ThreadPoolExecutor compositeWarmPool=newCompositeWarmPool();
   private final ScheduledThreadPoolExecutor searchScheduler=newSearchScheduler();
-  LanzouCore(Context c){context=c.getApplicationContext();loadPersistedCompositeMembers();searchPool.execute(()->{try{sourceNameIndex();}catch(Exception ignored){}});startCompositeWarmup();}
+  LanzouCore(Context c){context=c.getApplicationContext();directCookiePool=new DirectCookiePool(context);loadPersistedCompositeMembers();searchPool.execute(()->{try{sourceNameIndex();}catch(Exception ignored){}});startCompositeWarmup();}
   static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized;byte ua,template; }
   private static final class SourceNameEntry{final Models.Source source;final Models.SourceMember member;final String id,folded;SourceNameEntry(Models.Source source,Models.SourceMember member,String id,String folded){this.source=source;this.member=member;this.id=id;this.folded=folded;}}
   static final class SourceRetestPlan { final Models.Source source;final String key;final boolean userSource;final long revision;SourceRetestPlan(Models.Source source,String key,boolean userSource,long revision){this.source=source;this.key=key;this.userSource=userSource;this.revision=revision;} }
@@ -112,7 +120,9 @@ final class LanzouCore {
   static final class AddResult {final int line;final String url;final Models.Source source;final String message;final boolean added,duplicate;AddResult(int line,String url,Models.Source source,String message,boolean added,boolean duplicate){this.line=line;this.url=url;this.source=source==null?null:copySource(source);this.message=message==null?"":message;this.added=added;this.duplicate=duplicate;}}
   static final class AddBatchResult {final int added,duplicates,failed,childAdded,childDuplicates,childEmpty,childFailed;final List<AddResult> lines;AddBatchResult(int added,int duplicates,int failed,int childAdded,int childDuplicates,int childEmpty,int childFailed,List<AddResult> lines){this.added=added;this.duplicates=duplicates;this.failed=failed;this.childAdded=childAdded;this.childDuplicates=childDuplicates;this.childEmpty=childEmpty;this.childFailed=childFailed;this.lines=Collections.unmodifiableList(lines);}}
   interface AddProgress {void onProgress(int done,int total,String url,boolean success);}
+  interface IndexProgress {void onProgress(int done,int total,String source,boolean success);}
   private static final class BatchSource {final int line;String url,password,error;Models.Source source;boolean added,duplicate,child;BatchSource(int line){this.line=line;}}
+  private static final class TextMatch{final int start,end;final String value;TextMatch(int start,int end,String value){this.start=start;this.end=end;this.value=value;}}
   private static final class BatchProbeResult {final BatchSource row;final Models.Source source;final String error;BatchProbeResult(BatchSource row,Models.Source source,String error){this.row=row;this.source=source;this.error=error;}}
   private static final class ChildDiscovery {final List<BatchSource> rows=new ArrayList<>();int empty,failed;}
   private static final class FolderSeed {final Models.Item item;final String path;final boolean root;FolderSeed(Models.Item item,String path,boolean root){this.item=item;this.path=path;this.root=root;}}
@@ -133,7 +143,7 @@ final class LanzouCore {
     final List<SourceSearchState> states;final LinkedHashMap<String,List<SourceSearchState>> groups=new LinkedHashMap<>();final ArrayDeque<String> waitingGroups=new ArrayDeque<>();final ArrayDeque<SourceSearchState> apiReady=new ArrayDeque<>(),directoryReady=new ArrayDeque<>();final Map<String,Integer> remaining=new HashMap<>();final Set<String> activeGroups=new HashSet<>(),failedGroups=new HashSet<>();final Map<String,ScheduledFuture<?>> rotations=new HashMap<>();final List<Models.Item> out;final Set<String> seen;final Models.SearchOptions options;final Models.Progress progress;final int total,maxActive,matchedCompositeLeafCount,httpLimit;final java.util.concurrent.atomic.AtomicInteger done=new java.util.concurrent.atomic.AtomicInteger(),found=new java.util.concurrent.atomic.AtomicInteger(),pagesSeen=new java.util.concurrent.atomic.AtomicInteger();
     final Set<Future<?>> httpFutures=Collections.newSetFromMap(new IdentityHashMap<>());final Set<HttpURLConnection> openConnections=Collections.newSetFromMap(new IdentityHashMap<>());final Object resultLock=new Object();
     int active,runningHttp,apiBurst;volatile boolean paused,cancelled;
-    SearchCoordinator(List<SourceSearchState> states,List<Models.Item> out,Set<String> seen,Models.SearchOptions options,Models.Progress progress){this.states=states;this.out=out;this.seen=seen;this.options=options;this.progress=progress;int matched=0;for(SourceSearchState state:states){if(options.apiOnly&&state.hydrate==null&&state.source.kind!=Models.SOURCE_COMPOSITE){state.dirDone=true;state.folders.clear();}groups.computeIfAbsent(state.groupKey,key->new ArrayList<>()).add(state);if(state.hydrate!=null&&!state.apiDone)matched++;}for(Map.Entry<String,List<SourceSearchState>> entry:groups.entrySet()){waitingGroups.addLast(entry.getKey());remaining.put(entry.getKey(),entry.getValue().size());}total=groups.size();maxActive=Math.max(1,Math.min(options.concurrency,total));matchedCompositeLeafCount=matched;httpLimit=Math.max(1,maxActive+Math.min(matchedCompositeLeafCount,COMPOSITE_WARM_WORKERS));}
+    SearchCoordinator(List<SourceSearchState> states,List<Models.Item> out,Set<String> seen,Models.SearchOptions options,Models.Progress progress){this.states=states;this.out=out;this.seen=seen;this.options=options;this.progress=progress;int matched=0;for(SourceSearchState state:states){if(options.apiOnly()&&state.hydrate==null&&state.source.kind!=Models.SOURCE_COMPOSITE){state.dirDone=true;state.folders.clear();}if(options.directoryOnly())state.apiDone=true;groups.computeIfAbsent(state.groupKey,key->new ArrayList<>()).add(state);if(state.hydrate!=null&&!state.apiDone)matched++;}for(Map.Entry<String,List<SourceSearchState>> entry:groups.entrySet()){waitingGroups.addLast(entry.getKey());remaining.put(entry.getKey(),entry.getValue().size());}total=groups.size();maxActive=Math.max(1,Math.min(options.concurrency,total));matchedCompositeLeafCount=matched;httpLimit=Math.max(1,maxActive+Math.min(matchedCompositeLeafCount,COMPOSITE_WARM_WORKERS));}
     List<Models.Item> run()throws InterruptedException{
       boolean interrupted=false;
       try{synchronized(this){refillActiveLocked();pumpNetworkLocked();}while(true){if(isSearchCancelled(progress)){synchronized(this){cancelLocked();}break;}if(progress!=null){synchronized(this){if(cancelled||done.get()>=total)break;paused=true;}boolean resume;try{resume=progress.awaitIfPaused();}catch(RuntimeException ignored){resume=false;}synchronized(this){paused=false;if(!resume){cancelLocked();break;}refillActiveLocked();pumpNetworkLocked();}}synchronized(this){if(cancelled||done.get()>=total)break;wait(50L);pumpNetworkLocked();}}}catch(InterruptedException error){interrupted=true;synchronized(this){cancelLocked();}}
@@ -180,10 +190,16 @@ final class LanzouCore {
   }
 
   DirectLink resolveDirect(String shareUrl)throws Exception{
-    Exception last=null;
-    for(int attempt=0;attempt<2;attempt++){
-      try{
-        NetSession session=new NetSession();
+    Exception last=null;Set<String> attempted=new HashSet<>();
+    for(int attempt=0;attempt<4;attempt++){
+      DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,System.currentTimeMillis());attempted.add(lease.id);NetSession session=new NetSession(lease.jar);
+      try{DirectLink direct=resolveDirectWithSession(shareUrl,session);directCookiePool.finish(lease,session.snapshot(),true,System.currentTimeMillis());return direct;
+      }catch(Exception error){last=error;directCookiePool.finish(lease,session.snapshot(),false,System.currentTimeMillis());}
+    }
+    throw last==null?new IOException("直链解析失败"):last;
+  }
+
+  private DirectLink resolveDirectWithSession(String shareUrl,NetSession session)throws Exception{
         DirectLink share=session.getGuarded(shareUrl,"");
         String fileTitle=cleanFileName(cap(share.html,"(?is)<title[^>]*>(.*?)</title>"));
         String transfer=cap(share.html,"(?is)id=[\"']downurl[\"'][^>]*href=[\"']([^\"']+)");
@@ -229,9 +245,6 @@ final class LanzouCore {
         String url=path.startsWith("http")?path:dom+"/file/"+path.replaceAll("^[/?]+","");
         if(!url.startsWith("http"))throw new IOException("蓝奏返回了无效直链");
         return direct(url,fileTitle);
-      }catch(Exception error){last=error;}
-    }
-    throw last==null?new IOException("直链解析失败"):last;
   }
 
   private static boolean directExchangePending(JSONObject data){String info=data.optString("inf").trim();if(DIRECT_TERMINAL_INFO.matcher(info).find())return false;if(data.optInt("zt")==1)return!data.optString("url").startsWith("http");return info.isEmpty()||info.equals("0")||info.contains("稍后")||info.contains("验证")||info.contains("处理中")||info.contains("等待");}
@@ -242,7 +255,9 @@ final class LanzouCore {
 
   /** Small per-resolution cookie jar; keeps the ACW and CDN verification sessions isolated. */
   private static final class NetSession{
-    private final Map<String,LinkedHashMap<String,String>> jar=new HashMap<>();
+    private final Map<String,LinkedHashMap<String,String>> jar;
+    NetSession(Map<String,LinkedHashMap<String,String>> seed){jar=new HashMap<>();if(seed!=null)for(Map.Entry<String,LinkedHashMap<String,String>> host:seed.entrySet())jar.put(host.getKey(),new LinkedHashMap<>(host.getValue()));}
+    Map<String,LinkedHashMap<String,String>> snapshot(){Map<String,LinkedHashMap<String,String>> out=new HashMap<>();for(Map.Entry<String,LinkedHashMap<String,String>> host:jar.entrySet())out.put(host.getKey(),new LinkedHashMap<>(host.getValue()));return out;}
     DirectLink getGuarded(String url,String referer)throws Exception{
       DirectLink page=get(url,referer);String value=acwCookie(page.html);if(value.isEmpty())return page;put(new URL(url).getHost(),"acw_sc__v2",value);return get(url,referer);
     }
@@ -277,14 +292,12 @@ final class LanzouCore {
   AddBatchResult addUserSourcesBatch(String raw,int concurrency,boolean discoverNonEmptyChildren)throws InterruptedException{return addUserSourcesBatch(raw,concurrency,discoverNonEmptyChildren,null);}
   AddBatchResult addUserSourcesBatch(String raw,int concurrency,boolean discoverNonEmptyChildren,AddProgress progress)throws InterruptedException{
     List<BatchSource> rows=new ArrayList<>();
-    if(raw==null)return batchResult(rows);
+    if(raw==null)return batchResult(new ArrayList<>());
     if(raw.length()>RULE_LIMIT){BatchSource row=new BatchSource(0);row.error="批量内容过大";rows.add(row);return batchResult(rows);}
+    rows=parseBatchSourceInputs(raw);
     Map<String,Models.Source> existing=new HashMap<>();
     try{for(Models.Source source:sources())if(source.kind!=Models.SOURCE_COMPOSITE)existing.put(source.url,source);}catch(IOException ignored){}
-    Set<String> seen=new HashSet<>();int lineNumber=0;
-    try(BufferedReader reader=new BufferedReader(new StringReader(raw))){
-      for(String rawLine;(rawLine=reader.readLine())!=null;){lineNumber++;String line=rawLine.trim();if(line.isEmpty())continue;BatchSource row=new BatchSource(lineNumber);rows.add(row);try{int split=firstWhitespace(line);String password="";if(split>=0){password=line.substring(split).trim();line=line.substring(0,split);if(firstWhitespace(password)>=0)throw new IOException("每行仅支持链接和一个密码");}UserSourceInput input=parseUserSourceInput(line,password);row.url=input.url;row.password=input.password;Models.Source duplicate=existing.get(row.url);if(duplicate!=null){row.source=duplicate;row.duplicate=true;}else if(!seen.add(row.url))row.duplicate=true;}catch(Exception error){row.error=safeBatchError(error);}}
-    }catch(IOException impossible){return batchResult(rows);}
+    Set<String> seen=new HashSet<>();for(BatchSource row:rows)if(row.error==null){Models.Source duplicate=existing.get(row.url);if(duplicate!=null){row.source=duplicate;row.duplicate=true;}else if(!seen.add(row.url))row.duplicate=true;}
     List<BatchSource> pending=new ArrayList<>();for(BatchSource row:rows)if(row.error==null&&!row.duplicate)pending.add(row);
     // Zero admits the whole batch immediately; the physical pool remains bounded so
     // a large paste cannot create thousands of Android threads.
@@ -297,6 +310,17 @@ final class LanzouCore {
     ChildDiscovery discovered=new ChildDiscovery();if(discoverNonEmptyChildren){List<BatchSource> roots=new ArrayList<>(rows);for(BatchSource row:roots)if(row.source!=null&&row.error==null)try{ChildDiscovery value=discoverChildSources(row.source,row.line);discovered.rows.addAll(value.rows);discovered.empty+=value.empty;discovered.failed+=value.failed;}catch(Exception error){discovered.failed++;}rows.addAll(discovered.rows);pending.addAll(discovered.rows);}
     commitUserSourceBatch(pending);return batchResult(rows,discovered.empty,discovered.failed);
   }
+
+  /** Extract links and labelled passwords from arbitrary prose; line breaks are only a readability hint. */
+  private static List<BatchSource> parseBatchSourceInputs(String raw){
+    List<BatchSource> rows=new ArrayList<>();List<TextMatch> links=new ArrayList<>(),passwords=new ArrayList<>();Matcher linkMatcher=SMART_SOURCE_LINK.matcher(raw),passwordMatcher=SMART_PASSWORD.matcher(raw);
+    while(linkMatcher.find()){int end=trimSmartLinkEnd(raw,linkMatcher.start(),linkMatcher.end());if(end>linkMatcher.start())links.add(new TextMatch(linkMatcher.start(),end,raw.substring(linkMatcher.start(),end)));}
+    while(passwordMatcher.find()){boolean inside=false;for(TextMatch link:links)if(passwordMatcher.start()>=link.start&&passwordMatcher.start()<link.end){inside=true;break;}if(!inside)passwords.add(new TextMatch(passwordMatcher.start(),passwordMatcher.end(),passwordMatcher.group(1)));}
+    Set<Integer> usedPasswords=new HashSet<>();for(int i=0;i<links.size();i++){TextMatch link=links.get(i);BatchSource row=new BatchSource(lineNumberAt(raw,link.start));rows.add(row);try{String explicit="";int best=-1,bestDistance=Integer.MAX_VALUE;for(int p=0;p<passwords.size();p++){if(usedPasswords.contains(p))continue;TextMatch password=passwords.get(p);int distance=password.end<=link.start?link.start-password.end:password.start>=link.end?password.start-link.end:0;int previous=i==0?0:links.get(i-1).end,next=i+1<links.size()?links.get(i+1).start:raw.length();if(password.start<previous||password.start>next)continue;if(distance<bestDistance){best=p;bestDistance=distance;}}if(best>=0){explicit=passwords.get(best).value;usedPasswords.add(best);}if(explicit.isEmpty()){int boundary=i+1<links.size()?links.get(i+1).start:raw.length();Matcher trailing=TRAILING_PASSWORD.matcher(raw.substring(link.end,boundary));if(trailing.find())explicit=trailing.group(1);}UserSourceInput input=parseUserSourceInput(link.value,explicit);row.url=input.url;row.password=input.password;}catch(Exception error){row.error=safeBatchError(error);}}
+    if(rows.isEmpty()){BatchSource row=new BatchSource(1);row.error="未识别到蓝奏链接";rows.add(row);}return rows;
+  }
+  private static int trimSmartLinkEnd(String raw,int start,int end){while(end>start&&".,;:!?)]}，。；：！？）】》".indexOf(raw.charAt(end-1))>=0)end--;return end;}
+  private static int lineNumberAt(String raw,int offset){int line=1;for(int i=0;i<offset&&i<raw.length();i++)if(raw.charAt(i)=='\n')line++;return line;}
 
   private ChildDiscovery discoverChildSources(Models.Source source,int inputLine)throws Exception{
     ChildDiscovery out=new ChildDiscovery();if(source==null||source.kind==Models.SOURCE_COMPOSITE||source.url.isEmpty())return out;
@@ -678,6 +702,31 @@ final class LanzouCore {
 
   private File folderCache(String url,String password,int page){String pwd=password==null?"":password;return new File(context.getCacheDir(),"folder-v3-"+Integer.toHexString((url+'\n'+pwd).hashCode())+"-p"+Math.max(1,page)+".json");}
 
+  void setDirectoryCachingEnabled(boolean enabled){directoryCachingEnabled=enabled;}
+  boolean directoryCachingEnabled(){return directoryCachingEnabled;}
+  int clearDirectoryCache(){int removed=0;File[] files=context.getCacheDir().listFiles((directory,name)->name.startsWith("folder-v3-")&&name.endsWith(".json"));if(files!=null)for(File file:files)if(file.delete())removed++;return removed;}
+  void cancelBackgroundIndex(){indexCancelled.set(true);}
+
+  List<Models.Item> cachedDirectoryMatches(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages)throws IOException{
+    String needle=foldSearchQuery(query==null?"":query.trim());LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();if(needle.isEmpty())return new ArrayList<>();int pageLimit=maxPages>0?maxPages:1000;
+    for(Models.Source source:remoteDirectorySources(allowedSourceIds)){ArrayDeque<Models.Item> folders=new ArrayDeque<>();Set<String> seenFolders=new HashSet<>();Models.Item root=new Models.Item();root.title=source.title;root.url=root.shareUrl=source.url;root.password=source.password;root.folder=true;root.source=source.title;root.sourceId=source.id;enqueueFolder(folders,seenFolders,root,null);while(!folders.isEmpty()){Models.Item folder=folders.removeFirst();for(int page=1;page<=pageLimit;page++){Models.Folder cached=readFolderCache(folder.url,folder.password,page);if(cached==null)break;for(Models.Item item:cached.items){inherit(item,folder);item.source=source.title;item.sourceId=source.id;if(matches(item,needle))matches.putIfAbsent(item.url,item);if(recursiveFolders&&item.folder)enqueueFolder(folders,seenFolders,item,folder);}if(!cached.hasMore)break;}if(!recursiveFolders)break;}}
+    return new ArrayList<>(matches.values());
+  }
+
+  void buildDailyDirectoryIndex(int concurrency,IndexProgress progress)throws Exception{
+    if(!directoryCachingEnabled)return;indexCancelled.set(false);List<Models.Source> sources=remoteDirectorySources(null);int day=calendarDay(),total=sources.size();String signature=indexSignature(sources);SharedPreferences state=context.getSharedPreferences(DIRECTORY_INDEX_PREFS,Context.MODE_PRIVATE);if(state.getInt("completed_day",-1)==day&&signature.equals(state.getString("signature",""))){if(progress!=null)progress.onProgress(total,total,"",true);return;}BitSet done=state.getInt("day",-1)==day&&signature.equals(state.getString("signature",""))?decodeBits(state.getString("done","")):new BitSet(total);if(done.length()>total)done.clear(total,done.length());persistIndexState(state,day,signature,done,-1);int workers=Math.max(1,Math.min(32,Math.min(Math.max(1,concurrency),Math.max(1,total))));ExecutorService pool=Executors.newFixedThreadPool(workers);ExecutorCompletionService<Integer> completed=new ExecutorCompletionService<>(pool);int submitted=0;try{for(int i=0;i<total;i++)if(!done.get(i)){final int index=i;completed.submit(()->{if(indexCancelled.get()||Thread.currentThread().isInterrupted())return-index-1;Models.Source source=sources.get(index);try{indexDirectorySource(source);return index;}catch(Exception error){return-index-1;}});submitted++;}for(int received=0;received<submitted&&!indexCancelled.get();received++){int result=completed.take().get(),index=result>=0?result:-result-1;boolean success=result>=0;if(success)done.set(index);persistIndexState(state,day,signature,done,-1);if(progress!=null)progress.onProgress(done.cardinality(),total,sources.get(index).title,success);}if(!indexCancelled.get()&&done.cardinality()>=total)persistIndexState(state,day,signature,done,day);}finally{pool.shutdownNow();}
+  }
+
+  private void indexDirectorySource(Models.Source source)throws Exception{for(int page=1;page<=1000;page++){if(indexCancelled.get()||Thread.currentThread().isInterrupted())throw new InterruptedException();Models.Folder folder=browsePage(source.url,source.password,true,page,NO_DEADLINE);if(!folder.hasMore)return;}throw new IOException("目录索引超过 1000 页");}
+
+  private Models.Folder readFolderCache(String url,String password,int page){File file=folderCache(url,password,page);if(!file.isFile())return null;try{return fromJson(read(file));}catch(Exception ignored){return null;}}
+  private List<Models.Source> remoteDirectorySources(Set<String> allowedSourceIds)throws IOException{LinkedHashMap<String,Models.Source> out=new LinkedHashMap<>();for(Models.Source source:searchableSources(null,allowedSourceIds).values()){String owner=sourceId(source);if(source.kind!=Models.SOURCE_COMPOSITE){Models.Source copy=copySource(source);copy.id=owner;out.putIfAbsent(copy.url+'\n'+copy.password,copy);continue;}Set<String> scope=compositeScope(source);for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&(member.kind==Models.MEMBER_REMOTE_FOLDER||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty()){Models.Source remote=remoteSource(member);remote.id=owner;remote.title=source.title;out.putIfAbsent(remote.url+'\n'+remote.password,remote);}}return new ArrayList<>(out.values());}
+  private static int calendarDay(){Calendar now=Calendar.getInstance();return now.get(Calendar.YEAR)*400+now.get(Calendar.DAY_OF_YEAR);}
+  private static String indexSignature(List<Models.Source> sources){StringBuilder value=new StringBuilder();for(Models.Source source:sources)value.append(source.id).append('\n').append(source.url).append('\n').append(source.password).append('\n');return Integer.toHexString(value.toString().hashCode())+":"+sources.size();}
+  private static BitSet decodeBits(String raw){try{return BitSet.valueOf(Base64.decode(raw,Base64.NO_WRAP));}catch(Exception ignored){return new BitSet();}}
+  private static String encodeBits(BitSet bits){return Base64.encodeToString(bits.toByteArray(),Base64.NO_WRAP);}
+  private static void persistIndexState(SharedPreferences state,int day,String signature,BitSet done,int completedDay){SharedPreferences.Editor edit=state.edit().putInt("day",day).putString("signature",signature).putString("done",encodeBits(done));if(completedDay>=0)edit.putInt("completed_day",completedDay);else edit.remove("completed_day");edit.apply();}
+
   /** Loads every 50-item page. UI code should normally use browsePage so page one can render immediately. */
   Models.Folder browseAll(String url,String password,boolean refresh) throws Exception {
     return browseAll(url,password,refresh,NO_DEADLINE);
@@ -737,7 +786,7 @@ final class LanzouCore {
     }
     out.items.addAll(items.values());out.hasMore=state==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;applyAvatarFallback(out);
     out.nextPageReadyAt=out.hasMore?pageReadyAt(pageRateKey(session)):0L;
-    boolean usable=state==1&&valid>0||!out.items.isEmpty();if(usable)writeAtomic(cache,toJson(out).toString());return new PageResult(out,usable);
+    boolean usable=state==1&&valid>0||!out.items.isEmpty();if(usable&&directoryCachingEnabled)writeAtomic(cache,toJson(out).toString());return new PageResult(out,usable);
   }
 
   private DirectLink browseSession(String url,String password,long deadline,boolean force)throws Exception{
@@ -830,18 +879,18 @@ final class LanzouCore {
 
   List<Models.Item> search(String query,Models.Source extra,List<Models.Item> extraLocal,Models.SearchOptions options,Set<String> allowedSourceIds,Models.Progress progress) throws Exception {
     Models.SearchOptions searchOptions=(options==null?new Models.SearchOptions():options).normalized();
-    LinkedHashMap<String,Models.Source> unique=searchableSources(extra,allowedSourceIds);unique.entrySet().removeIf(entry->entry.getValue().kind==Models.SOURCE_SINGLE||searchOptions.apiOnly&&!apiSearchCapable(entry.getValue()));String extraKey=sourceId(extra);List<Models.Source> src=new ArrayList<>(unique.size());Models.Source first=extraKey.isEmpty()?null:unique.get(extraKey);if(first!=null)src.add(first);for(Models.Source source:unique.values())if(source!=first&&source.password!=null&&!source.password.isEmpty())src.add(source);for(Models.Source source:unique.values())if(source!=first&&(source.password==null||source.password.isEmpty()))src.add(source);final List<Models.Item> local=extraLocal==null?Collections.emptyList():extraLocal;
+    LinkedHashMap<String,Models.Source> unique=searchableSources(extra,allowedSourceIds);unique.entrySet().removeIf(entry->entry.getValue().kind==Models.SOURCE_SINGLE||searchOptions.apiOnly()&&!apiSearchCapable(entry.getValue()));String extraKey=sourceId(extra);List<Models.Source> src=new ArrayList<>(unique.size());Models.Source first=extraKey.isEmpty()?null:unique.get(extraKey);if(first!=null)src.add(first);for(Models.Source source:unique.values())if(source!=first&&source.password!=null&&!source.password.isEmpty())src.add(source);for(Models.Source source:unique.values())if(source!=first&&(source.password==null||source.password.isEmpty()))src.add(source);final List<Models.Item> local=extraLocal==null?Collections.emptyList():extraLocal;
     List<Models.Item> out=Collections.synchronizedList(new ArrayList<>());if(src.isEmpty())return out;
     List<SourceSearchState> states=new ArrayList<>(src.size());Set<String> remoteSeen=new HashSet<>();
     for(Models.Source source:src){
       List<Models.Item> cached=new ArrayList<>();if(sourceId(source).equals(extraKey))cached.addAll(local);
       if(source.kind==Models.SOURCE_COMPOSITE){
         String group=sourceId(source);Set<String> scope=compositeScope(source);
-        if(!searchOptions.apiOnly){
+        if(!searchOptions.apiOnly()){
           states.add(new SourceSearchState(source,query,cached,group));
           for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty()&&compositeMemberMatches(member,query))states.add(new SourceSearchState(source,member,query));
         }
-        for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&member.kind==Models.MEMBER_REMOTE_FOLDER&&(!searchOptions.apiOnly||member.searchable)&&!member.url.isEmpty()&&remoteSeen.add(member.url+'\n'+member.password)){Models.Source nested=remoteSource(member);states.add(new SourceSearchState(nested,query,Collections.emptyList(),group,source.title));}
+        for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&member.kind==Models.MEMBER_REMOTE_FOLDER&&(!searchOptions.apiOnly()||member.searchable)&&!member.url.isEmpty()&&remoteSeen.add(member.url+'\n'+member.password)){Models.Source nested=remoteSource(member);states.add(new SourceSearchState(nested,query,Collections.emptyList(),group,source.title));}
       }else states.add(new SourceSearchState(source,query,cached));
     }
     try{return runSearchCoordinator(states,out,ConcurrentHashMap.newKeySet(),searchOptions,progress);}finally{searchPool.purge();}
@@ -941,7 +990,7 @@ final class LanzouCore {
   private Models.Folder browsePreparedSearchPage(SourceSearchState state,BooleanSupplier cancelled)throws Exception{
     checkSearchCancelled(cancelled);DirectLink session=state.directorySession;Models.Folder out=copyFolder(session.metadata);out.page=state.page;out.url=state.folder.url;out.password=state.folder.password;out.folderId=session.target.folderId;out.apiFolderCount=Math.max(0,state.firstApiFolderCount);LinkedHashMap<String,Models.Item> items=new LinkedHashMap<>();
     if(state.page==1&&session.target.folderId.isEmpty())for(Models.Item folder:staticFolders(session))items.put(folder.url,folder);Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(state.page));JSONObject data=postListing(session,form,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS),state.page,sourceProfile(state.folder.url));JSONArray array=data.optJSONArray("text");int valid=0,code=data.optInt("zt",-1);if(code==1&&(array==null||state.page>1&&array.length()==0))throw new IOException("目录分页返回空内容");if(code==1){session.authorized=true;if(array!=null)for(int i=0;i<array.length();i++){JSONObject value=array.optJSONObject(i);if(value==null)continue;Models.Item item=item(value,origin(session.page.url),out.title,state.folder.password);if(item.url.isEmpty()||item.url.endsWith("/-1"))continue;valid++;items.put(item.url,item);}}
-    out.items.addAll(items.values());out.hasMore=code==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;out.nextPageReadyAt=out.hasMore?pageReadyAt(pageRateKey(session)):0L;if(!out.items.isEmpty())writeAtomic(folderCache(state.folder.url,state.folder.password,state.page),toJson(out).toString());if(!out.items.isEmpty()){String fingerprint=pageFingerprint(out.items);if(state.page>1&&!state.pageFingerprints.add(fingerprint))throw new IOException("目录分页重复");if(state.page==1)state.pageFingerprints.add(fingerprint);}return out;
+    out.items.addAll(items.values());out.hasMore=code==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;out.nextPageReadyAt=out.hasMore?pageReadyAt(pageRateKey(session)):0L;if(!out.items.isEmpty()&&directoryCachingEnabled)writeAtomic(folderCache(state.folder.url,state.folder.password,state.page),toJson(out).toString());if(!out.items.isEmpty()){String fingerprint=pageFingerprint(out.items);if(state.page>1&&!state.pageFingerprints.add(fingerprint))throw new IOException("目录分页重复");if(state.page==1)state.pageFingerprints.add(fingerprint);}return out;
   }
 
   private void prepareSearchReplay(Models.Item folder,int failedPage,BatchBudget budget,BooleanSupplier cancelled)throws Exception{invalidateBrowseSessions(folder.url,folder.password);SourceProfile profile=sourceProfile(folder.url);byte ua=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;awaitSearchDelay(profile.interval(ua,failedPage),budget,cancelled);}

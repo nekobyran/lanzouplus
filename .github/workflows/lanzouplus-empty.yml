@@ -316,7 +316,6 @@ jobs:
           cp "dist/$INTERNAL_ASSET" "dist/$ASSET"
           release_json="$RUNNER_TEMP/release.json"
           release_error="$RUNNER_TEMP/release.error"
-          created_draft=false
           set +e
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json" 2> "$release_error"
           release_status=$?
@@ -325,8 +324,7 @@ jobs:
             :
           elif grep -Eq 'HTTP 404|Not Found' "$release_error"; then
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
-              --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md --draft --verify-tag
-            created_draft=true
+              --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md --verify-tag
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           else
             cat "$release_error" >&2

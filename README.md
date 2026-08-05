@@ -40,6 +40,12 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 - 不要在 issue、日志或提交中公开密码、登录态、私有目录和签名文件。
 - 安全问题请通过[正式发布页](https://lanzouplus.nkbr.cc/)所列作者渠道联系，不要公开披露利用细节。
 
+## 人类与 Codex 协作
+
+LanzouPlus 由 `nekobyran` 发起、主导并持续维护。开发过程中，OpenAI Codex 作为协作式工程工具，参与需求拆解、架构与实现方案讨论、代码草案、问题定位、测试与 CI 脚本、文档以及发布检查。
+
+所有进入仓库的改动均由维护者审阅、验证并决定是否采用；项目方向、许可合规、安全边界与最终发布责任仍由维护者承担。本声明用于透明披露 AI 辅助开发，不表示 OpenAI 对本项目的官方认可或背书。
+
 ## 开源许可证
 
 本项目采用 [MIT License](LICENSE)。允许个人与商业使用、修改及再分发；复制或分发本软件及其重要部分时，必须保留原版权声明与许可声明。
@@ -77,6 +83,12 @@ JDK 17 and the Android SDK are required:
 ```
 
 The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, and `c` must remain zero-byte files.
+
+### Human–Codex collaboration
+
+LanzouPlus is initiated, led, and actively maintained by `nekobyran`. OpenAI Codex is used as a collaborative engineering tool for requirements decomposition, architecture and implementation discussions, code drafts, debugging, test and CI scripts, documentation, and release checks.
+
+Every repository change is reviewed, verified, and accepted by the maintainer. The maintainer remains responsible for project direction, licensing, safety boundaries, and releases. This disclosure documents AI-assisted development and does not imply endorsement by OpenAI.
 
 ### License
 

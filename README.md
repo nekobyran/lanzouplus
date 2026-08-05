@@ -46,6 +46,18 @@ LanzouPlus 由 `nekobyran` 发起、主导并持续维护。开发过程中，Op
 
 所有进入仓库的改动均由维护者审阅、验证并决定是否采用；项目方向、许可合规、安全边界与最终发布责任仍由维护者承担。本声明用于透明披露 AI 辅助开发，不表示 OpenAI 对本项目的官方认可或背书。
 
+## 发展方向与未来潜力
+
+LanzouPlus 的长期方向是成为一个隐私优先、由用户掌控数据来源的 Android 目录浏览与多源检索基础项目。后续维护将重点推进：
+
+- 建立更清晰、可扩展的来源适配层，降低新增合规来源的维护成本
+- 提升大规模并发检索、失败恢复、缓存与弱网络环境下的稳定性
+- 完善自动化测试、静态检查、可复现构建、发布校验与供应链安全
+- 改进无障碍、平板适配、国际化与面向贡献者的开发文档
+- 探索在本地优先和最小数据暴露原则下，为其他开源 Android 工具复用核心组件
+
+这些内容是公开路线图与未来目标，不代表尚未完成的功能。项目将继续以可审计、安全、合规和长期可维护为优先原则。
+
 ## 开源许可证
 
 本项目采用 [MIT License](LICENSE)。允许个人与商业使用、修改及再分发；复制或分发本软件及其重要部分时，必须保留原版权声明与许可声明。
@@ -89,6 +101,18 @@ The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, a
 LanzouPlus is initiated, led, and actively maintained by `nekobyran`. OpenAI Codex is used as a collaborative engineering tool for requirements decomposition, architecture and implementation discussions, code drafts, debugging, test and CI scripts, documentation, and release checks.
 
 Every repository change is reviewed, verified, and accepted by the maintainer. The maintainer remains responsible for project direction, licensing, safety boundaries, and releases. This disclosure documents AI-assisted development and does not imply endorsement by OpenAI.
+
+### Roadmap and future potential
+
+LanzouPlus aims to become a privacy-first Android foundation for user-controlled directory browsing and multi-source search. Planned work focuses on:
+
+- a clearer and extensible source-adapter architecture
+- resilient concurrent search, recovery, caching, and weak-network behavior
+- stronger automated testing, reproducible builds, release verification, and supply-chain security
+- accessibility, tablet support, internationalization, and contributor documentation
+- reusable local-first components for other open-source Android tools, with minimal data exposure
+
+These are roadmap goals rather than claims about unfinished functionality. The project will continue to prioritize auditability, safety, compliance, and long-term maintainability.
 
 ### License
 

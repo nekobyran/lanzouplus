@@ -40,11 +40,13 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 - 不要在 issue、日志或提交中公开密码、登录态、私有目录和签名文件。
 - 安全问题请通过[正式发布页](https://lanzouplus.nkbr.cc/)所列作者渠道联系，不要公开披露利用细节。
 
-## 人类与 Codex 协作
+## GPT-5.6 Sol 开发与发布声明
 
-LanzouPlus 由 `nekobyran` 发起、主导并持续维护。开发过程中，OpenAI Codex 作为协作式工程工具，参与需求拆解、架构与实现方案讨论、代码草案、问题定位、测试与 CI 脚本、文档以及发布检查。
+LanzouPlus 的程序代码、工程配置、测试、CI、项目文档、构建、版本整理及公开发布均由 **GPT-5.6 Sol** 完成，包括提交代码、生成发布产物、维护版本信息和执行发布流程。
 
-所有进入仓库的改动均由维护者审阅、验证并决定是否采用；项目方向、许可合规、安全边界与最终发布责任仍由维护者承担。本声明用于透明披露 AI 辅助开发，不表示 OpenAI 对本项目的官方认可或背书。
+`nekobyran` 负责提出需求、确定产品方向，并对各版本进行实际功能验证、UI 矫正、问题反馈与验收。验证结果和界面反馈会继续交由 GPT-5.6 Sol 修正并形成后续版本。
+
+本声明用于透明披露项目采用的 AI 开发与发布方式。仓库所有权、许可合规、安全边界及项目责任仍由 `nekobyran` 承担；该声明不表示 OpenAI 对本项目的官方认可或背书。
 
 ## 发展方向与未来潜力
 
@@ -96,11 +98,13 @@ JDK 17 and the Android SDK are required:
 
 The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, and `c` must remain zero-byte files.
 
-### Human–Codex collaboration
+### GPT-5.6 Sol development and release disclosure
 
-LanzouPlus is initiated, led, and actively maintained by `nekobyran`. OpenAI Codex is used as a collaborative engineering tool for requirements decomposition, architecture and implementation discussions, code drafts, debugging, test and CI scripts, documentation, and release checks.
+LanzouPlus's application code, project configuration, tests, CI, documentation, builds, version preparation, and public releases are completed by **GPT-5.6 Sol**. This includes committing code, generating release artifacts, maintaining version metadata, and carrying out the release workflow.
 
-Every repository change is reviewed, verified, and accepted by the maintainer. The maintainer remains responsible for project direction, licensing, safety boundaries, and releases. This disclosure documents AI-assisted development and does not imply endorsement by OpenAI.
+`nekobyran` defines requirements and product direction, then performs real-world functional verification, UI correction, issue reporting, and acceptance for each version. Verification results and interface feedback are returned to GPT-5.6 Sol for correction and subsequent releases.
+
+This disclosure documents the project's AI-based development and release workflow. Repository ownership, licensing compliance, safety boundaries, and project responsibility remain with `nekobyran`. It does not imply endorsement by OpenAI.
 
 ### Roadmap and future potential
 

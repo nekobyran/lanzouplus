@@ -50,6 +50,8 @@ final class LanzouCore {
   private static final Pattern SMART_SOURCE_LINK=Pattern.compile("(?i)https?://(?:[a-z0-9-]+\\.)*(?:lanzou[a-z0-9]?|laozouw)\\.com/[a-z0-9._~%!$&()*+,;=:@/?#-]+");
   private static final Pattern SMART_PASSWORD=Pattern.compile("(?i)(?:密码|提取码|访问码|口令|pwd|password)\\s*(?:为\\s*)?[:：=-]{0,3}\\s*([a-z0-9_-]{1,64})");
   private static final Pattern TRAILING_PASSWORD=Pattern.compile("^\\s+([a-z0-9_-]{1,64})(?=\\s*(?:$|[,，;；]))",Pattern.CASE_INSENSITIVE);
+  private static final Pattern DIRECT_RATE_LIMIT_INFO=Pattern.compile("(?i)请求(?:过多|频繁)|操作频繁|访问(?:过于)?频繁|稍后再试|已达上限|too many|rate.?limit|频率限制");
+  private static final Pattern DIRECT_RETRY_INFO=Pattern.compile("超时|刷新|重试|网络异常|验证未返回|处理中|等待");
   private static final ConcurrentHashMap<String,Pattern> PARSE_PATTERNS=new ConcurrentHashMap<>();
   private static final Object PAGE_RATE_LOCK=new Object();
   private static final Object USER_SOURCE_LOCK=new Object();
@@ -77,6 +79,9 @@ final class LanzouCore {
   private volatile boolean directoryCachingEnabled=true;
   private final java.util.concurrent.atomic.AtomicBoolean indexCancelled=new java.util.concurrent.atomic.AtomicBoolean();
   private final Object sourceNameIndexLock=new Object();
+  private final Object directorySearchIndexLock=new Object();
+  private final java.util.concurrent.atomic.AtomicLong directoryCacheRevision=new java.util.concurrent.atomic.AtomicLong();
+  private volatile DirectorySearchIndex directorySearchIndex;
   private volatile List<SourceNameEntry> sourceNameIndex;
   private volatile int sourceNameIndexRevision;
   private final ConcurrentHashMap<String,DirectLink> browseSessions=new ConcurrentHashMap<>();
@@ -85,6 +90,9 @@ final class LanzouCore {
   private final ScheduledThreadPoolExecutor searchScheduler=newSearchScheduler();
   LanzouCore(Context c){context=c.getApplicationContext();directCookiePool=new DirectCookiePool(context);loadPersistedCompositeMembers();searchPool.execute(()->{try{sourceNameIndex();}catch(Exception ignored){}});startCompositeWarmup();}
   static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized;byte ua,template; }
+  private static final class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);this.retryAfterMs=Math.max(1000,retryAfterMs);this.rateLimited=rateLimited;}}
+  private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,folded;final int depth,page;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.folded=foldSearchQuery(item.title);}}
+  private static final class DirectorySearchIndex{final long revision;final List<CachedDirectoryEntry> entries;DirectorySearchIndex(long revision,List<CachedDirectoryEntry> entries){this.revision=revision;this.entries=entries;}}
   private static final class SourceNameEntry{final Models.Source source;final Models.SourceMember member;final String id,folded;SourceNameEntry(Models.Source source,Models.SourceMember member,String id,String folded){this.source=source;this.member=member;this.id=id;this.folded=folded;}}
   static final class SourceRetestPlan { final Models.Source source;final String key;final boolean userSource;final long revision;SourceRetestPlan(Models.Source source,String key,boolean userSource,long revision){this.source=source;this.key=key;this.userSource=userSource;this.revision=revision;} }
   private static final class SourceRetestUnit{final SourceRetestPlan plan;final int memberIndex;SourceRetestUnit(SourceRetestPlan plan,int memberIndex){this.plan=plan;this.memberIndex=memberIndex;}}
@@ -191,13 +199,21 @@ final class LanzouCore {
 
   DirectLink resolveDirect(String shareUrl)throws Exception{
     Exception last=null;Set<String> attempted=new HashSet<>();
-    for(int attempt=0;attempt<4;attempt++){
-      DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,System.currentTimeMillis());attempted.add(lease.id);NetSession session=new NetSession(lease.jar);
-      try{DirectLink direct=resolveDirectWithSession(shareUrl,session);directCookiePool.finish(lease,session.snapshot(),true,System.currentTimeMillis());return direct;
-      }catch(Exception error){last=error;directCookiePool.finish(lease,session.snapshot(),false,System.currentTimeMillis());}
+    for(int attempt=0;attempt<2;attempt++){
+      long now=System.currentTimeMillis();DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now);if(lease.waitMs>0)throw new DirectRetryException("直链会话正在冷却",lease.waitMs,true);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,lease.profile);
+      try{DirectLink direct=resolveDirectWithSession(shareUrl,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;
+      }catch(Exception error){last=error;DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());if(retry==null&&terminalDirectFailure(error))throw error;}
     }
     throw last==null?new IOException("直链解析失败"):last;
   }
+
+  static long directRetryDelay(Throwable error,int failures){DirectRetryException retry=directRetry(error);if(retry==null)return 0;int shift=Math.min(4,Math.max(0,failures-1));long delay=Math.max(retry.retryAfterMs,retry.rateLimited?15000:2000);return Math.min(2*60*1000L,delay*(1L<<shift));}
+  private static DirectRetryException directRetry(Throwable error){for(Throwable value=error;value!=null;value=value.getCause())if(value instanceof DirectRetryException)return(DirectRetryException)value;return null;}
+  private static boolean terminalDirectFailure(Throwable error){String value=error.getMessage();return value!=null&&DIRECT_TERMINAL_INFO.matcher(value).find();}
+  private static void requireDirectResponse(int status,String body,String retryAfter)throws DirectRetryException{if(status==429||status==503||status==403&&DIRECT_RATE_LIMIT_INFO.matcher(body).find())throw new DirectRetryException("蓝奏请求频率受限",retryAfterMillis(retryAfter,30000),true);}
+  private static long retryAfterMillis(String value,long fallback){if(value==null||value.trim().isEmpty())return fallback;try{return Math.max(1000,Long.parseLong(value.trim())*1000L);}catch(NumberFormatException ignored){return fallback;}}
+  private static void requireDirectRateLimit(JSONObject data)throws DirectRetryException{if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RATE_LIMIT_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏请求频率受限":info,30000,true);}
+  private static void requireDirectBusinessResult(JSONObject data)throws DirectRetryException{requireDirectRateLimit(data);if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RETRY_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏直链响应需要重试":info,3000,false);}
 
   private DirectLink resolveDirectWithSession(String shareUrl,NetSession session)throws Exception{
         DirectLink share=session.getGuarded(shareUrl,"");
@@ -225,14 +241,14 @@ final class LanzouCore {
             String endpoint=new URL(new URL(verify.url),ajax).toString();
             for(int exchange=0;exchange<2;exchange++){
               Thread.sleep(exchange==0?DIRECT_INITIAL_WAIT_MS:DIRECT_RETRY_WAIT_MS);
-              JSONObject data=new JSONObject(session.post(endpoint,form,verify));
+              JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);
               String direct=data.optString("url");
               if(data.optInt("zt")==1&&direct.startsWith("http"))return direct(direct,fileTitle);
               if(!directExchangePending(data))throw new IOException(data.optString("inf","蓝奏验证失败"));
             }
-            throw new IOException("蓝奏验证未返回真实直链");
+            throw new DirectRetryException("蓝奏验证未返回真实直链",3000,false);
           }
-          throw new IOException("蓝奏验证未返回真实直链");
+          throw new DirectRetryException("蓝奏验证未返回真实直链",3000,false);
         }
 
         String sign=cap(page.html,"(?:ajaxdata|sign)\\s*[:=]\\s*['\"]([^'\"]+)['\"]");
@@ -240,7 +256,7 @@ final class LanzouCore {
         Map<String,String> form=new LinkedHashMap<>();
         form.put("action","downprocess");form.put("sign",sign);form.put("p","");
         JSONObject data=new JSONObject(session.post(new URL(new URL(page.url),"/ajaxm.php").toString(),form,page));
-        if(data.optInt("zt")!=1)throw new IOException(data.optString("inf","蓝奏解析失败"));
+        requireDirectBusinessResult(data);if(data.optInt("zt")!=1)throw new IOException(data.optString("inf","蓝奏解析失败"));
         String path=data.optString("url"),dom=data.optString("dom").replaceAll("/+$","");
         String url=path.startsWith("http")?path:dom+"/file/"+path.replaceAll("^[/?]+","");
         if(!url.startsWith("http"))throw new IOException("蓝奏返回了无效直链");
@@ -256,16 +272,17 @@ final class LanzouCore {
   /** Small per-resolution cookie jar; keeps the ACW and CDN verification sessions isolated. */
   private static final class NetSession{
     private final Map<String,LinkedHashMap<String,String>> jar;
-    NetSession(Map<String,LinkedHashMap<String,String>> seed){jar=new HashMap<>();if(seed!=null)for(Map.Entry<String,LinkedHashMap<String,String>> host:seed.entrySet())jar.put(host.getKey(),new LinkedHashMap<>(host.getValue()));}
+    private final String userAgent;
+    NetSession(Map<String,LinkedHashMap<String,String>> seed,int profile){userAgent=profile==DirectCookiePool.PROFILE_DESKTOP?DESKTOP_SEARCH_UA:ANDROID_UA;jar=new HashMap<>();if(seed!=null)for(Map.Entry<String,LinkedHashMap<String,String>> host:seed.entrySet())jar.put(host.getKey(),new LinkedHashMap<>(host.getValue()));}
     Map<String,LinkedHashMap<String,String>> snapshot(){Map<String,LinkedHashMap<String,String>> out=new HashMap<>();for(Map.Entry<String,LinkedHashMap<String,String>> host:jar.entrySet())out.put(host.getKey(),new LinkedHashMap<>(host.getValue()));return out;}
     DirectLink getGuarded(String url,String referer)throws Exception{
       DirectLink page=get(url,referer);String value=acwCookie(page.html);if(value.isEmpty())return page;put(new URL(url).getHost(),"acw_sc__v2",value);return get(url,referer);
     }
     DirectLink get(String url,String referer)throws Exception{
-      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("User-Agent",ANDROID_UA);c.setRequestProperty("Accept-Encoding","gzip");if(!referer.isEmpty())c.setRequestProperty("Referer",referer);String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);c.getResponseCode();capture(c);DirectLink page=new DirectLink();page.url=c.getURL().toString();page.cookie=cookies(new URL(page.url).getHost());page.html=body(c);c.disconnect();return page;
+      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(!referer.isEmpty())c.setRequestProperty("Referer",referer);String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);int status=c.getResponseCode();capture(c);DirectLink page=new DirectLink();page.url=c.getURL().toString();page.cookie=cookies(new URL(page.url).getHost());page.html=body(c);String retryAfter=c.getHeaderField("Retry-After");c.disconnect();requireDirectResponse(status,page.html,retryAfter);return page;
     }
     String post(String url,Map<String,String> data,DirectLink referer)throws Exception{
-      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",ANDROID_UA);c.setRequestProperty("Accept","application/json, text/javascript, */*");c.setRequestProperty("Referer",referer.url);c.setRequestProperty("Origin",origin(referer.url));c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);byte[] bytes=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}c.getResponseCode();capture(c);String result=body(c);c.disconnect();return result;
+      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*");c.setRequestProperty("Referer",referer.url);c.setRequestProperty("Origin",origin(referer.url));c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);byte[] bytes=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}int status=c.getResponseCode();capture(c);String result=body(c),retryAfter=c.getHeaderField("Retry-After");c.disconnect();requireDirectResponse(status,result,retryAfter);return result;
     }
     private LinkedHashMap<String,String> bucket(String host){LinkedHashMap<String,String> values=jar.get(host);if(values==null){values=new LinkedHashMap<>();jar.put(host,values);}return values;}
     private void capture(HttpURLConnection c){mergeSetCookies(bucket(c.getURL().getHost()),c.getHeaderFields());}
@@ -704,14 +721,18 @@ final class LanzouCore {
 
   void setDirectoryCachingEnabled(boolean enabled){directoryCachingEnabled=enabled;}
   boolean directoryCachingEnabled(){return directoryCachingEnabled;}
-  int clearDirectoryCache(){int removed=0;File[] files=context.getCacheDir().listFiles((directory,name)->name.startsWith("folder-v3-")&&name.endsWith(".json"));if(files!=null)for(File file:files)if(file.delete())removed++;return removed;}
+  int clearDirectoryCache(){int removed=0;File[] files=context.getCacheDir().listFiles((directory,name)->name.startsWith("folder-v3-")&&name.endsWith(".json"));if(files!=null)for(File file:files)if(file.delete())removed++;directoryCacheChanged();return removed;}
   void cancelBackgroundIndex(){indexCancelled.set(true);}
 
   List<Models.Item> cachedDirectoryMatches(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages)throws IOException{
     String needle=foldSearchQuery(query==null?"":query.trim());LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();if(needle.isEmpty())return new ArrayList<>();int pageLimit=maxPages>0?maxPages:1000;
-    for(Models.Source source:remoteDirectorySources(allowedSourceIds)){ArrayDeque<Models.Item> folders=new ArrayDeque<>();Set<String> seenFolders=new HashSet<>();Models.Item root=new Models.Item();root.title=source.title;root.url=root.shareUrl=source.url;root.password=source.password;root.folder=true;root.source=source.title;root.sourceId=source.id;enqueueFolder(folders,seenFolders,root,null);while(!folders.isEmpty()){Models.Item folder=folders.removeFirst();for(int page=1;page<=pageLimit;page++){Models.Folder cached=readFolderCache(folder.url,folder.password,page);if(cached==null)break;for(Models.Item item:cached.items){inherit(item,folder);item.source=source.title;item.sourceId=source.id;if(matches(item,needle))matches.putIfAbsent(item.url,item);if(recursiveFolders&&item.folder)enqueueFolder(folders,seenFolders,item,folder);}if(!cached.hasMore)break;}if(!recursiveFolders)break;}}
+    for(CachedDirectoryEntry entry:directorySearchIndex().entries){if(allowedSourceIds!=null&&!allowedSourceIds.isEmpty()&&!allowedSourceIds.contains(entry.sourceId)||!recursiveFolders&&entry.depth>0||entry.page>pageLimit||!entry.folded.contains(needle))continue;Models.Item item=copyItem(entry.item);matches.putIfAbsent(item.url,item);}
     return new ArrayList<>(matches.values());
   }
+
+  private DirectorySearchIndex directorySearchIndex()throws IOException{long revision=directoryCacheRevision.get();DirectorySearchIndex cached=directorySearchIndex;if(cached!=null&&cached.revision==revision)return cached;synchronized(directorySearchIndexLock){cached=directorySearchIndex;if(cached!=null&&cached.revision==revision)return cached;List<CachedDirectoryEntry> entries=new ArrayList<>();for(Models.Source source:remoteDirectorySources(null)){ArrayDeque<Models.Item> folders=new ArrayDeque<>();ArrayDeque<Integer> depths=new ArrayDeque<>();Set<String> seenFolders=new HashSet<>();Models.Item root=new Models.Item();root.title=source.title;root.url=root.shareUrl=source.url;root.password=source.password;root.folder=true;root.source=source.title;root.sourceId=source.id;enqueueFolder(folders,seenFolders,root,null);depths.add(0);while(!folders.isEmpty()){Models.Item folder=folders.removeFirst();int depth=depths.removeFirst();for(int page=1;page<=1000;page++){Models.Folder value=readFolderCache(folder.url,folder.password,page);if(value==null)break;for(Models.Item raw:value.items){Models.Item item=copyItem(raw);inherit(item,folder);item.source=source.title;item.sourceId=source.id;entries.add(new CachedDirectoryEntry(copyItem(item),source.id,depth,page));if(item.folder){int before=folders.size();enqueueFolder(folders,seenFolders,item,folder);if(folders.size()>before)depths.add(depth+1);}}if(!value.hasMore)break;}}}cached=new DirectorySearchIndex(revision,Collections.unmodifiableList(entries));directorySearchIndex=cached;return cached;}}
+  private void directoryCacheChanged(){directoryCacheRevision.incrementAndGet();directorySearchIndex=null;}
+  private static Models.Item copyItem(Models.Item value){Models.Item out=new Models.Item();out.title=value.title;out.url=value.url;out.shareUrl=value.shareUrl;out.size=value.size;out.time=value.time;out.iconUrl=value.iconUrl;out.source=value.source;out.password=value.password;out.description=value.description;out.folderId=value.folderId;out.sourceId=value.sourceId;out.error=value.error;out.folder=value.folder;out.sourceEntry=value.sourceEntry;return out;}
 
   void buildDailyDirectoryIndex(int concurrency,IndexProgress progress)throws Exception{
     if(!directoryCachingEnabled)return;indexCancelled.set(false);List<Models.Source> sources=remoteDirectorySources(null);int day=calendarDay(),total=sources.size();String signature=indexSignature(sources);SharedPreferences state=context.getSharedPreferences(DIRECTORY_INDEX_PREFS,Context.MODE_PRIVATE);if(state.getInt("completed_day",-1)==day&&signature.equals(state.getString("signature",""))){if(progress!=null)progress.onProgress(total,total,"",true);return;}BitSet done=state.getInt("day",-1)==day&&signature.equals(state.getString("signature",""))?decodeBits(state.getString("done","")):new BitSet(total);if(done.length()>total)done.clear(total,done.length());persistIndexState(state,day,signature,done,-1);int workers=Math.max(1,Math.min(32,Math.min(Math.max(1,concurrency),Math.max(1,total))));ExecutorService pool=Executors.newFixedThreadPool(workers);ExecutorCompletionService<Integer> completed=new ExecutorCompletionService<>(pool);int submitted=0;try{for(int i=0;i<total;i++)if(!done.get(i)){final int index=i;completed.submit(()->{if(indexCancelled.get()||Thread.currentThread().isInterrupted())return-index-1;Models.Source source=sources.get(index);try{indexDirectorySource(source);return index;}catch(Exception error){return-index-1;}});submitted++;}for(int received=0;received<submitted&&!indexCancelled.get();received++){int result=completed.take().get(),index=result>=0?result:-result-1;boolean success=result>=0;if(success)done.set(index);persistIndexState(state,day,signature,done,-1);if(progress!=null)progress.onProgress(done.cardinality(),total,sources.get(index).title,success);}if(!indexCancelled.get()&&done.cardinality()>=total)persistIndexState(state,day,signature,done,day);}finally{pool.shutdownNow();}
@@ -786,7 +807,7 @@ final class LanzouCore {
     }
     out.items.addAll(items.values());out.hasMore=state==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;applyAvatarFallback(out);
     out.nextPageReadyAt=out.hasMore?pageReadyAt(pageRateKey(session)):0L;
-    boolean usable=state==1&&valid>0||!out.items.isEmpty();if(usable&&directoryCachingEnabled)writeAtomic(cache,toJson(out).toString());return new PageResult(out,usable);
+    boolean usable=state==1&&valid>0||!out.items.isEmpty();if(usable&&directoryCachingEnabled)writeDirectoryCache(cache,toJson(out).toString());return new PageResult(out,usable);
   }
 
   private DirectLink browseSession(String url,String password,long deadline,boolean force)throws Exception{
@@ -990,7 +1011,7 @@ final class LanzouCore {
   private Models.Folder browsePreparedSearchPage(SourceSearchState state,BooleanSupplier cancelled)throws Exception{
     checkSearchCancelled(cancelled);DirectLink session=state.directorySession;Models.Folder out=copyFolder(session.metadata);out.page=state.page;out.url=state.folder.url;out.password=state.folder.password;out.folderId=session.target.folderId;out.apiFolderCount=Math.max(0,state.firstApiFolderCount);LinkedHashMap<String,Models.Item> items=new LinkedHashMap<>();
     if(state.page==1&&session.target.folderId.isEmpty())for(Models.Item folder:staticFolders(session))items.put(folder.url,folder);Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(state.page));JSONObject data=postListing(session,form,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS),state.page,sourceProfile(state.folder.url));JSONArray array=data.optJSONArray("text");int valid=0,code=data.optInt("zt",-1);if(code==1&&(array==null||state.page>1&&array.length()==0))throw new IOException("目录分页返回空内容");if(code==1){session.authorized=true;if(array!=null)for(int i=0;i<array.length();i++){JSONObject value=array.optJSONObject(i);if(value==null)continue;Models.Item item=item(value,origin(session.page.url),out.title,state.folder.password);if(item.url.isEmpty()||item.url.endsWith("/-1"))continue;valid++;items.put(item.url,item);}}
-    out.items.addAll(items.values());out.hasMore=code==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;out.nextPageReadyAt=out.hasMore?pageReadyAt(pageRateKey(session)):0L;if(!out.items.isEmpty()&&directoryCachingEnabled)writeAtomic(folderCache(state.folder.url,state.folder.password,state.page),toJson(out).toString());if(!out.items.isEmpty()){String fingerprint=pageFingerprint(out.items);if(state.page>1&&!state.pageFingerprints.add(fingerprint))throw new IOException("目录分页重复");if(state.page==1)state.pageFingerprints.add(fingerprint);}return out;
+    out.items.addAll(items.values());out.hasMore=code==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;out.nextPageReadyAt=out.hasMore?pageReadyAt(pageRateKey(session)):0L;if(!out.items.isEmpty()&&directoryCachingEnabled)writeDirectoryCache(folderCache(state.folder.url,state.folder.password,state.page),toJson(out).toString());if(!out.items.isEmpty()){String fingerprint=pageFingerprint(out.items);if(state.page>1&&!state.pageFingerprints.add(fingerprint))throw new IOException("目录分页重复");if(state.page==1)state.pageFingerprints.add(fingerprint);}return out;
   }
 
   private void prepareSearchReplay(Models.Item folder,int failedPage,BatchBudget budget,BooleanSupplier cancelled)throws Exception{invalidateBrowseSessions(folder.url,folder.password);SourceProfile profile=sourceProfile(folder.url);byte ua=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;awaitSearchDelay(profile.interval(ua,failedPage),budget,cancelled);}
@@ -1063,6 +1084,7 @@ final class LanzouCore {
   static String origin(String u)throws Exception{URL x=new URL(u);return x.getProtocol()+"://"+x.getHost();}
   private static String read(File f)throws Exception{try(FileInputStream in=new FileInputStream(f)){byte[]b=new byte[(int)f.length()];int n=in.read(b);return new String(b,0,n,StandardCharsets.UTF_8);}}
   private static void writeAtomic(File f,String s)throws Exception{File t=new File(f.getPath()+".tmp");try(FileOutputStream o=new FileOutputStream(t)){o.write(s.getBytes(StandardCharsets.UTF_8));o.getFD().sync();}if(!t.renameTo(f)){f.delete();if(!t.renameTo(f))throw new IOException("缓存替换失败");}}
+  private void writeDirectoryCache(File file,String value)throws Exception{writeAtomic(file,value);directoryCacheChanged();}
   private static JSONObject toJson(Models.Folder f)throws Exception{JSONObject o=new JSONObject();o.put("title",f.title).put("publisher",f.publisher).put("avatar",f.avatarUrl).put("description",f.description).put("save",f.saveUrl).put("url",f.url).put("password",f.password).put("folderId",f.folderId).put("page",f.page).put("hasMore",f.hasMore).put("remoteSearch",f.remoteSearch).put("failedMembers",f.failedMembers).put("nextPageReadyAt",f.nextPageReadyAt);JSONArray a=new JSONArray();for(Models.Item x:f.items)a.put(new JSONObject().put("title",x.title).put("url",x.url).put("shareUrl",x.shareUrl).put("size",x.size).put("time",x.time).put("icon",x.iconUrl).put("source",x.source).put("password",x.password).put("description",x.description).put("folderId",x.folderId).put("error",x.error).put("folder",x.folder));o.put("items",a);return o;}
   private static Models.Folder fromJson(String s)throws Exception{JSONObject o=new JSONObject(s);Models.Folder f=new Models.Folder();f.title=o.optString("title");f.publisher=o.optString("publisher");f.avatarUrl=o.optString("avatar");f.description=o.optString("description");f.saveUrl=o.optString("save");f.url=o.optString("url");f.password=o.optString("password");f.folderId=o.optString("folderId");f.page=o.optInt("page",1);f.hasMore=o.optBoolean("hasMore");f.remoteSearch=o.optBoolean("remoteSearch");f.failedMembers=o.optInt("failedMembers");f.nextPageReadyAt=o.optLong("nextPageReadyAt");JSONArray a=o.optJSONArray("items");if(a!=null)for(int i=0;i<a.length();i++){JSONObject j=a.getJSONObject(i);Models.Item x=new Models.Item();x.title=j.optString("title");x.url=j.optString("url");x.shareUrl=j.optString("shareUrl",x.url);x.size=j.optString("size");x.time=j.optString("time");x.iconUrl=j.optString("icon");x.source=j.optString("source");x.password=j.optString("password");x.description=j.optString("description");x.folderId=j.optString("folderId");x.error=j.optString("error");x.folder=j.optBoolean("folder");f.items.add(x);}return f;}
 }

@@ -200,7 +200,7 @@ final class LanzouCore {
   DirectLink resolveDirect(String shareUrl)throws Exception{
     Exception last=null;Set<String> attempted=new HashSet<>();
     for(int attempt=0;attempt<2;attempt++){
-      long now=System.currentTimeMillis();DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now);if(lease.waitMs>0)throw new DirectRetryException("直链会话正在冷却",lease.waitMs,true);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,lease.profile);
+      long now=System.currentTimeMillis();DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,lease.profile);
       try{DirectLink direct=resolveDirectWithSession(shareUrl,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;
       }catch(Exception error){last=error;DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());if(retry==null&&terminalDirectFailure(error))throw error;}
     }

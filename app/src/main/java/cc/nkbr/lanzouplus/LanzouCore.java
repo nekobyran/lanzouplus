@@ -89,7 +89,7 @@ final class LanzouCore {
   private final ThreadPoolExecutor compositeWarmPool=newCompositeWarmPool();
   private final ScheduledThreadPoolExecutor searchScheduler=newSearchScheduler();
   LanzouCore(Context c){context=c.getApplicationContext();directCookiePool=new DirectCookiePool(context);loadPersistedCompositeMembers();searchPool.execute(()->{try{sourceNameIndex();}catch(Exception ignored){}});startCompositeWarmup();}
-  static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized;byte ua,template; }
+  static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized,redirected;byte ua,template; }
   private static final class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);this.retryAfterMs=Math.max(1000,retryAfterMs);this.rateLimited=rateLimited;}}
   private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,folded;final int depth,page;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.folded=foldSearchQuery(item.title);}}
   private static final class DirectorySearchIndex{final long revision;final List<CachedDirectoryEntry> entries;DirectorySearchIndex(long revision,List<CachedDirectoryEntry> entries){this.revision=revision;this.entries=entries;}}
@@ -218,7 +218,7 @@ final class LanzouCore {
   private DirectLink resolveDirectWithSession(String shareUrl,NetSession session)throws Exception{
         DirectLink share=session.getGuarded(shareUrl,"");
         String fileTitle=cleanFileName(cap(share.html,"(?is)<title[^>]*>(.*?)</title>"));
-        String transfer=cap(share.html,"(?is)id=[\"']downurl[\"'][^>]*href=[\"']([^\"']+)");
+        String transfer=cap(share.html,"(?is)<a\\b(?=[^>]*\\bid=[\"']downurl[\"'])(?=[^>]*\\bhref=[\"']([^\"']+)[\"'])[^>]*>");
         if(transfer.isEmpty())transfer=cap(share.html,"(?is)<a[^>]+href=[\"']([^\"']*/tp/[^\"']+)");
         DirectLink page=share;
         if(!transfer.isEmpty())page=session.getGuarded(new URL(new URL(share.url),transfer).toString(),share.url);
@@ -230,7 +230,8 @@ final class LanzouCore {
           // allowing ajax.php to exchange file/sign for the actual CDN URL.
           String[] candidates={base+token+"&lanosso2",base+token};
           for(String bootstrap:candidates){
-            DirectLink verify=session.get(bootstrap,page.url);
+            DirectLink verify=session.getBootstrap(bootstrap,page.url);
+            if(verify.redirected&&verify.url!=null&&verify.url.startsWith("http"))return direct(verify.url,fileTitle);
             String file=cap(verify.html,"['\"]file['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");
             String sign=cap(verify.html,"['\"]sign['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");
             if(file.isEmpty()||sign.isEmpty())continue;
@@ -251,11 +252,16 @@ final class LanzouCore {
           throw new DirectRetryException("蓝奏验证未返回真实直链",3000,false);
         }
 
-        String sign=cap(page.html,"(?:ajaxdata|sign)\\s*[:=]\\s*['\"]([^'\"]+)['\"]");
+        Map<String,String> legacy=legacyDownprocessFields(page.html);
+        String sign=legacy.getOrDefault("sign","");
+        if(sign.isEmpty())sign=cap(page.html,"(?:ajaxdata|sign)\\s*[:=]\\s*['\"]([^'\"]+)['\"]");
         if(sign.isEmpty())throw new IOException("未找到下载签名");
         Map<String,String> form=new LinkedHashMap<>();
-        form.put("action","downprocess");form.put("sign",sign);form.put("p","");
-        JSONObject data=new JSONObject(session.post(new URL(new URL(page.url),"/ajaxm.php").toString(),form,page));
+        form.put("action","downprocess");form.put("sign",sign);
+        for(String key:new String[]{"websignkey","signs","websign","kd","ves","p"})if(legacy.containsKey(key))form.put(key,legacy.get(key));
+        if(!form.containsKey("p"))form.put("p","");
+        String ajax=legacyAjaxEndpoint(page.html);if(ajax.isEmpty())ajax="/ajaxm.php";
+        JSONObject data=new JSONObject(session.post(new URL(new URL(page.url),ajax).toString(),form,page));
         requireDirectBusinessResult(data);if(data.optInt("zt")!=1)throw new IOException(data.optString("inf","蓝奏解析失败"));
         String path=data.optString("url"),dom=data.optString("dom").replaceAll("/+$","");
         String url=path.startsWith("http")?path:dom+"/file/"+path.replaceAll("^[/?]+","");
@@ -263,6 +269,34 @@ final class LanzouCore {
         return direct(url,fileTitle);
   }
 
+  private static Map<String,String> legacyDownprocessFields(String html){
+    LinkedHashMap<String,String> best=new LinkedHashMap<>();int bestLength=-1;String source=html==null?"":html;
+    Matcher objects=parsePattern("(?is)data\\s*[:=]\\s*\\{([^}]+)\\}").matcher(source);
+    while(objects.find()){
+      String body=objects.group(1);LinkedHashMap<String,String> fields=new LinkedHashMap<>();
+      Matcher pairs=parsePattern("['\"]?([A-Za-z0-9_]+)['\"]?\\s*:\\s*([^,}]+)").matcher(body);
+      while(pairs.find())fields.put(pairs.group(1),legacyJsValue(source,pairs.group(2)));
+      if(!"downprocess".equals(fields.get("action")))continue;
+      if(body.length()>bestLength){best=fields;bestLength=body.length();}
+    }
+    return best;
+  }
+
+  private static String legacyJsValue(String html,String expression){
+    String value=expression==null?"":expression.trim();if(value.isEmpty())return"";
+    if((value.startsWith("'")&&value.endsWith("'"))||(value.startsWith("\"")&&value.endsWith("\"")))return unescape(value.substring(1,value.length()-1));
+    if(value.matches("[0-9]+"))return value;
+    if(!value.matches("[A-Za-z_$][A-Za-z0-9_$]*"))return"";
+    String quoted=cap(html,"(?is)(?:var|let|const)\\s+"+Pattern.quote(value)+"\\s*=\\s*['\"]([^'\"]*)['\"]");
+    if(!quoted.isEmpty())return quoted;
+    return cap(html,"(?is)(?:var|let|const)\\s+"+Pattern.quote(value)+"\\s*=\\s*([0-9]+)\\s*[;,]");
+  }
+
+  private static String legacyAjaxEndpoint(String html){
+    String value=cap(html,"(?is)url\\s*:\\s*['\"]([^'\"]*ajaxm\\.php(?:\\?file=[0-9]+)?)['\"]");
+    if(!value.isEmpty())return value;
+    return cap(html,"(?is)['\"]([^'\"]*ajaxm\\.php(?:\\?file=[0-9]+)?)['\"]");
+  }
   private static boolean directExchangePending(JSONObject data){String info=data.optString("inf").trim();if(DIRECT_TERMINAL_INFO.matcher(info).find())return false;if(data.optInt("zt")==1)return!data.optString("url").startsWith("http");return info.isEmpty()||info.equals("0")||info.contains("稍后")||info.contains("验证")||info.contains("处理中")||info.contains("等待");}
   private static final Pattern DIRECT_TERMINAL_INFO=Pattern.compile("取消|来晚|删除|不存在|失效|密码|禁止|违规|封禁|关闭|拒绝|错误|失败");
 
@@ -276,10 +310,19 @@ final class LanzouCore {
     NetSession(Map<String,LinkedHashMap<String,String>> seed,int profile){userAgent=profile==DirectCookiePool.PROFILE_DESKTOP?DESKTOP_SEARCH_UA:ANDROID_UA;jar=new HashMap<>();if(seed!=null)for(Map.Entry<String,LinkedHashMap<String,String>> host:seed.entrySet())jar.put(host.getKey(),new LinkedHashMap<>(host.getValue()));}
     Map<String,LinkedHashMap<String,String>> snapshot(){Map<String,LinkedHashMap<String,String>> out=new HashMap<>();for(Map.Entry<String,LinkedHashMap<String,String>> host:jar.entrySet())out.put(host.getKey(),new LinkedHashMap<>(host.getValue()));return out;}
     DirectLink getGuarded(String url,String referer)throws Exception{
-      DirectLink page=get(url,referer);String value=acwCookie(page.html);if(value.isEmpty())return page;put(new URL(url).getHost(),"acw_sc__v2",value);return get(url,referer);
+      String current=url;DirectLink page=get(current,referer);for(int round=0;round<3;round++){String value=acwCookie(page.html);if(value.isEmpty())return page;current=page.url==null||page.url.isEmpty()?current:page.url;put(new URL(current).getHost(),"acw_sc__v2",value);page=get(current,referer);}if(!acwCookie(page.html).isEmpty())throw new DirectRetryException("蓝奏 ACW 验证未完成",1000,false);return page;
     }
     DirectLink get(String url,String referer)throws Exception{
       HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(!referer.isEmpty())c.setRequestProperty("Referer",referer);String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);int status=c.getResponseCode();capture(c);DirectLink page=new DirectLink();page.url=c.getURL().toString();page.cookie=cookies(new URL(page.url).getHost());page.html=body(c);String retryAfter=c.getHeaderField("Retry-After");c.disconnect();requireDirectResponse(status,page.html,retryAfter);return page;
+    }
+    DirectLink getBootstrap(String url,String referer)throws Exception{
+      String current=url;DirectLink page=getBootstrapOnce(current,referer);for(int round=0;round<3;round++){if(page.redirected)return page;String value=acwCookie(page.html);if(value.isEmpty())return page;current=page.url==null||page.url.isEmpty()?current:page.url;put(new URL(current).getHost(),"acw_sc__v2",value);page=getBootstrapOnce(current,referer);}if(page.redirected)return page;if(!acwCookie(page.html).isEmpty())throw new DirectRetryException("蓝奏 ACW 验证未完成",1000,false);return page;
+    }
+    private DirectLink getBootstrapOnce(String url,String referer)throws Exception{
+      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(!referer.isEmpty())c.setRequestProperty("Referer",referer);String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);
+      int status=c.getResponseCode();capture(c);DirectLink page=new DirectLink();String location=c.getHeaderField("Location");page.cookie=cookies(new URL(url).getHost());
+      if(status>=300&&status<400&&location!=null&&!location.trim().isEmpty()){page.url=new URL(new URL(url),location.trim()).toString();page.html="";page.redirected=true;}else{page.url=url;page.html=body(c);}
+      String retryAfter=c.getHeaderField("Retry-After");c.disconnect();requireDirectResponse(status,page.html,retryAfter);return page;
     }
     String post(String url,Map<String,String> data,DirectLink referer)throws Exception{
       HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*");c.setRequestProperty("Referer",referer.url);c.setRequestProperty("Origin",origin(referer.url));c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);byte[] bytes=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}int status=c.getResponseCode();capture(c);String result=body(c),retryAfter=c.getHeaderField("Retry-After");c.disconnect();requireDirectResponse(status,result,retryAfter);return result;

@@ -16,7 +16,7 @@ final class SegmentDownloader {
   interface Listener { void progress(long done,long total); void completed(); void failed(String error); default void paused(long done,long total){} default void cancelled(long done,long total){} }
   private static final String UA="Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36";
   private static final Pattern CONTENT_RANGE=Pattern.compile("(?i)bytes\\s+(\\d+)-(\\d+)/(\\d+)");
-  private static final int MAX_WORKERS=96;
+  private static final int MAX_WORKERS=TransferCoordinator.adaptiveUnlimitedLimit();
   private static final long WORKER_STACK_BYTES=524288L;
   private static final AtomicInteger ACTIVE_WORKERS=new AtomicInteger();
   private static final ThreadPoolExecutor WORKERS=new ThreadPoolExecutor(MAX_WORKERS,MAX_WORKERS,20L,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-download",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
@@ -35,7 +35,9 @@ final class SegmentDownloader {
   void startDirect(String directUrl,Uri destination,Listener listener){start(directUrl,destination,0,listener,true);}
 
   private void start(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded){
-    WORKERS.execute(()->runTransfer(url,destination,expectedTotal,listener,guarded));
+    try{WORKERS.execute(()->runTransfer(url,destination,expectedTotal,listener,guarded));}
+    catch(OutOfMemoryError exhausted){listener.failed("无法下载：系统内存不足，已降低并发后请重试");}
+    catch(RejectedExecutionException rejected){listener.failed("无法下载：下载任务队列不可用");}
   }
 
   private void runTransfer(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded){

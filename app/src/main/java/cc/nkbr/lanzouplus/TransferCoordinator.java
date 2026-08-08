@@ -3,10 +3,12 @@ package cc.nkbr.lanzouplus;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Independent admission gate for already-resolved transfers. Zero keeps unlimited task admission. */
+/** Independent admission gate for already-resolved transfers. Zero means memory-adaptive unlimited mode. */
 final class TransferCoordinator<T> {
   interface Starter<T> { void start(T task,Runnable completed); }
   static final int MAX_CONFIGURED=128;
+  private static final long MIB=1024L*1024L;
+  private static final int MIN_ADAPTIVE=8,MAX_ADAPTIVE=64;
   private final ArrayDeque<T> ready=new ArrayDeque<>();
   private final int limit;
   private final Starter<T> starter;
@@ -14,7 +16,8 @@ final class TransferCoordinator<T> {
   private boolean draining;
 
   TransferCoordinator(int configured,Starter<T> starter){limit=effectiveLimit(configured);this.starter=starter;}
-  static int effectiveLimit(int configured){return configured<=0?Integer.MAX_VALUE:Math.max(1,Math.min(MAX_CONFIGURED,configured));}
+  static int adaptiveUnlimitedLimit(){long heap=Runtime.getRuntime().maxMemory();long byHeap=heap/(8L*MIB);return (int)Math.max(MIN_ADAPTIVE,Math.min(MAX_ADAPTIVE,byHeap));}
+  static int effectiveLimit(int configured){return configured<=0?adaptiveUnlimitedLimit():Math.max(1,Math.min(MAX_CONFIGURED,configured));}
 
   void enqueue(T task){boolean run;synchronized(this){ready.addLast(task);run=!draining;if(run)draining=true;}if(run)drain();}
   boolean remove(T task){synchronized(this){return ready.remove(task);}}

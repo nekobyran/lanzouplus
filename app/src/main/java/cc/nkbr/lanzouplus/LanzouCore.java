@@ -52,6 +52,7 @@ final class LanzouCore {
   private static final Pattern TRAILING_PASSWORD=Pattern.compile("^\\s+([a-z0-9_-]{1,64})(?=\\s*(?:$|[,，;；]))",Pattern.CASE_INSENSITIVE);
   private static final Pattern DIRECT_RATE_LIMIT_INFO=Pattern.compile("(?i)请求(?:过多|频繁)|操作频繁|访问(?:过于)?频繁|稍后再试|已达上限|too many|rate.?limit|频率限制");
   private static final Pattern DIRECT_RETRY_INFO=Pattern.compile("超时|刷新|重试|网络异常|验证未返回|处理中|等待");
+  private static final Pattern DIRECT_PASSWORD_INFO=Pattern.compile("密码|提取码|访问码|口令");
   private static final ConcurrentHashMap<String,Pattern> PARSE_PATTERNS=new ConcurrentHashMap<>();
   private static final Object PAGE_RATE_LOCK=new Object();
   private static final Object USER_SOURCE_LOCK=new Object();
@@ -91,6 +92,7 @@ final class LanzouCore {
   LanzouCore(Context c){context=c.getApplicationContext();directCookiePool=new DirectCookiePool(context);loadPersistedCompositeMembers();searchPool.execute(()->{try{sourceNameIndex();}catch(Exception ignored){}});startCompositeWarmup();}
   static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized,redirected;byte ua,template; }
   private static final class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);this.retryAfterMs=Math.max(1000,retryAfterMs);this.rateLimited=rateLimited;}}
+  static final class DirectPasswordException extends IOException{DirectPasswordException(){super("需要访问密码");}DirectPasswordException(String message){super(message==null||message.trim().isEmpty()?"需要访问密码":message.trim());}}
   private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,folded;final int depth,page;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.folded=foldSearchQuery(item.title);}}
   private static final class DirectorySearchIndex{final long revision;final List<CachedDirectoryEntry> entries;DirectorySearchIndex(long revision,List<CachedDirectoryEntry> entries){this.revision=revision;this.entries=entries;}}
   private static final class SourceNameEntry{final Models.Source source;final Models.SourceMember member;final String id,folded;SourceNameEntry(Models.Source source,Models.SourceMember member,String id,String folded){this.source=source;this.member=member;this.id=id;this.folded=folded;}}
@@ -197,12 +199,14 @@ final class LanzouCore {
     private void cancelLocked(){if(cancelled)return;cancelled=true;apiReady.clear();directoryReady.clear();cancelTimersLocked();for(Future<?> future:new ArrayList<>(httpFutures))future.cancel(true);for(HttpURLConnection connection:new ArrayList<>(openConnections))connection.disconnect();notifyAll();}
   }
 
-  DirectLink resolveDirect(String shareUrl)throws Exception{
+  DirectLink resolveDirect(String shareUrl)throws Exception{return resolveDirect(shareUrl,"");}
+  DirectLink resolveDirect(String shareUrl,String password)throws Exception{
+    String pwd=password==null?"":password.trim();if(pwd.length()>64||containsControl(pwd))throw new DirectPasswordException("密码格式无效");
     Exception last=null;Set<String> attempted=new HashSet<>();
     for(int attempt=0;attempt<2;attempt++){
       long now=System.currentTimeMillis();DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,lease.profile);
-      try{DirectLink direct=resolveDirectWithSession(shareUrl,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;
-      }catch(Exception error){last=error;DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());if(retry==null&&terminalDirectFailure(error))throw error;}
+      try{DirectLink direct=resolveDirectWithSession(shareUrl,pwd,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;
+      }catch(Exception error){last=error;DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());if(error instanceof DirectPasswordException||retry==null&&terminalDirectFailure(error))throw error;}
     }
     throw last==null?new IOException("直链解析失败"):last;
   }
@@ -213,9 +217,10 @@ final class LanzouCore {
   private static void requireDirectResponse(int status,String body,String retryAfter)throws DirectRetryException{if(status==429||status==503||status==403&&DIRECT_RATE_LIMIT_INFO.matcher(body).find())throw new DirectRetryException("蓝奏请求频率受限",retryAfterMillis(retryAfter,30000),true);}
   private static long retryAfterMillis(String value,long fallback){if(value==null||value.trim().isEmpty())return fallback;try{return Math.max(1000,Long.parseLong(value.trim())*1000L);}catch(NumberFormatException ignored){return fallback;}}
   private static void requireDirectRateLimit(JSONObject data)throws DirectRetryException{if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RATE_LIMIT_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏请求频率受限":info,30000,true);}
-  private static void requireDirectBusinessResult(JSONObject data)throws DirectRetryException{requireDirectRateLimit(data);if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RETRY_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏直链响应需要重试":info,3000,false);}
+  private static void requireDirectPasswordResult(JSONObject data)throws DirectPasswordException{if(data.optInt("zt")==1)return;String info=firstNonEmpty(data.optString("inf"),data.optString("info"),data.optString("msg"));if(DIRECT_PASSWORD_INFO.matcher(info).find())throw new DirectPasswordException(info);}
+  private static void requireDirectBusinessResult(JSONObject data)throws DirectRetryException,DirectPasswordException{requireDirectRateLimit(data);requireDirectPasswordResult(data);if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RETRY_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏直链响应需要重试":info,3000,false);}
 
-  private DirectLink resolveDirectWithSession(String shareUrl,NetSession session)throws Exception{
+  private DirectLink resolveDirectWithSession(String shareUrl,String password,NetSession session)throws Exception{
         DirectLink share=session.getGuarded(shareUrl,"");
         String fileTitle=cleanFileName(cap(share.html,"(?is)<title[^>]*>(.*?)</title>"));
         String transfer=cap(share.html,"(?is)<a\\b(?=[^>]*\\bid=[\"']downurl[\"'])(?=[^>]*\\bhref=[\"']([^\"']+)[\"'])[^>]*>");
@@ -242,7 +247,7 @@ final class LanzouCore {
             String endpoint=new URL(new URL(verify.url),ajax).toString();
             for(int exchange=0;exchange<2;exchange++){
               Thread.sleep(exchange==0?DIRECT_INITIAL_WAIT_MS:DIRECT_RETRY_WAIT_MS);
-              JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);
+              JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectPasswordResult(data);
               String direct=data.optString("url");
               if(data.optInt("zt")==1&&direct.startsWith("http"))return direct(direct,fileTitle);
               if(!directExchangePending(data))throw new IOException(data.optString("inf","蓝奏验证失败"));
@@ -255,11 +260,11 @@ final class LanzouCore {
         Map<String,String> legacy=legacyDownprocessFields(page.html);
         String sign=legacy.getOrDefault("sign","");
         if(sign.isEmpty())sign=cap(page.html,"(?:ajaxdata|sign)\\s*[:=]\\s*['\"]([^'\"]+)['\"]");
-        if(sign.isEmpty())throw new IOException("未找到下载签名");
+        if(sign.isEmpty()){if(requiresSharePassword(page.html))throw new DirectPasswordException();throw new IOException("未找到下载签名");}
         Map<String,String> form=new LinkedHashMap<>();
         form.put("action","downprocess");form.put("sign",sign);
-        for(String key:new String[]{"websignkey","signs","websign","kd","ves","p"})if(legacy.containsKey(key))form.put(key,legacy.get(key));
-        if(!form.containsKey("p"))form.put("p","");
+        for(String key:new String[]{"websignkey","signs","websign","kd","ves"})if(legacy.containsKey(key))form.put(key,legacy.get(key));
+        form.put("p",password==null?"":password);
         String ajax=legacyAjaxEndpoint(page.html);if(ajax.isEmpty())ajax="/ajaxm.php";
         JSONObject data=new JSONObject(session.post(new URL(new URL(page.url),ajax).toString(),form,page));
         requireDirectBusinessResult(data);if(data.optInt("zt")!=1)throw new IOException(data.optString("inf","蓝奏解析失败"));
@@ -298,6 +303,7 @@ final class LanzouCore {
     return cap(html,"(?is)['\"]([^'\"]*ajaxm\\.php(?:\\?file=[0-9]+)?)['\"]");
   }
   private static boolean directExchangePending(JSONObject data){String info=data.optString("inf").trim();if(DIRECT_TERMINAL_INFO.matcher(info).find())return false;if(data.optInt("zt")==1)return!data.optString("url").startsWith("http");return info.isEmpty()||info.equals("0")||info.contains("稍后")||info.contains("验证")||info.contains("处理中")||info.contains("等待");}
+  private static boolean requiresSharePassword(String html){String value=html==null?"":html.toLowerCase(Locale.ROOT);return value.contains("passwddiv")||value.contains("name=\"pwd\"")||value.contains("id=\"pwd\"");}
   private static final Pattern DIRECT_TERMINAL_INFO=Pattern.compile("取消|来晚|删除|不存在|失效|密码|禁止|违规|封禁|关闭|拒绝|错误|失败");
 
   private static DirectLink direct(String url,String title){DirectLink out=new DirectLink();out.url=url;out.fileName=title.isEmpty()?"download.bin":title;return out;}
@@ -861,6 +867,7 @@ final class LanzouCore {
     DirectLink target=parseFolderTarget(url);String key=target.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+ua;long now=System.currentTimeMillis();pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);
     if(!force&&hit!=null&&now-hit.createdAt<SESSION_TTL_MS)return hit;if(hit!=null)browseSessions.remove(key,hit);
     DirectLink session=new DirectLink();session.target=target;session.ua=ua;session.page=getGuarded(target.rootUrl,deadline,userAgent(ua));requireLanzouPage(session.page.url);requireActiveShare(session.page);session.template=pageTemplate(session.page.html);sourceProfile(target.rootUrl).observeTemplate(ua,session.template);session.createdAt=now;
+    if(password.isEmpty()&&requiresSharePassword(session.page.html))throw new DirectPasswordException();
     session.endpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?(?:file|uid)=[0-9A-Za-z_-]+[^'\"]*)['\"]"),"/filemoreajax.php");session.folderEndpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/foldermoreajax.php");
     session.fid=cap(session.endpoint,"[?&]file=([^&#]+)");String uid=cap(session.endpoint,"[?&]uid=([^&#]+)");session.form=formValues(session.page.html);if(!uid.isEmpty())session.form.put("uid",uid);session.form.put("fid",uid.isEmpty()?session.fid:"1");session.form.put("lx",firstNonEmpty(session.form.get("lx"),uid.isEmpty()?"2":"1"));session.form.put("rep",firstNonEmpty(session.form.get("rep"),"0"));session.form.put("up",firstNonEmpty(session.form.get("up"),"1"));session.form.put("vip",firstNonEmpty(session.form.get("vip"),"0"));
     if(!target.folderId.isEmpty()){session.form.put("folder_id",target.folderId);session.form.put("ls","1");}
@@ -900,8 +907,8 @@ final class LanzouCore {
 
   private static JSONObject postPage(DirectLink session,String endpoint,Map<String,String> form,long deadline,int page,SourceProfile profile,String errorMessage)throws Exception{
     if(endpoint.isEmpty())throw new IOException("未找到目录接口");String url=new URL(new URL(session.page.url),endpoint).toString(),key=pageRateKey(session);JSONObject data=null;
-    BooleanSupplier asyncCancelled=ASYNC_PAGE_CANCEL.get();if(asyncCancelled!=null){checkSearchCancelled(asyncCancelled);long wait=reservePageSlot(key,profile.interval(session.ua,page));if(wait>0)throw new PageWaitException(wait);String raw=post(url,form,session.page,deadline,userAgent(session.ua));checkSearchCancelled(asyncCancelled);if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int delay=profile.backoff(session.ua,page);deferPageSlot(key,delay);throw new PageRateLimitedException(data.optString("info","目录请求过快，请稍后重试"));}throw new IOException(data.optString("info",data.optString("msg",errorMessage)));}
-    for(int attempt=0;attempt<3;attempt++){int interval=profile.interval(session.ua,page);awaitPageSlot(key,deadline,interval,null);String raw=post(url,form,session.page,deadline,userAgent(session.ua));if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int backedOff=profile.backoff(session.ua,page);deferPageSlot(key,backedOff);continue;}throw new IOException(data.optString("info",data.optString("msg",errorMessage)));}
+    BooleanSupplier asyncCancelled=ASYNC_PAGE_CANCEL.get();if(asyncCancelled!=null){checkSearchCancelled(asyncCancelled);long wait=reservePageSlot(key,profile.interval(session.ua,page));if(wait>0)throw new PageWaitException(wait);String raw=post(url,form,session.page,deadline,userAgent(session.ua));checkSearchCancelled(asyncCancelled);if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int delay=profile.backoff(session.ua,page);deferPageSlot(key,delay);throw new PageRateLimitedException(data.optString("info","目录请求过快，请稍后重试"));}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);throw new IOException(message);}
+    for(int attempt=0;attempt<3;attempt++){int interval=profile.interval(session.ua,page);awaitPageSlot(key,deadline,interval,null);String raw=post(url,form,session.page,deadline,userAgent(session.ua));if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int backedOff=profile.backoff(session.ua,page);deferPageSlot(key,backedOff);continue;}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);throw new IOException(message);}
     throw new IOException(data==null?errorMessage:data.optString("info","目录请求过快，请稍后重试"));
   }
 

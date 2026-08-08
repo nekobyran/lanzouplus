@@ -16,10 +16,10 @@ final class SegmentDownloader {
   interface Listener { void progress(long done,long total); void completed(); void failed(String error); default void paused(long done,long total){} default void cancelled(long done,long total){} }
   private static final String UA="Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36";
   private static final Pattern CONTENT_RANGE=Pattern.compile("(?i)bytes\\s+(\\d+)-(\\d+)/(\\d+)");
-  private static final int MAX_WORKERS=TransferCoordinator.adaptiveUnlimitedLimit();
+  private static final int WORKER_COUNT=TransferCoordinator.adaptiveUnlimitedLimit();
   private static final long WORKER_STACK_BYTES=524288L;
   private static final AtomicInteger ACTIVE_WORKERS=new AtomicInteger();
-  private static final ThreadPoolExecutor WORKERS=new ThreadPoolExecutor(MAX_WORKERS,MAX_WORKERS,20L,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-download",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
+  private static final ThreadPoolExecutor WORKERS=new ThreadPoolExecutor(WORKER_COUNT,WORKER_COUNT,20L,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-download",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
   static{WORKERS.allowCoreThreadTimeOut(true);}
   private final Context context;
   private final TransferTerminal terminal=new TransferTerminal();

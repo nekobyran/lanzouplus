@@ -32,6 +32,7 @@ final class LanzouCore {
   private static final int MAX_PAGE_INTERVAL_MS=8400,MAX_BROWSE_SESSIONS=64,MAX_PROBE_WORKERS=32,MAX_SOURCE_PROBE_PARALLELISM=128,COMPOSITE_WARM_WORKERS=32;
   private static final long SESSION_TTL_MS=5*60*1000L;
   private static final long SOURCE_PROBE_TIMEOUT_MS=35*1000L;
+  private static final long FOREGROUND_BROWSE_TIMEOUT_MS=18*1000L,METADATA_BROWSE_TIMEOUT_MS=8*1000L;
   private static final int PAGE_SIZE=50;
   private static final int DIRECT_INITIAL_WAIT_MS=1900,DIRECT_RETRY_WAIT_MS=250;
   private static final String FOLDER_MARKER="#lanzou-folder=";
@@ -305,7 +306,13 @@ final class LanzouCore {
     return cap(html,"(?is)['\"]([^'\"]*ajaxm\\.php(?:\\?file=[0-9]+)?)['\"]");
   }
   private static boolean directExchangePending(JSONObject data){String info=data.optString("inf").trim();if(DIRECT_TERMINAL_INFO.matcher(info).find())return false;if(data.optInt("zt")==1)return!data.optString("url").startsWith("http");return info.isEmpty()||info.equals("0")||info.contains("稍后")||info.contains("验证")||info.contains("处理中")||info.contains("等待");}
-  private static boolean requiresSharePassword(String html){String value=html==null?"":html.toLowerCase(Locale.ROOT);return value.contains("passwddiv")||value.contains("name=\"pwd\"")||value.contains("id=\"pwd\"");}
+  private static boolean requiresSharePassword(String html){
+    String value=html==null?"":html.toLowerCase(Locale.ROOT);if(value.isEmpty())return false;
+    boolean passwordField=parsePattern("(?is)<input\\b[^>]*(?:name|id)\\s*=\\s*['\"]pwd['\"][^>]*>").matcher(value).find();
+    boolean passwordPanel=parsePattern("(?is)\\bid\\s*=\\s*['\"]pwdload['\"]").matcher(value).find()||value.contains("passwddiv-input");
+    boolean passwordSubmit=value.contains("document.getelementbyid('pwd')")||value.contains("document.getelementbyid(\"pwd\")")||value.contains("'pwd':pwd")||value.contains("\"pwd\":pwd");
+    return passwordField&&passwordPanel&&passwordSubmit;
+  }
   private static final Pattern DIRECT_TERMINAL_INFO=Pattern.compile("取消|来晚|删除|不存在|失效|密码|禁止|违规|封禁|关闭|拒绝|错误|失败");
 
   private static DirectLink direct(String url,String title){DirectLink out=new DirectLink();out.url=url;out.fileName=title.isEmpty()?"download.bin":title;return out;}
@@ -689,14 +696,16 @@ final class LanzouCore {
   }
 
   Models.Folder browse(String url,String password,boolean refresh) throws Exception {
-    return browsePage(url,password,refresh,1,NO_DEADLINE);
+    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(FOREGROUND_BROWSE_TIMEOUT_MS);
+    return browsePage(url,password,refresh,1,deadline);
   }
 
   Models.Folder browseSource(Models.Source source,boolean refresh)throws Exception{return source.kind==Models.SOURCE_COMPOSITE?compositeSnapshot(source):source.kind==Models.SOURCE_SINGLE?singleSnapshot(source):browse(source.url,source.password,refresh);}
 
   Models.Folder browseSourceMetadata(Models.Source source)throws Exception{
     if(source.kind==Models.SOURCE_COMPOSITE)return compositeSnapshot(source);if(source.kind==Models.SOURCE_SINGLE)return singleSnapshot(source);String pwd=source.password==null?"":source.password;SourceProfile profile=sourceProfile(source.url);byte first=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;Exception last=null;
-    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{DirectLink session=browseSession(source.url,pwd,NO_DEADLINE,false,ua);Models.Folder out=copyFolder(session.metadata);out.page=1;out.url=source.url;out.password=pwd;out.folderId=session.target.folderId;profile.directoryUa=ua;return out;}catch(Exception error){last=error;}}
+    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(METADATA_BROWSE_TIMEOUT_MS);
+    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{DirectLink session=browseSession(source.url,pwd,deadline,false,ua);Models.Folder out=copyFolder(session.metadata);out.page=1;out.url=source.url;out.password=pwd;out.folderId=session.target.folderId;profile.directoryUa=ua;return out;}catch(Exception error){last=error;if(error instanceof SocketTimeoutException)break;}}
     throw last==null?new IOException("蓝奏目录暂不可用"):last;
   }
 
@@ -757,11 +766,11 @@ final class LanzouCore {
   private static void applyAvatarFallback(Models.Folder folder){if(folder==null||!folder.avatarUrl.isEmpty())return;for(Models.Item item:folder.items)if(item!=null&&!item.iconUrl.isEmpty()){folder.avatarUrl=item.iconUrl;return;}}
 
   Models.Folder browsePage(String url,String password,boolean refresh,int page) throws Exception {
-    return browsePage(url,password,refresh,page,NO_DEADLINE);
+    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(FOREGROUND_BROWSE_TIMEOUT_MS);return browsePage(url,password,refresh,page,deadline);
   }
 
   Models.Folder browseFreshPage(String url,String password,int page) throws Exception {
-    return browsePage(url,password,true,page,NO_DEADLINE,true);
+    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(FOREGROUND_BROWSE_TIMEOUT_MS);return browsePage(url,password,true,page,deadline,true);
   }
 
   boolean hasFolderCache(String url,String password,int page){return folderCache(url,password,page).isFile();}
@@ -1107,7 +1116,15 @@ final class LanzouCore {
   private static void requireActiveShare(DirectLink page)throws ShareCancelledException{String html=page==null||page.html==null?"":page.html;if(html.contains("filemoreajax.php")||pageTemplate(html)!=TEMPLATE_UNKNOWN)return;String text=strip(html).replaceAll("\\s+","").replace("，","").replace(",","");if(text.contains("分享已取消")||text.contains("文件取消分享")||text.contains("文件已取消分享")||text.contains("已被取消分享")||text.contains("文件不存在或已删除"))throw new ShareCancelledException();}
   private static DirectLink getGuarded(String url,long deadline)throws Exception{return getGuarded(url,deadline,ANDROID_UA);}
   private static DirectLink getGuarded(String url,long deadline,String userAgent)throws Exception{return getGuarded(url,deadline,userAgent,"");}
-  private static DirectLink getGuarded(String url,long deadline,String userAgent,String initialCookie)throws Exception{DirectLink p=getPage(url,initialCookie,deadline,userAgent);String value=acwCookie(p.html);if(!value.isEmpty())p=getPage(url,mergeCookie(p.cookie,"acw_sc__v2",value),deadline,userAgent);return p;}
+  private static DirectLink getGuarded(String url,long deadline,String userAgent,String initialCookie)throws Exception{
+    String current=url,cookie=initialCookie==null?"":initialCookie;DirectLink page=null;
+    for(int round=0;round<3;round++){
+      page=getPage(current,cookie,deadline,userAgent);String value=acwCookie(page.html);if(value.isEmpty())return page;
+      current=page.url==null||page.url.isEmpty()?current:page.url;cookie=mergeCookie(page.cookie,"acw_sc__v2",value);
+    }
+    if(page!=null&&!acwCookie(page.html).isEmpty())throw new IOException("蓝奏 ACW 验证未完成");
+    return page;
+  }
   private static DirectLink getPage(String url,String cookie,long deadline,String userAgent)throws Exception{checkDeadline(deadline);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();trackConnection(c,true);try{applyTimeouts(c,deadline);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(cookie!=null&&!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);c.getResponseCode();DirectLink page=new DirectLink();page.url=c.getURL().toString();page.cookie=captureCookies(cookie,c);page.html=body(c);return page;}finally{c.disconnect();trackConnection(c,false);}}
   private static String post(String url,Map<String,String> data,DirectLink page,long deadline)throws Exception{return post(url,data,page,deadline,ANDROID_UA);}
   private static String post(String url,Map<String,String> data,DirectLink page,long deadline,String userAgent)throws Exception{synchronized(page){checkDeadline(deadline);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();trackConnection(c,true);try{applyTimeouts(c,deadline);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Referer",page.url);c.setRequestProperty("Origin",origin(page.url));if(!page.cookie.isEmpty())c.setRequestProperty("Cookie",page.cookie);c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");byte[] b=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(b.length);try(OutputStream o=c.getOutputStream()){o.write(b);}c.getResponseCode();page.cookie=captureCookies(page.cookie,c);return body(c);}finally{c.disconnect();trackConnection(c,false);}}}

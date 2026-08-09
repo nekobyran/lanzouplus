@@ -1,6 +1,9 @@
 name: LanzouPlus empty Android
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       mode:
@@ -21,7 +24,7 @@ on:
         type: string
 
 concurrency:
-  group: lanzouplus-empty-${{ inputs.mode }}-${{ inputs.commit }}
+  group: lanzouplus-empty-${{ inputs.mode || 'validate' }}-${{ inputs.commit || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -37,15 +40,15 @@ jobs:
       - name: Check out the exact source commit
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.commit }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Validate commit, version and public-source boundary
         env:
-          EXPECTED_COMMIT: ${{ inputs.commit }}
+          EXPECTED_COMMIT: ${{ inputs.commit || github.sha }}
           EXPECTED_VERSION: ${{ inputs.version }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ inputs.mode || 'validate' }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
@@ -97,6 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/test_premium_save_queue_semantics.py
+          python3 tools/test_search_index_semantics.py
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -153,11 +157,11 @@ jobs:
             ci/LanzouPlus-unsigned.apk
             ci/metadata.txt
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
 
   release:
     name: Sign and publish the empty release
-    if: inputs.mode == 'release'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'release'
     needs: build
     runs-on: ubuntu-latest
     permissions:

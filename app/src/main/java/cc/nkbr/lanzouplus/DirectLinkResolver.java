@@ -42,7 +42,7 @@ final class DirectLinkResolver implements AutoCloseable {
   int parallelism(){return parallelism;}
   int effectiveParallelism(){synchronized(lock){return effectiveLimitLocked();}}
   private static int normalizeParallelism(int value){return value<0||value>MAX_PARALLELISM?0:value;}
-  private static int adaptiveUnlimitedLimit(){long heap=Runtime.getRuntime().maxMemory();if(heap<=128L*MIB)return 64;if(heap<=192L*MIB)return 96;if(heap<=256L*MIB)return 128;if(heap<=384L*MIB)return 192;return MAX_UNLIMITED_WORKERS;}
+  private static int adaptiveUnlimitedLimit(){long heap=Runtime.getRuntime().maxMemory();if(heap<=128L*MIB)return 16;if(heap<=192L*MIB)return 24;if(heap<=256L*MIB)return 32;if(heap<=384L*MIB)return 40;return 48;}
   private int effectiveLimitLocked(){int desired=parallelism==0?adaptiveUnlimitedLimit:parallelism;return Math.max(1,Math.min(desired,emergencyWorkerCeiling));}
 
   void prewarm(String shareUrl){resolve(shareUrl,false,null);}

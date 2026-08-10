@@ -41,6 +41,8 @@ class StartupNetworkStabilitySemanticsTest(unittest.TestCase):
         self.assertEqual(prefetch.count("browseSource(home,true)"), 1)
         self.assertIn("hasFolderCache(home,1)", prefetch)
         self.assertIn("homePrefetchInFlight", prefetch)
+        self.assertIn("catch(OutOfMemoryError", prefetch)
+        self.assertIn("imageCache.evictAll()", prefetch)
         self.assertIn("attempt>=4", finish)
         self.assertIn("homePrefetchRetry=null", finish)
         self.assertIn("ui.postDelayed(homePrefetchRetry,delay)", finish)
@@ -62,6 +64,14 @@ class StartupNetworkStabilitySemanticsTest(unittest.TestCase):
         self.assertIn("inJustDecodeBounds=true", decode)
         self.assertIn("inSampleSize", decode)
         self.assertRegex(MAIN, r"MAX_ICON_BYTES=2\*1024\*1024,MAX_ICON_EDGE=256")
+
+    def test_lanzou_page_response_is_bounded_even_without_content_length(self):
+        body = method_body(CORE, "static String body(HttpURLConnection c)")
+        self.assertIn("MAX_PAGE_BODY_BYTES=4*1024*1024", CORE)
+        self.assertIn("getContentLengthLong()", body)
+        self.assertIn("declared>MAX_PAGE_BODY_BYTES", body)
+        self.assertIn("total>MAX_PAGE_BODY_BYTES", body)
+        self.assertIn('throw new IOException("蓝奏响应过大")', body)
 
     def test_low_memory_devices_use_fewer_image_workers(self):
         worker = method_body(MAIN, "static int imageWorkerCount(")

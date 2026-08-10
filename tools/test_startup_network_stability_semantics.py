@@ -42,7 +42,14 @@ class StartupNetworkStabilitySemanticsTest(unittest.TestCase):
         self.assertIn("hasFolderCache(home,1)", prefetch)
         self.assertIn("homePrefetchInFlight", prefetch)
         self.assertIn("attempt>=4", finish)
+        self.assertIn("homePrefetchRetry=null", finish)
         self.assertIn("ui.postDelayed(homePrefetchRetry,delay)", finish)
+
+    def test_startup_update_waits_for_home_network_to_settle(self):
+        update = method_body(MAIN, "void maybeCheckForUpdates()")
+        self.assertIn("homePrefetchInFlight||homePrefetchRetry!=null", update)
+        self.assertIn("ui.postDelayed(this::maybeCheckForUpdates,1800)", update)
+        self.assertIn("STARTUP_UPDATE_CHECKED_IN_PROCESS.compareAndSet", update)
 
     def test_icon_download_is_bounded_and_sampled_before_decode(self):
         fetch = method_body(MAIN, "void fetchImage(String url)")

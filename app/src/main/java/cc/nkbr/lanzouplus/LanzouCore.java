@@ -43,6 +43,7 @@ final class LanzouCore {
   private static final String COMPOSITE_MEMBER_PREFS="composite-members-v1";
   private static final String DIRECTORY_INDEX_PREFS="directory-index-v1";
   private static final String CANONICAL_SOURCE_ORIGIN="https://www.lanzouw.com";
+  private static volatile String preferredSourceOrigin=CANONICAL_SOURCE_ORIGIN;
   private static final int RULE_LIMIT=512*1024;
   private static final Pattern ICON_DATE=Pattern.compile("(?:^|/)(\\d{4})/(\\d{2})/(\\d{2})(?:/|$)");
   private static final Pattern INVALID_FILE_NAME=Pattern.compile("[\\\\/:*?\"<>|]");
@@ -337,7 +338,7 @@ final class LanzouCore {
       String current=url;DirectLink page=get(current,referer);for(int round=0;round<3;round++){String value=acwCookie(page.html);if(value.isEmpty())return page;current=page.url==null||page.url.isEmpty()?current:page.url;put(new URL(current).getHost(),"acw_sc__v2",value);page=get(current,referer);}if(!acwCookie(page.html).isEmpty())throw new DirectRetryException("蓝奏 ACW 验证未完成",1000,false);return page;
     }
     DirectLink get(String url,String referer)throws Exception{
-      String current=url,currentReferer=referer;
+      String current=preferredLanzouUrl(url),currentReferer=preferredLanzouUrl(referer);
       for(int redirects=0;redirects<=8;redirects++){
         directRemainingMillis(deadline);HttpURLConnection c=(HttpURLConnection)new URL(current).openConnection();
         try{c.setInstanceFollowRedirects(false);applyTimeouts(c);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(!currentReferer.isEmpty())c.setRequestProperty("Referer",currentReferer);String cookie=cookies(new URL(current).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);int status=c.getResponseCode();capture(c);String retryAfter=c.getHeaderField("Retry-After"),location=c.getHeaderField("Location");if(status>=300&&status<400&&location!=null&&!location.trim().isEmpty()){requireDirectResponse(status,"",retryAfter);String next=new URL(new URL(current),location.trim()).toString();currentReferer=current;current=next;continue;}DirectLink page=new DirectLink();page.url=current;page.cookie=cookies(new URL(current).getHost());page.html=readBody(c,status);requireDirectResponse(status,page.html,retryAfter);return page;}finally{c.disconnect();}
@@ -348,13 +349,13 @@ final class LanzouCore {
       String current=url;DirectLink page=getBootstrapOnce(current,referer);for(int round=0;round<3;round++){if(page.redirected)return page;String value=acwCookie(page.html);if(value.isEmpty())return page;current=page.url==null||page.url.isEmpty()?current:page.url;put(new URL(current).getHost(),"acw_sc__v2",value);page=getBootstrapOnce(current,referer);}if(page.redirected)return page;if(!acwCookie(page.html).isEmpty())throw new DirectRetryException("蓝奏 ACW 验证未完成",1000,false);return page;
     }
     private DirectLink getBootstrapOnce(String url,String referer)throws Exception{
-      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();try{c.setInstanceFollowRedirects(false);applyTimeouts(c);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(!referer.isEmpty())c.setRequestProperty("Referer",referer);String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);
+      url=preferredLanzouUrl(url);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();try{c.setInstanceFollowRedirects(false);applyTimeouts(c);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(!referer.isEmpty())c.setRequestProperty("Referer",preferredLanzouUrl(referer));String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);
       int status=c.getResponseCode();capture(c);DirectLink page=new DirectLink();String location=c.getHeaderField("Location");page.cookie=cookies(new URL(url).getHost());
       if(status>=300&&status<400&&location!=null&&!location.trim().isEmpty()){page.url=new URL(new URL(url),location.trim()).toString();page.html="";page.redirected=true;}else{page.url=url;page.html=readBody(c,status);}
       String retryAfter=c.getHeaderField("Retry-After");requireDirectResponse(status,page.html,retryAfter);return page;}finally{c.disconnect();}
     }
     String post(String url,Map<String,String> data,DirectLink referer)throws Exception{
-      HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();try{applyTimeouts(c);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*");c.setRequestProperty("Referer",referer.url);c.setRequestProperty("Origin",origin(referer.url));c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);byte[] bytes=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}int status=c.getResponseCode();capture(c);String result=readBody(c,status),retryAfter=c.getHeaderField("Retry-After");requireDirectResponse(status,result,retryAfter);return result;}finally{c.disconnect();}
+      url=preferredLanzouUrl(url);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();try{applyTimeouts(c);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*");c.setRequestProperty("Referer",referer.url);c.setRequestProperty("Origin",origin(referer.url));c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");String cookie=cookies(new URL(url).getHost());if(!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);byte[] bytes=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(bytes.length);try(OutputStream out=c.getOutputStream()){out.write(bytes);}int status=c.getResponseCode();capture(c);String result=readBody(c,status),retryAfter=c.getHeaderField("Retry-After");requireDirectResponse(status,result,retryAfter);return result;}finally{c.disconnect();}
     }
     void sleep(long millis)throws Exception{if(deadline==NO_DEADLINE){Thread.sleep(millis);return;}int remaining=directRemainingMillis(deadline);if(remaining<=millis){Thread.sleep(Math.max(1,remaining));throw new SocketTimeoutException("直链解析超时");}Thread.sleep(millis);directRemainingMillis(deadline);}
     private void applyTimeouts(HttpURLConnection connection)throws SocketTimeoutException{if(deadline==NO_DEADLINE){connection.setConnectTimeout(15000);connection.setReadTimeout(30000);return;}int remaining=directRemainingMillis(deadline);int connect=Math.max(1,Math.min(4000,remaining/3));int read=Math.max(1,Math.min(8000,remaining-connect));connection.setConnectTimeout(connect);connection.setReadTimeout(read);}
@@ -685,6 +686,22 @@ final class LanzouCore {
   private static void applyBuiltInHints(List<Models.Source> sources){byte[] hints=BUILT_IN_SOURCE_HINTS;if(hints==null)return;for(int i=0;i<sources.size()&&i<hints.length;i++){SourceProfile profile=SOURCE_PROFILES.get(sources.get(i).url);if(profile!=null)profile.applyHint(hints[i]&255);}}
   private static boolean capabilityAllowed(byte seen,byte available,byte ua){byte bit=uaBit(ua);return(seen&bit)==0||(available&bit)!=0;}
   private static boolean containsControl(String value){for(int i=0;i<value.length();i++)if(Character.isISOControl(value.charAt(i)))return true;return false;}
+  static String normalizePreferredSourceOrigin(String raw)throws IOException{
+    try{
+      String value=raw==null?"":raw.trim().replace('。','.').replace('．','.');
+      if(!value.matches("(?i)^[a-z][a-z0-9+.-]*://.*"))value="https://"+value;
+      URI uri=new URI(value);String host=uri.getHost();
+      if(host==null||!uri.getScheme().equalsIgnoreCase("https")||!LANZOU_HOST.matcher(host).matches()||uri.getRawUserInfo()!=null||uri.getPort()!=-1||uri.getRawQuery()!=null||uri.getRawFragment()!=null||(uri.getRawPath()!=null&&!uri.getRawPath().isEmpty()&&!uri.getRawPath().equals("/")))throw new IOException("请输入有效的蓝奏 HTTPS 基础链接");
+      host=host.toLowerCase(Locale.ROOT);if(!host.contains("."))throw new IOException("请输入完整的蓝奏域名");
+      return new URI("https",null,host,-1,"",null,null).toASCIIString();
+    }catch(IOException error){throw error;}catch(Exception ignored){throw new IOException("请输入有效的蓝奏 HTTPS 基础链接");}
+  }
+  static void setPreferredSourceOrigin(String raw){try{preferredSourceOrigin=normalizePreferredSourceOrigin(raw);}catch(Exception ignored){preferredSourceOrigin=CANONICAL_SOURCE_ORIGIN;}}
+  static String preferredSourceOrigin(){return preferredSourceOrigin;}
+  static String preferredLanzouUrl(String raw){
+    if(raw==null||raw.isEmpty())return raw==null?"":raw;
+    try{URI source=new URI(raw),target=new URI(preferredSourceOrigin);String host=source.getHost();if(host==null||!LANZOU_HOST.matcher(host).matches()||source.getRawUserInfo()!=null||source.getPort()!=-1)return raw;return new URI(target.getScheme(),null,target.getHost(),-1,source.getRawPath(),source.getRawQuery(),source.getRawFragment()).toASCIIString();}catch(Exception ignored){return raw;}
+  }
   private static String normalizeUserSourceUrl(String raw)throws IOException{
     return parseUserSourceInput(raw,"").url;
   }
@@ -800,6 +817,7 @@ final class LanzouCore {
   void setDirectoryCachingEnabled(boolean enabled){directoryCachingEnabled=enabled;}
   boolean directoryCachingEnabled(){return directoryCachingEnabled;}
   int clearDirectoryCache(){int removed=0;File[] files=context.getCacheDir().listFiles((directory,name)->name.startsWith("folder-v3-")&&name.endsWith(".json"));if(files!=null)for(File file:files)if(file.delete())removed++;synchronized(directorySearchIndexLock){directoryCacheRevision.incrementAndGet();directorySearchIndex=null;}return removed;}
+  void clearPreferredOriginSessions(){browseSessions.clear();}
   void cancelBackgroundIndex(){indexCancelled.set(true);}
   void close(){if(!closed.compareAndSet(false,true))return;indexCancelled.set(true);directorySearchWarmGeneration.incrementAndGet();synchronized(directorySearchWarmScheduleLock){if(directorySearchWarmFuture!=null)directorySearchWarmFuture.cancel(true);directorySearchWarmFuture=null;}indexMaintenance.shutdownNow();searchScheduler.shutdownNow();searchPool.shutdownNow();compositeWarmPool.shutdownNow();browseSessions.clear();}
 
@@ -1145,9 +1163,9 @@ final class LanzouCore {
     if(page!=null&&!acwCookie(page.html).isEmpty())throw new IOException("蓝奏 ACW 验证未完成");
     return page;
   }
-  private static DirectLink getPage(String url,String cookie,long deadline,String userAgent)throws Exception{checkDeadline(deadline);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();trackConnection(c,true);try{applyTimeouts(c,deadline);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(cookie!=null&&!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);c.getResponseCode();DirectLink page=new DirectLink();page.url=c.getURL().toString();page.cookie=captureCookies(cookie,c);page.html=body(c);return page;}finally{c.disconnect();trackConnection(c,false);}}
+  private static DirectLink getPage(String url,String cookie,long deadline,String userAgent)throws Exception{checkDeadline(deadline);url=preferredLanzouUrl(url);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();trackConnection(c,true);try{applyTimeouts(c,deadline);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept-Encoding","gzip");if(cookie!=null&&!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);c.getResponseCode();DirectLink page=new DirectLink();page.url=c.getURL().toString();page.cookie=captureCookies(cookie,c);page.html=body(c);return page;}finally{c.disconnect();trackConnection(c,false);}}
   private static String post(String url,Map<String,String> data,DirectLink page,long deadline)throws Exception{return post(url,data,page,deadline,ANDROID_UA);}
-  private static String post(String url,Map<String,String> data,DirectLink page,long deadline,String userAgent)throws Exception{synchronized(page){checkDeadline(deadline);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();trackConnection(c,true);try{applyTimeouts(c,deadline);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Referer",page.url);c.setRequestProperty("Origin",origin(page.url));if(!page.cookie.isEmpty())c.setRequestProperty("Cookie",page.cookie);c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");byte[] b=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(b.length);try(OutputStream o=c.getOutputStream()){o.write(b);}c.getResponseCode();page.cookie=captureCookies(page.cookie,c);return body(c);}finally{c.disconnect();trackConnection(c,false);}}}
+  private static String post(String url,Map<String,String> data,DirectLink page,long deadline,String userAgent)throws Exception{synchronized(page){checkDeadline(deadline);url=preferredLanzouUrl(url);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();trackConnection(c,true);try{applyTimeouts(c,deadline);c.setDoOutput(true);c.setRequestMethod("POST");c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Referer",page.url);c.setRequestProperty("Origin",origin(page.url));if(!page.cookie.isEmpty())c.setRequestProperty("Cookie",page.cookie);c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");byte[] b=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(b.length);try(OutputStream o=c.getOutputStream()){o.write(b);}c.getResponseCode();page.cookie=captureCookies(page.cookie,c);return body(c);}finally{c.disconnect();trackConnection(c,false);}}}
   private static void trackConnection(HttpURLConnection connection,boolean open){ConnectionTracker tracker=SEARCH_CONNECTIONS.get();if(tracker!=null){if(open)tracker.opened(connection);else tracker.closed(connection);}}
   private static String captureCookies(String existing,HttpURLConnection connection){LinkedHashMap<String,String> values=cookieValues(existing);mergeSetCookies(values,connection.getHeaderFields());return cookieHeader(values);}
   private static String mergeCookie(String existing,String name,String value){LinkedHashMap<String,String> values=cookieValues(existing);values.put(name,value);return cookieHeader(values);}

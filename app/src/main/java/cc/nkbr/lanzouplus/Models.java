@@ -82,7 +82,7 @@ final class Models {
 
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
-      return new SearchOptions(Math.max(1,Math.min(4096,concurrency)),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode);
+      return new SearchOptions(concurrency<=0?0:Math.min(4096,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode);
     }
   }
   interface Progress {

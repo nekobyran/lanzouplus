@@ -44,14 +44,14 @@ final class Models {
   }
   /** Per-search tuning. LanzouCore consumes a clamped copy for every run. */
   static final class SearchOptions {
-    static final int MODE_MIXED=0,MODE_API=1,MODE_DIRECTORY=2;
+    static final int MODE_MIXED=0,MODE_API=1,MODE_DIRECTORY=2,MODE_INDEX=3;
     int concurrency=16;
     /** Fair active-source time slice; 0 keeps an active source until it finishes. */
     long sourceSwitchDelayMillis=0L;
     boolean untilLastPage=true;
     /** Search every nested folder discovered below a source. Session-only UI option. */
     boolean recursiveFolders;
-    /** Mixed by default; callers may select API-only or cached/live directory matching. */
+    /** Mixed by default; callers may select API-only, directory matching, or persisted-index-only matching. */
     int mode=MODE_MIXED;
     int maxPages;
 
@@ -73,12 +73,14 @@ final class Models {
     }
 
     SearchOptions withMode(int value){
-      mode=value<MODE_MIXED||value>MODE_DIRECTORY?MODE_MIXED:value;
+      mode=value<MODE_MIXED||value>MODE_INDEX?MODE_MIXED:value;
       return this;
     }
 
     boolean apiOnly(){return mode==MODE_API;}
     boolean directoryOnly(){return mode==MODE_DIRECTORY;}
+    /** Never admits network work; callers return only persisted search and directory indexes. */
+    boolean indexOnly(){return mode==MODE_INDEX;}
 
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
@@ -103,6 +105,8 @@ final class Models {
     /** Waits at a source/page boundary; false means the search was superseded. */
     default boolean awaitIfPaused(){return !isCancelled();}
     default void onFailure(String current) {}
+    /** A full directory scan for this logical source completed and may advance the persisted index region. */
+    default void onIndexSource(String sourceId,String current) {}
   }
   interface FolderProgress {
     void onProgress(int folders,int files,String current);

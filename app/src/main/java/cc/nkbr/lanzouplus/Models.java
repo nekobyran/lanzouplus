@@ -51,6 +51,8 @@ final class Models {
     boolean untilLastPage=true;
     /** Search every nested folder discovered below a source. Session-only UI option. */
     boolean recursiveFolders;
+    /** Directory/index fuzzy match: exact contains first, then ordered subsequence. API search ignores it. */
+    boolean fuzzyMatching;
     /** Mixed by default; callers may select API-only, directory matching, or persisted-index-only matching. */
     int mode=MODE_MIXED;
     int maxPages;
@@ -77,6 +79,11 @@ final class Models {
       return this;
     }
 
+    SearchOptions withFuzzyMatching(boolean value){
+      fuzzyMatching=value;
+      return this;
+    }
+
     boolean apiOnly(){return mode==MODE_API;}
     boolean directoryOnly(){return mode==MODE_DIRECTORY;}
     /** Never admits network work; callers return only persisted search and directory indexes. */
@@ -84,7 +91,7 @@ final class Models {
 
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
-      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode);
+      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode).withFuzzyMatching(mode!=MODE_API&&fuzzyMatching);
     }
   }
   interface Progress {

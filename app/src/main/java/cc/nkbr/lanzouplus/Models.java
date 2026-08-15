@@ -45,16 +45,17 @@ final class Models {
   /** Per-search tuning. LanzouCore consumes a clamped copy for every run. */
   static final class SearchOptions {
     static final int MODE_MIXED=0,MODE_API=1,MODE_DIRECTORY=2,MODE_INDEX=3;
+    static final int MASK_API=1,MASK_DIRECTORY=2,MASK_INDEX=4,MASK_ALL=MASK_API|MASK_DIRECTORY|MASK_INDEX;
     int concurrency=0;
     /** Fair active-source time slice; 0 keeps an active source until it finishes. */
     long sourceSwitchDelayMillis=0L;
     boolean untilLastPage=true;
     /** Search every nested folder discovered below a source. Session-only UI option. */
     boolean recursiveFolders;
-    /** Directory/index fuzzy match: exact contains first, then ordered subsequence. API search ignores it. */
+    /** Directory fuzzy match: exact contains first, then ordered subsequence. API search ignores it. */
     boolean fuzzyMatching;
-    /** Mixed by default; callers may select API-only, directory matching, or persisted-index-only matching. */
-    int mode=MODE_MIXED;
+    /** Legacy single-mode view; modeMask is authoritative for multi-select search backends. */
+    int mode=MODE_MIXED,modeMask=MASK_ALL;
     int maxPages;
 
     SearchOptions() {}
@@ -76,6 +77,13 @@ final class Models {
 
     SearchOptions withMode(int value){
       mode=value<MODE_MIXED||value>MODE_INDEX?MODE_MIXED:value;
+      modeMask=maskForMode(mode);
+      return this;
+    }
+
+    SearchOptions withModeMask(int value){
+      modeMask=normalizeModeMask(value);
+      mode=modeForMask(modeMask);
       return this;
     }
 
@@ -84,14 +92,21 @@ final class Models {
       return this;
     }
 
-    boolean apiOnly(){return mode==MODE_API;}
-    boolean directoryOnly(){return mode==MODE_DIRECTORY;}
+    static int normalizeModeMask(int value){int mask=value&MASK_ALL;return mask==0?MASK_DIRECTORY:mask;}
+    static int maskForMode(int value){switch(value){case MODE_API:return MASK_API;case MODE_DIRECTORY:return MASK_DIRECTORY;case MODE_INDEX:return MASK_INDEX;default:return MASK_ALL;}}
+    static int modeForMask(int mask){mask=normalizeModeMask(mask);return mask==MASK_API?MODE_API:mask==MASK_DIRECTORY?MODE_DIRECTORY:mask==MASK_INDEX?MODE_INDEX:MODE_MIXED;}
+    boolean apiEnabled(){return (modeMask&MASK_API)!=0;}
+    boolean directoryEnabled(){return (modeMask&MASK_DIRECTORY)!=0;}
+    boolean indexEnabled(){return (modeMask&MASK_INDEX)!=0;}
+    boolean apiOnly(){return modeMask==MASK_API;}
+    boolean directoryOnly(){return modeMask==MASK_DIRECTORY;}
     /** Never admits network work; callers return only persisted search and directory indexes. */
-    boolean indexOnly(){return mode==MODE_INDEX;}
+    boolean indexOnly(){return modeMask==MASK_INDEX;}
 
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
-      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode).withFuzzyMatching(mode!=MODE_API&&fuzzyMatching);
+      int mask=normalizeModeMask(modeMask);
+      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching);
     }
   }
   interface Progress {

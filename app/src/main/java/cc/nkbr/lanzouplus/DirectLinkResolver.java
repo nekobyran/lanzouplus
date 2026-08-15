@@ -11,9 +11,7 @@ final class DirectLinkResolver implements AutoCloseable {
   interface Ticket { boolean cancel(); }
   interface Clock { long now(); }
   static final long TTL_MS=60*60*1000L;
-  static final int MAX_PARALLELISM=128;
-  private static final int MAX_UNLIMITED_WORKERS=256;
-  private static final long MIB=1024L*1024L,WORKER_STACK_BYTES=262144L;
+  private static final long WORKER_STACK_BYTES=262144L;
   private static final String PREFS="direct_links",DIRECT="d:",TIME="t:",PASS="pw:";
   private final LanzouCore core;
   private final SharedPreferences prefs;
@@ -25,25 +23,22 @@ final class DirectLinkResolver implements AutoCloseable {
   private final ScheduledThreadPoolExecutor retries=new ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"lanzou-resolve-retry");t.setDaemon(true);return t;});
   private volatile boolean closed;
   private volatile int parallelism;
-  private final int adaptiveUnlimitedLimit;
-  private int emergencyWorkerCeiling=MAX_UNLIMITED_WORKERS,active;
+  private int emergencyWorkerCeiling=Integer.MAX_VALUE,active;
   private long nextSequence;
 
   DirectLinkResolver(Context context,LanzouCore core){this(context,core,System::currentTimeMillis);}
   DirectLinkResolver(Context context,LanzouCore core,Clock clock){
     this.core=core;this.clock=clock;this.prefs=context.getApplicationContext().getSharedPreferences(PREFS,Context.MODE_PRIVATE);
     parallelism=normalizeParallelism(context.getApplicationContext().getSharedPreferences("download_settings-v1",Context.MODE_PRIVATE).getInt("parallel_resolves",0));
-    adaptiveUnlimitedLimit=adaptiveUnlimitedLimit();
-    executor=new ThreadPoolExecutor(0,MAX_UNLIMITED_WORKERS,60L,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-resolve",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
+    executor=new ThreadPoolExecutor(0,Integer.MAX_VALUE,60L,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-resolve",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
     executor.allowCoreThreadTimeOut(true);cleanupExpired();
   }
 
   void setParallelism(int value){int selected=normalizeParallelism(value);synchronized(lock){parallelism=selected;pumpLocked();}}
   int parallelism(){return parallelism;}
   int effectiveParallelism(){synchronized(lock){return effectiveLimitLocked();}}
-  private static int normalizeParallelism(int value){return value<0||value>MAX_PARALLELISM?0:value;}
-  private static int adaptiveUnlimitedLimit(){long heap=Runtime.getRuntime().maxMemory();if(heap<=128L*MIB)return 16;if(heap<=192L*MIB)return 24;if(heap<=256L*MIB)return 32;if(heap<=384L*MIB)return 40;return 48;}
-  private int effectiveLimitLocked(){int desired=parallelism==0?adaptiveUnlimitedLimit:parallelism;return Math.max(1,Math.min(desired,emergencyWorkerCeiling));}
+  private static int normalizeParallelism(int value){return Math.max(0,value);}
+  private int effectiveLimitLocked(){int device=LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE),desired=parallelism==0?device:parallelism;return Math.max(1,Math.min(Math.min(desired,device),emergencyWorkerCeiling));}
 
   void prewarm(String shareUrl){resolve(shareUrl,false,null);}
   void prewarm(String shareUrl,Callback callback){resolve(shareUrl,false,callback);}
@@ -80,7 +75,7 @@ final class DirectLinkResolver implements AutoCloseable {
   boolean cancelPasswordRequest(String shareUrl){String url=clean(shareUrl);Request request;synchronized(lock){request=inflight.get(url);if(request==null||request.done||!request.awaitingPassword)return false;request.awaitingPassword=false;}finished(request,null,0,"直链解析已取消");return true;}
 
   private void enqueueLocked(Request request){if(closed||request.done||request.queued||request.running||request.awaitingPassword)return;request.queued=true;pending.add(request);pumpLocked();}
-  private void pumpLocked(){if(closed)return;int limit=effectiveLimitLocked();while(active<limit&&!pending.isEmpty()){Request request=pending.poll();request.queued=false;if(request.done||request.awaitingPassword)continue;request.running=true;active++;try{executor.execute(()->runAdmitted(request));}catch(RejectedExecutionException rejected){request.running=false;active--;request.done=true;inflight.remove(request.url,request);}catch(OutOfMemoryError exhausted){request.running=false;if(active>0)active--;int floor=Math.max(16,active),reduced=Math.max(floor,Math.max(16,limit/2));emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);request.queued=true;pending.add(request);if(active==0){pending.remove(request);request.queued=false;request.done=true;inflight.remove(request.url,request);for(Callback callback:new ArrayList<>(request.callbacks))try{callback.failed("系统资源不足，请降低解析并发");}catch(RuntimeException ignored){}}return;}}}
+  private void pumpLocked(){if(closed)return;int limit=effectiveLimitLocked();while(active<limit&&!pending.isEmpty()){Request request=pending.poll();request.queued=false;if(request.done||request.awaitingPassword)continue;request.running=true;active++;try{executor.execute(()->runAdmitted(request));}catch(RejectedExecutionException rejected){request.running=false;active--;request.done=true;inflight.remove(request.url,request);}catch(OutOfMemoryError exhausted){request.running=false;if(active>0)active--;int reduced=Math.max(1,Math.max(active,limit/2));emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);request.queued=true;pending.add(request);if(active==0){pending.remove(request);request.queued=false;request.done=true;inflight.remove(request.url,request);for(Callback callback:new ArrayList<>(request.callbacks))try{callback.failed("系统资源不足，请降低解析并发");}catch(RuntimeException ignored){}}return;}}}
   private void runAdmitted(Request request){try{request.resolveNow();}finally{synchronized(lock){if(request.running){request.running=false;if(active>0)active--;}if(request.resumePending&&!request.done&&!request.awaitingPassword){request.resumePending=false;enqueueLocked(request);}pumpLocked();}}}
   private boolean cancel(Request request,Callback callback){synchronized(lock){if(request.done||!request.callbacks.remove(callback))return false;if(request.callbacks.isEmpty()&&!request.running){request.done=true;request.awaitingPassword=false;if(request.queued){pending.remove(request);request.queued=false;}inflight.remove(request.url,request);}return true;}}
 

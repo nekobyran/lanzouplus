@@ -45,7 +45,7 @@ final class Models {
   /** Per-search tuning. LanzouCore consumes a clamped copy for every run. */
   static final class SearchOptions {
     static final int MODE_MIXED=0,MODE_API=1,MODE_DIRECTORY=2,MODE_INDEX=3;
-    int concurrency=16;
+    int concurrency=0;
     /** Fair active-source time slice; 0 keeps an active source until it finishes. */
     long sourceSwitchDelayMillis=0L;
     boolean untilLastPage=true;
@@ -84,7 +84,7 @@ final class Models {
 
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
-      return new SearchOptions(concurrency<=0?0:Math.min(4096,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode);
+      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withMode(mode);
     }
   }
   interface Progress {

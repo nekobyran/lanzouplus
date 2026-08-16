@@ -13,7 +13,7 @@ import java.util.regex.*;
 import java.util.zip.GZIPInputStream;
 
 final class LanzouCore {
-  private static final String ANDROID_UA="Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36";
+  private static final String ANDROID_UA="Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
   private static final String DESKTOP_SEARCH_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
   private static final int[] POS={15,35,29,24,33,16,1,38,10,9,19,31,40,27,22,23,25,13,6,11,39,18,20,8,14,21,32,26,2,30,7,4,17,5,3,28,34,37,12,36};
   private static final String MASK="3000176000856006061501533003690027800375";
@@ -126,6 +126,7 @@ final class LanzouCore {
   private static final class UaProbe{Models.Folder folder;DirectLink session;Exception error;long elapsed;int items;boolean directory,search;}
   private static final class ShareCancelledException extends IOException{ShareCancelledException(){super("分享已取消");}}
   private static final class PageRateLimitedException extends IOException{PageRateLimitedException(String message){super(message);}}
+  private static final class RecoverableBrowseException extends IOException{RecoverableBrowseException(String message){super(message);}}
   private static final class PageWaitException extends IOException{final long delayMillis;PageWaitException(long delayMillis){super("目录请求等待调度");this.delayMillis=delayMillis;}}
   private static final class SearchApiPage{DirectLink page;JSONArray items;int state,count,total=-1;boolean available,used;}
   private static final class SourceSearchState{
@@ -954,7 +955,7 @@ final class LanzouCore {
     int page=Math.max(1,requestedPage);String pwd=password==null?"":password;
     File cache=folderCache(url,pwd,page);Models.Folder cached=null;if(cache.isFile())try{cached=fromJson(read(cache));}catch(Exception ignored){cached=null;}if(cached!=null&&!refresh)return cached;
     SourceProfile profile=sourceProfile(url);byte first=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;PageResult empty=null;Exception last=null;
-    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{PageResult result=browsePageUa(url,pwd,refresh,page,deadline,strictFolders,profile,ua);if(result.usable){profile.directoryUa=ua;return result.folder;}if(empty==null)empty=result;}catch(Exception error){last=error;}}
+    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{PageResult result=browsePageUa(url,pwd,refresh,page,deadline,strictFolders,profile,ua);if(result.usable){profile.directoryUa=ua;return result.folder;}if(empty==null)empty=result;}catch(Exception error){last=error;if(page>1&&recoverableBrowseError(error)){invalidateBrowseSessions(url,pwd);awaitRecoverablePageRetry(profile,ua,page,deadline);try{PageResult replay=browsePageUa(url,pwd,true,page,deadline,strictFolders,profile,ua);if(replay.usable){profile.directoryUa=ua;return replay.folder;}if(empty==null)empty=replay;}catch(Exception retryError){last=retryError;}}}}
     if(empty!=null)return empty.folder;if(cached!=null&&!strictFolders)return cached;throw last==null?new IOException("蓝奏目录暂不可用"):last;
   }
 
@@ -981,8 +982,9 @@ final class LanzouCore {
   }
 
   private void primeListingSession(DirectLink session,long deadline,SourceProfile profile)throws Exception{
-    Map<String,String> first=new LinkedHashMap<>(session.form);first.put("pg","1");JSONObject data=postListing(session,first,deadline,1,profile);if(data.optInt("zt",-1)==1)session.authorized=true;
+    Map<String,String> first=new LinkedHashMap<>(session.form);first.put("pg","1");JSONObject data=postListing(session,first,deadline,1,profile);int state=data.optInt("zt",-1);if(state==1){session.authorized=true;return;}String message=data.optString("info",data.optString("msg","目录接口需要重试"));throw new RecoverableBrowseException(message);
   }
+  private void awaitRecoverablePageRetry(SourceProfile profile,byte ua,int page,long deadline)throws Exception{int delay=Math.max(profile.interval(ua,page),profile.backoff(ua,page));long until=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(Math.min(6000,Math.max(1200,delay)));while(System.nanoTime()<until){checkDeadline(deadline);Thread.sleep(120L);}}
 
   private DirectLink browseSession(String url,String password,long deadline,boolean force,byte ua)throws Exception{
     DirectLink target=parseFolderTarget(url);String key=target.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+ua;long now=System.currentTimeMillis();pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);
@@ -1028,9 +1030,9 @@ final class LanzouCore {
 
   private static JSONObject postPage(DirectLink session,String endpoint,Map<String,String> form,long deadline,int page,SourceProfile profile,String errorMessage)throws Exception{
     if(endpoint.isEmpty())throw new IOException("未找到目录接口");String url=new URL(new URL(session.page.url),endpoint).toString(),key=pageRateKey(session);JSONObject data=null;
-    BooleanSupplier asyncCancelled=ASYNC_PAGE_CANCEL.get();if(asyncCancelled!=null){checkSearchCancelled(asyncCancelled);long wait=reservePageSlot(key,profile.interval(session.ua,page));if(wait>0)throw new PageWaitException(wait);String raw=post(url,form,session.page,deadline,userAgent(session.ua));checkSearchCancelled(asyncCancelled);if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int delay=profile.backoff(session.ua,page);deferPageSlot(key,delay);throw new PageRateLimitedException(data.optString("info","目录请求过快，请稍后重试"));}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);throw new IOException(message);}
-    for(int attempt=0;attempt<3;attempt++){int interval=profile.interval(session.ua,page);awaitPageSlot(key,deadline,interval,null);String raw=post(url,form,session.page,deadline,userAgent(session.ua));if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int backedOff=profile.backoff(session.ua,page);deferPageSlot(key,backedOff);continue;}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);throw new IOException(message);}
-    throw new IOException(data==null?errorMessage:data.optString("info","目录请求过快，请稍后重试"));
+    BooleanSupplier asyncCancelled=ASYNC_PAGE_CANCEL.get();if(asyncCancelled!=null){checkSearchCancelled(asyncCancelled);long wait=reservePageSlot(key,profile.interval(session.ua,page));if(wait>0)throw new PageWaitException(wait);String raw=post(url,form,session.page,deadline,userAgent(session.ua));checkSearchCancelled(asyncCancelled);if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int delay=profile.backoff(session.ua,page);deferPageSlot(key,delay);throw new PageRateLimitedException(data.optString("info","目录请求过快，请稍后重试"));}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);if(isRecoverableBrowseMessage(message))throw new RecoverableBrowseException(message);throw new IOException(message);}
+    for(int attempt=0;attempt<3;attempt++){int interval=profile.interval(session.ua,page);awaitPageSlot(key,deadline,interval,null);String raw=post(url,form,session.page,deadline,userAgent(session.ua));if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2)return data;if(state==4){int backedOff=profile.backoff(session.ua,page);deferPageSlot(key,backedOff);continue;}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);if(isRecoverableBrowseMessage(message))throw new RecoverableBrowseException(message);throw new IOException(message);}
+    throw new RecoverableBrowseException(data==null?errorMessage:data.optString("info","目录请求过快，请稍后重试"));
   }
 
   private static String pageRateKey(DirectLink session){return originUnchecked(session.page.url)+'|'+session.fid+'|'+session.target.folderId+'|'+session.ua;}
@@ -1188,7 +1190,8 @@ final class LanzouCore {
 
   private void prepareSearchReplay(Models.Item folder,int failedPage,BatchBudget budget,BooleanSupplier cancelled)throws Exception{invalidateBrowseSessions(folder.url,folder.password);SourceProfile profile=sourceProfile(folder.url);byte ua=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;awaitSearchDelay(profile.interval(ua,failedPage),budget,cancelled);}
   private void invalidateBrowseSessions(String url,String password){DirectLink target=parseFolderTarget(url);String pwd=password==null?"":password;for(byte ua=UA_ANDROID;ua<=UA_DESKTOP;ua++)browseSessions.remove(target.rootUrl+'\n'+pwd+'\n'+target.folderId+'\n'+ua);}
-  private static boolean recoverableBrowseError(Exception error){return !(error instanceof ShareCancelledException)&&(error instanceof IOException||error instanceof JSONException);}
+  private static boolean recoverableBrowseError(Exception error){return !(error instanceof ShareCancelledException)&&(error instanceof RecoverableBrowseException||error instanceof IOException||error instanceof JSONException);}
+  private static boolean isRecoverableBrowseMessage(String message){String value=message==null?"":message.trim();return value.isEmpty()||value.contains("稍后")||value.contains("重试")||value.contains("操作失败")||value.contains("请求过快")||value.contains("频率")||value.contains("验证");}
   private static String pageFingerprint(List<Models.Item> items){if(items.isEmpty())return"0";return items.size()+"\n"+items.get(0).url+"\n"+items.get(items.size()-1).url;}
   private static void awaitSearchDelay(long millis,BatchBudget budget,BooleanSupplier cancelled)throws Exception{long until=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(millis);while(true){checkSearchCancelled(cancelled);checkSearchBudget(budget);long left=until-System.nanoTime();if(left<=0)return;Thread.sleep(Math.max(1L,Math.min(200L,TimeUnit.NANOSECONDS.toMillis(left))));}}
 
@@ -1219,10 +1222,11 @@ final class LanzouCore {
   private static String searchEndpoint(DirectLink page){return sameOriginEndpoint(page,cap(page.html,"url\\s*:\\s*['\"]([^'\"]*/search/s\\.php\\?file=\\d+[^'\"]*)['\"]"),"/search/s.php");}
   private static String searchSign(String html){return cap(html,"['\"]sign['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");}
   private static boolean hasSearchCapability(DirectLink page){return !searchEndpoint(page).isEmpty()&&!searchSign(page.html).isEmpty();}
+  private static boolean isWafChallengePage(String html){String value=html==null?"":html;return value.contains("aliyun_waf")||value.contains("captchaV2")||value.contains("请完成以下操作，验证您是真人")||value.contains("verify that you are a real person");}
   private static String sameOriginEndpoint(DirectLink page,String raw,String expectedPath){if(raw.isEmpty())return"";try{URL base=new URL(page.url),endpoint=new URL(base,raw);if(!base.getProtocol().equalsIgnoreCase(endpoint.getProtocol())||!base.getHost().equalsIgnoreCase(endpoint.getHost())||effectivePort(base)!=effectivePort(endpoint)||!endpoint.getPath().endsWith(expectedPath))return"";return endpoint.toString();}catch(Exception ignored){return"";}}
   private static int effectivePort(URL url){return url.getPort()>=0?url.getPort():url.getDefaultPort();}
   private static void requireLanzouPage(String value)throws IOException{try{URL url=new URL(value);if(!url.getProtocol().equalsIgnoreCase("https")||!LANZOU_HOST.matcher(url.getHost()).matches())throw new IOException("蓝奏目录跳转到了不受信任的地址");}catch(IOException error){throw error;}catch(Exception ignored){throw new IOException("蓝奏目录返回地址无效");}}
-  private static void requireActiveShare(DirectLink page)throws ShareCancelledException{String html=page==null||page.html==null?"":page.html;if(html.contains("filemoreajax.php")||pageTemplate(html)!=TEMPLATE_UNKNOWN)return;String text=strip(html).replaceAll("\\s+","").replace("，","").replace(",","");if(text.contains("分享已取消")||text.contains("文件取消分享")||text.contains("文件已取消分享")||text.contains("已被取消分享")||text.contains("文件不存在或已删除"))throw new ShareCancelledException();}
+  private static void requireActiveShare(DirectLink page)throws IOException{String html=page==null||page.html==null?"":page.html;if(isWafChallengePage(html))throw new IOException("Lanzou WAF captcha challenge");if(html.contains("filemoreajax.php")||pageTemplate(html)!=TEMPLATE_UNKNOWN)return;String text=strip(html).replaceAll("\\s+","").replace("，","").replace(",","");if(text.contains("分享已取消")||text.contains("文件取消分享")||text.contains("文件已取消分享")||text.contains("已被取消分享")||text.contains("文件不存在或已删除"))throw new ShareCancelledException();}
   private static DirectLink getGuarded(String url,long deadline)throws Exception{return getGuarded(url,deadline,ANDROID_UA);}
   private static DirectLink getGuarded(String url,long deadline,String userAgent)throws Exception{return getGuarded(url,deadline,userAgent,"");}
   private static DirectLink getGuarded(String url,long deadline,String userAgent,String initialCookie)throws Exception{

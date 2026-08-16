@@ -27,5 +27,5 @@ android {
 dependencies {
  implementation("dev.rikka.shizuku:api:13.1.5")
  implementation("dev.rikka.shizuku:provider:13.1.5")
- compileOnly("androidx.annotation:annotation:1.3.10")
+ compileOnly("androidx.annotation:annotation:1.4.0")
 }

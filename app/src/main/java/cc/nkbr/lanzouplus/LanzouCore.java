@@ -52,7 +52,7 @@ final class LanzouCore {
   private static final String DIRECTORY_INDEX_PREFS="directory-index-v2";
   private static final String SEARCH_INDEX_FILE="search-index-v1.json";
   private static final int MAX_SEARCH_INDEX_ITEMS=50000,SEARCH_INDEX_FLUSH_ITEMS=250;
-  private static final String CANONICAL_SOURCE_ORIGIN="https://www.lanzouw.com";
+  private static final String CANONICAL_SOURCE_ORIGIN="https://wwc.lanzouw.com";
   private static final int RULE_LIMIT=512*1024;
   private static final Pattern ICON_DATE=Pattern.compile("(?:^|/)(\\d{4})/(\\d{2})/(\\d{2})(?:/|$)");
   private static final Pattern INVALID_FILE_NAME=Pattern.compile("[\\\\/:*?\"<>|]");
@@ -108,7 +108,7 @@ final class LanzouCore {
   private final ThreadPoolExecutor backgroundPool=newBackgroundPool();
   private final ScheduledThreadPoolExecutor searchScheduler=newSearchScheduler();
   LanzouCore(Context c){context=c.getApplicationContext();directCookiePool=new DirectCookiePool(context);loadPersistedCompositeMembers();}
-  static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized,redirected;byte ua,template; }
+  static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized,redirected,passwordUnlocked;byte ua,template; }
   private static final class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);this.retryAfterMs=Math.max(1000,retryAfterMs);this.rateLimited=rateLimited;}}
   static final class DirectPasswordException extends IOException{DirectPasswordException(){super("需要访问密码");}DirectPasswordException(String message){super(message==null||message.trim().isEmpty()?"需要访问密码":message.trim());}}
   private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,path,folded;final int depth,page;final long expiresAt;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path){this(item,sourceId,depth,page,path,Long.MAX_VALUE);}CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path,long expiresAt){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.path=path==null?"":path;this.folded=foldDirectorySearch(item.title+"\n"+this.path);this.expiresAt=expiresAt<=0?Long.MAX_VALUE:expiresAt;}}
@@ -129,7 +129,7 @@ final class LanzouCore {
     synchronized int interval(byte ua,int page){return ua==UA_DESKTOP?(page<=1?desktopInitial:desktopNext):(page<=1?androidInitial:androidNext);}
     synchronized int backoff(byte ua,int page){int value=interval(ua,page),next=Math.min(MAX_PAGE_INTERVAL_MS,Math.max(value+300,value*2));if(ua==UA_DESKTOP){if(page<=1)desktopInitial=next;else desktopNext=next;}else if(page<=1)androidInitial=next;else androidNext=next;return next;}
   }
-  private static final class PageResult{final Models.Folder folder;final boolean usable;PageResult(Models.Folder folder,boolean usable){this.folder=folder;this.usable=usable;}}
+  private static final class PageResult{final Models.Folder folder;final boolean usable,unauthorized;PageResult(Models.Folder folder,boolean usable){this(folder,usable,false);}PageResult(Models.Folder folder,boolean usable,boolean unauthorized){this.folder=folder;this.usable=usable;this.unauthorized=unauthorized;}}
   private static final class UaProbe{Models.Folder folder;DirectLink session;Exception error;long elapsed;int items;boolean directory,search;}
   private static final class ShareCancelledException extends IOException{ShareCancelledException(){super("分享已取消");}}
   private static final class PageRateLimitedException extends IOException{PageRateLimitedException(String message){super(message);}}
@@ -972,7 +972,7 @@ final class LanzouCore {
     int page=Math.max(1,requestedPage);String pwd=password==null?"":password;
     File cache=folderCache(url,pwd,page);Models.Folder cached=null;if(cache.isFile())try{cached=fromJson(read(cache));}catch(Exception ignored){cached=null;}if(cached!=null&&!refresh)return cached;
     SourceProfile profile=sourceProfile(url);byte first=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;PageResult empty=null;Exception last=null;
-    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{PageResult result=browsePageUa(url,pwd,refresh,page,deadline,strictFolders,profile,ua);if(result.usable){profile.directoryUa=ua;return result.folder;}if(empty==null)empty=result;}catch(Exception error){last=error;if(page>1&&recoverableBrowseError(error)){invalidateBrowseSessions(url,pwd);awaitRecoverablePageRetry(profile,ua,page,deadline);try{PageResult replay=browsePageUa(url,pwd,true,page,deadline,strictFolders,profile,ua);if(replay.usable){profile.directoryUa=ua;return replay.folder;}if(empty==null)empty=replay;}catch(Exception retryError){last=retryError;}}}}
+    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{PageResult result=browsePageUa(url,pwd,refresh,page,deadline,strictFolders,profile,ua);if(result.usable){profile.directoryUa=ua;return result.folder;}if(result.unauthorized){last=new DirectPasswordException("密码错误或授权失效");continue;}if(empty==null)empty=result;}catch(Exception error){last=error;if(page>1&&recoverableBrowseError(error)){invalidateBrowseSessions(url,pwd);awaitRecoverablePageRetry(profile,ua,page,deadline);try{PageResult replay=browsePageUa(url,pwd,true,page,deadline,strictFolders,profile,ua);if(replay.usable){profile.directoryUa=ua;return replay.folder;}if(empty==null)empty=replay;}catch(Exception retryError){last=retryError;}}}}
     if(empty!=null)return empty.folder;if(cached!=null&&!strictFolders)return cached;throw last==null?new IOException("蓝奏目录暂不可用"):last;
   }
 
@@ -985,8 +985,8 @@ final class LanzouCore {
       if(!session.folderEndpoint.isEmpty()){int[] count=new int[1];List<Models.Item> folders=apiFolders(session,deadline,1,true,count,profile);out.apiFolderCount=count[0];for(Models.Item folder:folders)items.put(folder.url,folder);}
     }
     Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));
-    JSONObject data=postListing(session,form,deadline,page,profile);JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);if(state==1&&(array==null||page>1&&array.length()==0))throw new IOException("目录分页返回空内容");
-    if(state==1){session.authorized=true;}if(state==1&&array!=null)for(int i=0;i<array.length();i++){
+    JSONObject data=postListing(session,form,deadline,page,profile);JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);if(state==2&&!pwd.isEmpty()&&!session.passwordUnlocked){session=unlockPasswordSession(session,pwd,deadline,profile,ua);out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));data=postListing(session,form,deadline,page,profile);array=data.optJSONArray("text");state=data.optInt("zt",-1);}if(state==1&&(array==null||page>1&&array.length()==0))throw new IOException("目录分页返回空内容");
+    if(state==2)return new PageResult(out,false,true);if(state==1){session.authorized=true;}if(state==1&&array!=null)for(int i=0;i<array.length();i++){
       JSONObject value=array.optJSONObject(i);if(value==null)continue;Models.Item item=item(value,origin(session.page.url),out.title,pwd);if(item.url.isEmpty()||item.url.endsWith("/-1"))continue;valid++;items.put(item.url,item);
     }
     out.items.addAll(items.values());out.hasMore=state==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;applyAvatarFallback(out);
@@ -1002,6 +1002,23 @@ final class LanzouCore {
     Map<String,String> first=new LinkedHashMap<>(session.form);first.put("pg","1");JSONObject data=postListing(session,first,deadline,1,profile);int state=data.optInt("zt",-1);if(state==1){session.authorized=true;return;}String message=data.optString("info",data.optString("msg","目录接口需要重试"));throw new RecoverableBrowseException(message);
   }
   private void awaitRecoverablePageRetry(SourceProfile profile,byte ua,int page,long deadline)throws Exception{int delay=Math.max(profile.interval(ua,page),profile.backoff(ua,page));long until=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(Math.min(6000,Math.max(1200,delay)));while(System.nanoTime()<until){checkDeadline(deadline);Thread.sleep(120L);}}
+
+  private DirectLink unlockPasswordSession(DirectLink session,String pwd,long deadline,SourceProfile profile,byte ua)throws Exception{
+    if(pwd==null||pwd.isEmpty())throw new DirectPasswordException();
+    String endpoint=passwordEndpoint(session.page);if(endpoint.isEmpty())throw new DirectPasswordException("目录需要密码但未找到授权接口");
+    Map<String,String> form=new LinkedHashMap<>();form.put("pwd",pwd);for(Map.Entry<String,String> entry:passwordUnlockFields(session.page.html).entrySet())form.putIfAbsent(entry.getKey(),entry.getValue());
+    JSONObject data=postPasswordUnlock(session,endpoint,form,deadline,profile,ua);String redirect=passwordRedirect(data);if(redirect.isEmpty())throw new DirectPasswordException(firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"),"目录密码验证失败"));
+    DirectLink target=parseFolderTarget(session.target.rootUrl);target.rootUrl=new URL(new URL(session.page.url),redirect).toString();if(target.folderId.isEmpty())target.folderId=session.target.folderId;invalidateBrowseSessions(session.target.rootUrl,pwd);DirectLink unlocked=browseSession(target.rootUrl,pwd,deadline,true,ua);unlocked.passwordUnlocked=true;unlocked.authorized=false;return unlocked;
+  }
+
+  private static JSONObject postPasswordUnlock(DirectLink session,String endpoint,Map<String,String> form,long deadline,SourceProfile profile,byte ua)throws Exception{
+    String url=new URL(new URL(session.page.url),endpoint).toString(),key="pwd|"+origin(session.page.url)+'|'+session.ua;JSONObject data=null;for(int attempt=0;attempt<2;attempt++){awaitPageSlot(key,deadline,profile.interval(ua,1),null);String raw=post(url,form,session.page,deadline,userAgent(ua));if(!raw.trim().startsWith("{"))throw new IOException("目录密码接口返回异常");data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2||state==3)return data;if(state==4){deferPageSlot(key,profile.backoff(ua,1));continue;}return data;}return data==null?new JSONObject():data;
+  }
+
+  private static String passwordEndpoint(DirectLink page){for(String candidate:new String[]{"/filemoreajax.php","/ajaxm.php","/ajax.php"}){String endpoint=sameOriginEndpointAny(page,candidate);if(!endpoint.isEmpty())return endpoint;}return"";}
+  private static String passwordRedirect(JSONObject data){String value=firstNonEmpty(data.optString("url"),data.optString("dom"),data.optString("href"),data.optString("info"));if(value.startsWith("http")||value.startsWith("/")||value.matches("(?i)^(?:b|s/|u/).+"))return value;return"";}
+  private static Map<String,String> passwordUnlockFields(String html){Map<String,String> out=formValues(html);return out;}
+  private static String sameOriginEndpointAny(DirectLink page,String raw){if(raw.isEmpty())return"";try{URL base=new URL(page.url),endpoint=new URL(base,raw);if(!base.getProtocol().equalsIgnoreCase(endpoint.getProtocol())||!base.getHost().equalsIgnoreCase(endpoint.getHost())||effectivePort(base)!=effectivePort(endpoint))return"";return endpoint.toString();}catch(Exception ignored){return"";}}
 
   private DirectLink browseSession(String url,String password,long deadline,boolean force,byte ua)throws Exception{
     DirectLink target=parseFolderTarget(url);String key=target.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+ua;long now=System.currentTimeMillis();pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);
@@ -1284,6 +1301,7 @@ final class LanzouCore {
   private static String originUnchecked(String url){try{return origin(url);}catch(Exception ignored){return url;}}
   private static Pattern parsePattern(String expression){Pattern cached=PARSE_PATTERNS.get(expression);if(cached!=null)return cached;Pattern compiled=Pattern.compile(expression),existing=PARSE_PATTERNS.putIfAbsent(expression,compiled);return existing==null?compiled:existing;}
   private static String cap(String s,String p){Matcher m=parsePattern(p).matcher(s);return m.find()?unescape(m.group(1).trim()):"";}
+  private static String capMulti(String s,String p){Matcher m=parsePattern(p).matcher(s);if(!m.find())return"";for(int i=1;i<=m.groupCount();i++){String value=m.group(i);if(value!=null&&!value.trim().isEmpty())return unescape(value.trim());}return"";}
   private static String divInner(String s,String cls){Matcher open=parsePattern("(?is)<div[^>]*class=[\"'][^\"']*\\b"+Pattern.quote(cls)+"\\b[^\"']*[\"'][^>]*>").matcher(s);return open.find()?balancedDivInner(s,open.end()):"";}
   private static String elementByIdInner(String s,String id){Matcher open=parsePattern("(?is)<div[^>]*\\bid=[\"']"+Pattern.quote(id)+"[\"'][^>]*>").matcher(s);return open.find()?balancedDivInner(s,open.end()):"";}
   private static String balancedDivInner(String s,int contentStart){Matcher tag=parsePattern("(?is)</?div\\b[^>]*>").matcher(s);tag.region(Math.max(0,contentStart),s.length());int depth=1;while(tag.find()){if(tag.group().trim().startsWith("</"))depth--;else depth++;if(depth==0)return s.substring(contentStart,tag.start());}return"";}

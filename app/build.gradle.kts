@@ -7,7 +7,7 @@ android {
  compileSdk = 36
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1; versionName = "1.0.0" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1004001; versionName = "1.4.1" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {
@@ -27,5 +27,5 @@ android {
 dependencies {
  implementation("dev.rikka.shizuku:api:13.1.5")
  implementation("dev.rikka.shizuku:provider:13.1.5")
- compileOnly("androidx.annotation:annotation:1.4.0")
+ compileOnly("androidx.annotation:annotation:1.4.1")
 }

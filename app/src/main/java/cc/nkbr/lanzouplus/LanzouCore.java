@@ -960,7 +960,7 @@ final class LanzouCore {
 
   private PageResult browsePageUa(String url,String pwd,boolean refresh,int page,long deadline,boolean strictFolders,SourceProfile profile,byte ua)throws Exception{
     File cache=folderCache(url,pwd,page);
-    DirectLink session=browseSession(url,pwd,deadline,refresh&&page==1,ua);Models.Folder out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;
+    DirectLink session=browseSession(url,pwd,deadline,refresh&&page==1,ua);if(page>1&&!session.authorized)primeListingSession(session,deadline,profile);Models.Folder out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;
     LinkedHashMap<String,Models.Item> items=new LinkedHashMap<>();
     if(page==1){
       if(session.target.folderId.isEmpty())for(Models.Item folder:staticFolders(session))items.put(folder.url,folder);
@@ -978,6 +978,10 @@ final class LanzouCore {
 
   private DirectLink browseSession(String url,String password,long deadline,boolean force)throws Exception{
     SourceProfile profile=sourceProfile(url);return browseSession(url,password,deadline,force,profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa);
+  }
+
+  private void primeListingSession(DirectLink session,long deadline,SourceProfile profile)throws Exception{
+    Map<String,String> first=new LinkedHashMap<>(session.form);first.put("pg","1");JSONObject data=postListing(session,first,deadline,1,profile);if(data.optInt("zt",-1)==1)session.authorized=true;
   }
 
   private DirectLink browseSession(String url,String password,long deadline,boolean force,byte ua)throws Exception{

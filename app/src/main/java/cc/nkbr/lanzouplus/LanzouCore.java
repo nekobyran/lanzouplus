@@ -287,7 +287,7 @@ final class LanzouCore {
         Map<String,String> legacy=legacyDownprocessFields(page.html);
         String sign=legacy.getOrDefault("sign","");
         if(sign.isEmpty())sign=cap(page.html,"(?:ajaxdata|sign)\\s*[:=]\\s*['\"]([^'\"]+)['\"]");
-        if(sign.isEmpty()){if(requiresSharePassword(page.html))throw new DirectPasswordException();if(DIRECT_DEAD_PAGE_INFO.matcher(strip(page.html)).find())throw new IOException("分享已失效或文件已删除");throw new IOException("未找到下载签名");}
+        if(sign.isEmpty()){if(requiresSharePassword(page.html)&&!isDirectorySharePage(page.html))throw new DirectPasswordException();if(isDirectorySharePage(page.html))throw new IOException("这是文件夹或软件库分享页，请使用列表解析打开");if(DIRECT_DEAD_PAGE_INFO.matcher(strip(page.html)).find())throw new IOException("分享已失效或文件已删除");throw new IOException("未找到下载签名");}
         Map<String,String> form=new LinkedHashMap<>();
         form.put("action","downprocess");form.put("sign",sign);
         for(String key:new String[]{"websignkey","signs","websign","kd","ves"})if(legacy.containsKey(key))form.put(key,legacy.get(key));

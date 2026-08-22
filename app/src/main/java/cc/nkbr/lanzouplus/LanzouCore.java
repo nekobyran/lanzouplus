@@ -42,7 +42,7 @@ final class LanzouCore {
   private static final long SOURCE_PROBE_TIMEOUT_MS=35*1000L;
   private static final long FOREGROUND_BROWSE_TIMEOUT_MS=18*1000L,METADATA_BROWSE_TIMEOUT_MS=8*1000L,DIRECT_RESOLVE_TIMEOUT_MS=12*1000L;
   private static final int PAGE_SIZE=50;
-  private static final int DIRECT_INITIAL_WAIT_MS=0,DIRECT_RETRY_WAIT_MS=180;
+  private static final int DIRECT_INITIAL_WAIT_MS=0,DIRECT_RETRY_WAIT_MS=180,DIRECT_VERIFY_WAIT_MS=1400;
   private static final String FOLDER_MARKER="#lanzou-folder=";
   private static final String LOCAL_NODE_MARKER="#local-node=";
   private static final String USER_SOURCE_PREFS="user-sources-v1";
@@ -287,12 +287,12 @@ final class LanzouCore {
             form.put("file",file);form.put("el","2");form.put("sign",sign);
             String endpoint=new URL(new URL(verify.url),ajax).toString();
             boolean pending=false;
-            for(int exchange=0;exchange<2;exchange++){
-              session.sleep(exchange==0?DIRECT_INITIAL_WAIT_MS:DIRECT_RETRY_WAIT_MS);
+            for(int exchange=0;exchange<3;exchange++){
+              session.sleep(exchange==0?DIRECT_VERIFY_WAIT_MS:DIRECT_RETRY_WAIT_MS);
               JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectPasswordResult(data);
               String direct=data.optString("url").trim();
               String directLower=direct.toLowerCase(Locale.ROOT);
-              if(direct.startsWith("?")||directLower.contains("signerror")||direct.contains("验证码错误"))break;
+              if(direct.startsWith("?")||directLower.contains("signerror")||direct.contains("验证码错误")){pending=true;continue;}
               if(data.optInt("zt")==1){
                 if(direct.startsWith("http"))return direct(direct,fileTitle);
               }
@@ -316,9 +316,18 @@ final class LanzouCore {
         JSONObject data=new JSONObject(session.post(new URL(new URL(page.url),ajax).toString(),form,page));
         requireDirectBusinessResult(data);if(data.optInt("zt")!=1)throw new IOException(data.optString("inf","蓝奏解析失败"));
         String path=data.optString("url"),dom=data.optString("dom").replaceAll("/+$","");
-        String url=path.startsWith("http")?path:dom+"/file/"+path.replaceAll("^[/?]+","");
+        String url=path.startsWith("http")?path:dom+"/file/"+path.replaceAll("^/+","");
         if(!url.startsWith("http"))throw new IOException("蓝奏返回了无效直链");
+        if(path.startsWith("?")){DirectLink verified=resolveVerificationFilePage(session,url,page.url,fileTitle);if(verified!=null)return verified;throw new DirectRetryException("蓝奏二次验证未返回真实直链",3000,false);}
         return direct(url,fileTitle);
+  }
+
+  private static DirectLink resolveVerificationFilePage(NetSession session,String url,String referer,String fileTitle)throws Exception{
+    DirectLink verify=session.getGuarded(url,referer);String html=verify.html==null?"":verify.html;if(html.isEmpty())return null;
+    String file=cap(html,"[\"']file[\"'][ \t\r\n]*:[ \t\r\n]*[\"']([^\"']+)[\"']"),sign=cap(html,"[\"']sign[\"'][ \t\r\n]*:[ \t\r\n]*[\"']([^\"']+)[\"']");
+    if(file.isEmpty()||sign.isEmpty())return null;String ajax=cap(html,"url[ \t\r\n]*:[ \t\r\n]*[\"']([^\"']*ajax[.]php[^\"']*)[\"']");if(ajax.isEmpty())ajax="ajax.php";
+    String endpoint=new URL(new URL(verify.url),ajax).toString();for(int exchange=0;exchange<3;exchange++){session.sleep(exchange==0?DIRECT_VERIFY_WAIT_MS:DIRECT_RETRY_WAIT_MS);for(String el:new String[]{"2","1","3"}){Map<String,String> form=new LinkedHashMap<>();form.put("file",file);form.put("el",el);form.put("sign",sign);JSONObject data=new JSONObject(session.post(endpoint,form,verify));if(data.optInt("zt")==1){String direct=data.optString("url","").trim();String lower=direct.toLowerCase(Locale.ROOT);if(direct.startsWith("http")&&!lower.contains("signerror")&&!direct.contains("验证码错误"))return direct(direct,fileTitle);}}}
+    return null;
   }
 
 

@@ -12,7 +12,8 @@ final class DirectLinkResolver implements AutoCloseable {
   interface Clock { long now(); }
   static final long TTL_MS=60*60*1000L;
   private static final long WORKER_STACK_BYTES=262144L;
-  private static final String PREFS="direct_links",DIRECT="d:",TIME="t:",PASS="pw:";
+  private static final String PREFS="direct_links",DIRECT="d:",TIME="t:",PASS="pw:",SCHEMA="schema";
+  private static final int CACHE_SCHEMA=4;
   private final LanzouCore core;
   private final SharedPreferences prefs;
   private final Clock clock;
@@ -31,8 +32,10 @@ final class DirectLinkResolver implements AutoCloseable {
     this.core=core;this.clock=clock;this.prefs=context.getApplicationContext().getSharedPreferences(PREFS,Context.MODE_PRIVATE);
     parallelism=normalizeParallelism(context.getApplicationContext().getSharedPreferences("download_settings-v1",Context.MODE_PRIVATE).getInt("parallel_resolves",0));
     executor=new ThreadPoolExecutor(0,Integer.MAX_VALUE,60L,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{Thread t=new Thread(null,r,"lanzou-resolve",WORKER_STACK_BYTES);t.setDaemon(true);return t;});
-    executor.allowCoreThreadTimeOut(true);cleanupExpired();
+    executor.allowCoreThreadTimeOut(true);migrateCacheSchema();cleanupExpired();
   }
+
+  private void migrateCacheSchema(){if(prefs.getInt(SCHEMA,0)==CACHE_SCHEMA)return;SharedPreferences.Editor edit=prefs.edit();for(String key:prefs.getAll().keySet())if(key.startsWith(DIRECT)||key.startsWith(TIME))edit.remove(key);edit.putInt(SCHEMA,CACHE_SCHEMA).apply();}
 
   void setParallelism(int value){int selected=normalizeParallelism(value);synchronized(lock){parallelism=selected;pumpLocked();}}
   int parallelism(){return parallelism;}

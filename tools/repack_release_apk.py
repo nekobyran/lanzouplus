@@ -35,7 +35,9 @@ class _BufferedDeflater:
         if _zopfli is not None:
             # ZIP stores raw DEFLATE, while zopfli.zlib adds a 2-byte header and
             # a 4-byte Adler-32 trailer.
-            iterations = 1000 if len(data) >= 64 * 1024 else 100
+            # Keep the release-size pass bounded: this still beats zlib-9 on
+            # Android APK payloads, but avoids multi-minute hangs during hotfixes.
+            iterations = 120 if len(data) >= 64 * 1024 else 24
             return _zopfli.compress(
                 data, numiterations=iterations, blocksplittingmax=0
             )[2:-4]

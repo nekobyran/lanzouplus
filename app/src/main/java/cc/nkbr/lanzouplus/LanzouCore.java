@@ -20,7 +20,7 @@ final class LanzouCore {
   private static final String DESKTOP_EDGE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0";
   private static final String MOBILE_HUAWEI_UA="Mozilla/5.0 (Linux; Android 12; BRQ-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
   private static final String MOBILE_FIREFOX_UA="Mozilla/5.0 (Android 12; Mobile; rv:126.0) Gecko/126.0 Firefox/126.0";
-  private static volatile int configuredUaPreset=UA_PRESET_MOBILE_CHROME,configuredUaScopeMask=UA_SCOPE_ALL;
+    private static volatile int configuredUaPreset=UA_PRESET_MOBILE_CHROME,configuredUaScopeMask=UA_SCOPE_ALL,configuredFileListUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectorySearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredApiSearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectUaPreset=UA_PRESET_MOBILE_CHROME;
   private static final int[] POS={15,35,29,24,33,16,1,38,10,9,19,31,40,27,22,23,25,13,6,11,39,18,20,8,14,21,32,26,2,30,7,4,17,5,3,28,34,37,12,36};
   private static final String MASK="3000176000856006061501533003690027800375";
   private static final long NO_DEADLINE=Long.MAX_VALUE;
@@ -28,13 +28,13 @@ final class LanzouCore {
   private static final byte TEMPLATE_UNKNOWN=0,TEMPLATE_MINIMAL=1,TEMPLATE_CLASSIC=2;
   // Template/UA defaults are replaced only when a runtime HTML template changes;
   // zt=4 backoff therefore remains learned for the rest of that source session.
-  private static final int MINIMAL_ANDROID_INITIAL_PAGE_INTERVAL_MS=1800,MINIMAL_ANDROID_NEXT_PAGE_INTERVAL_MS=500;
-  private static final int MINIMAL_DESKTOP_INITIAL_PAGE_INTERVAL_MS=2100,MINIMAL_DESKTOP_NEXT_PAGE_INTERVAL_MS=1000;
-  private static final int CLASSIC_REFLOW_ANDROID_INITIAL_PAGE_INTERVAL_MS=2100,CLASSIC_REFLOW_ANDROID_NEXT_PAGE_INTERVAL_MS=800;
-  private static final int CLASSIC_ANDROID_INITIAL_PAGE_INTERVAL_MS=1800,CLASSIC_ANDROID_NEXT_PAGE_INTERVAL_MS=500;
-  private static final int CLASSIC_DESKTOP_INITIAL_PAGE_INTERVAL_MS=1800,CLASSIC_DESKTOP_NEXT_PAGE_INTERVAL_MS=500;
-  private static final int UNKNOWN_INITIAL_PAGE_INTERVAL_MS=2100,UNKNOWN_NEXT_PAGE_INTERVAL_MS=1000;
-  private static final int MAX_PAGE_INTERVAL_MS=8400;
+  private static final int MINIMAL_ANDROID_INITIAL_PAGE_INTERVAL_MS=520,MINIMAL_ANDROID_NEXT_PAGE_INTERVAL_MS=320;
+  private static final int MINIMAL_DESKTOP_INITIAL_PAGE_INTERVAL_MS=560,MINIMAL_DESKTOP_NEXT_PAGE_INTERVAL_MS=360;
+  private static final int CLASSIC_REFLOW_ANDROID_INITIAL_PAGE_INTERVAL_MS=560,CLASSIC_REFLOW_ANDROID_NEXT_PAGE_INTERVAL_MS=360;
+  private static final int CLASSIC_ANDROID_INITIAL_PAGE_INTERVAL_MS=520,CLASSIC_ANDROID_NEXT_PAGE_INTERVAL_MS=320;
+  private static final int CLASSIC_DESKTOP_INITIAL_PAGE_INTERVAL_MS=520,CLASSIC_DESKTOP_NEXT_PAGE_INTERVAL_MS=320;
+  private static final int UNKNOWN_INITIAL_PAGE_INTERVAL_MS=640,UNKNOWN_NEXT_PAGE_INTERVAL_MS=420;
+  private static final int MAX_PAGE_INTERVAL_MS=4200;
   private static final long NETWORK_WORKER_STACK_BYTES=262144L;
 
   private static final long EXECUTOR_KEEP_ALIVE_SECONDS=30L;
@@ -42,7 +42,7 @@ final class LanzouCore {
   private static final long SOURCE_PROBE_TIMEOUT_MS=35*1000L;
   private static final long FOREGROUND_BROWSE_TIMEOUT_MS=18*1000L,METADATA_BROWSE_TIMEOUT_MS=8*1000L,DIRECT_RESOLVE_TIMEOUT_MS=12*1000L;
   private static final int PAGE_SIZE=50;
-  private static final int DIRECT_INITIAL_WAIT_MS=1900,DIRECT_RETRY_WAIT_MS=250;
+  private static final int DIRECT_INITIAL_WAIT_MS=0,DIRECT_RETRY_WAIT_MS=180;
   private static final String FOLDER_MARKER="#lanzou-folder=";
   private static final String LOCAL_NODE_MARKER="#local-node=";
   private static final String USER_SOURCE_PREFS="user-sources-v1";
@@ -52,7 +52,7 @@ final class LanzouCore {
   private static final String DIRECTORY_INDEX_PREFS="directory-index-v2";
   private static final String SEARCH_INDEX_FILE="search-index-v1.json";
   private static final int MAX_SEARCH_INDEX_ITEMS=50000,SEARCH_INDEX_FLUSH_ITEMS=250;
-  private static final String CANONICAL_SOURCE_ORIGIN="https://wwc.lanzouw.com";
+  private static final String CANONICAL_SOURCE_ORIGIN="https://nekobyran.lanzouw.com";
   private static final int RULE_LIMIT=512*1024;
   private static final Pattern ICON_DATE=Pattern.compile("(?:^|/)(\\d{4})/(\\d{2})/(\\d{2})(?:/|$)");
   private static final Pattern INVALID_FILE_NAME=Pattern.compile("[\\\\/:*?\"<>|]");
@@ -109,7 +109,7 @@ final class LanzouCore {
   private final ScheduledThreadPoolExecutor searchScheduler=newSearchScheduler();
   LanzouCore(Context c){context=c.getApplicationContext();directCookiePool=new DirectCookiePool(context);loadPersistedCompositeMembers();}
   static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized,redirected,passwordUnlocked;byte ua,template; }
-  private static final class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);this.retryAfterMs=Math.max(1000,retryAfterMs);this.rateLimited=rateLimited;}}
+  private static final class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);long floor=rateLimited?1000L:180L;this.retryAfterMs=Math.max(floor,retryAfterMs);this.rateLimited=rateLimited;}}
   static final class DirectPasswordException extends IOException{DirectPasswordException(){super("需要访问密码");}DirectPasswordException(String message){super(message==null||message.trim().isEmpty()?"需要访问密码":message.trim());}}
   private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,path,folded;final int depth,page;final long expiresAt;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path){this(item,sourceId,depth,page,path,Long.MAX_VALUE);}CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path,long expiresAt){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.path=path==null?"":path;this.folded=foldDirectorySearch(item.title+"\n"+this.path);this.expiresAt=expiresAt<=0?Long.MAX_VALUE:expiresAt;}}
   private static final class DirectorySearchIndex{final long revision;final List<CachedDirectoryEntry> entries;DirectorySearchIndex(long revision,List<CachedDirectoryEntry> entries){this.revision=revision;this.entries=entries;}}
@@ -127,7 +127,7 @@ final class LanzouCore {
     synchronized void observeTemplate(byte ua,byte template){if(template!=TEMPLATE_MINIMAL&&template!=TEMPLATE_CLASSIC)return;if(ua==UA_DESKTOP){if(desktopTemplate==template)return;desktopTemplate=template;}else{if(androidTemplate==template)return;androidTemplate=template;}refreshIntervals();}
     private void refreshIntervals(){androidInitial=templateInitial(UA_ANDROID,androidTemplate,desktopTemplate);androidNext=templateNext(UA_ANDROID,androidTemplate,desktopTemplate);desktopInitial=templateInitial(UA_DESKTOP,desktopTemplate,androidTemplate);desktopNext=templateNext(UA_DESKTOP,desktopTemplate,androidTemplate);}
     synchronized int interval(byte ua,int page){return ua==UA_DESKTOP?(page<=1?desktopInitial:desktopNext):(page<=1?androidInitial:androidNext);}
-    synchronized int backoff(byte ua,int page){int value=interval(ua,page),next=Math.min(MAX_PAGE_INTERVAL_MS,Math.max(value+300,value*2));if(ua==UA_DESKTOP){if(page<=1)desktopInitial=next;else desktopNext=next;}else if(page<=1)androidInitial=next;else androidNext=next;return next;}
+    synchronized int backoff(byte ua,int page){int value=interval(ua,page),next=Math.min(MAX_PAGE_INTERVAL_MS,Math.max(value+180,value*2));if(ua==UA_DESKTOP){if(page<=1)desktopInitial=next;else desktopNext=next;}else if(page<=1)androidInitial=next;else androidNext=next;return next;}
   }
   private static final class PageResult{final Models.Folder folder;final boolean usable,unauthorized;PageResult(Models.Folder folder,boolean usable){this(folder,usable,false);}PageResult(Models.Folder folder,boolean usable,boolean unauthorized){this.folder=folder;this.usable=usable;this.unauthorized=unauthorized;}}
   private static final class UaProbe{Models.Folder folder;DirectLink session;Exception error;long elapsed;int items;boolean directory,search;}
@@ -183,7 +183,7 @@ final class LanzouCore {
     }
     private boolean stopped(SourceSearchState state){return cancelled||closed.get()||!state.active||isSearchCancelled(progress);}
     private void refillActiveLocked(){if(paused)return;String current="";boolean changed=false;while(!cancelled&&active<maxActive&&!waitingGroups.isEmpty()){String key=waitingGroups.removeFirst();if(activeGroups.contains(key)||remaining.getOrDefault(key,0)<=0)continue;List<SourceSearchState> members=groups.get(key);if(members==null||members.isEmpty())continue;activeGroups.add(key);active++;changed=true;current=members.get(0).source.title;for(SourceSearchState state:members){if(state.terminal)continue;state.active=true;emitLocalLocked(state);if(state.folder==null&&!state.dirDone)startNextFolderLocked(state);queueApiLocked(state);queueDirectoryLocked(state);finishSourceLocked(state,false);}scheduleRotationLocked(key);}if(changed)publishActivityLocked(current);}
-    private void emitLocalLocked(SourceSearchState state){if(state.localEmitted)return;state.localEmitted=true;List<Models.Item> batch=new ArrayList<>();synchronized(state.merged){for(Models.Item item:state.local){item.source=state.displaySource;if(matches(item,state.foldedNeedle,options.fuzzyMatching)&&state.merged.putIfAbsent(item.url,item)==null)batch.add(item);}}publishBatch(state,batch);}
+    private void emitLocalLocked(SourceSearchState state){if(state.localEmitted)return;state.localEmitted=true;List<Models.Item> batch=new ArrayList<>();synchronized(state.merged){for(Models.Item item:state.local){item.source=state.displaySource;if(matches(item,state.foldedNeedle,options.fuzzyMatching)){Models.Item previous=state.merged.putIfAbsent(item.url,item);if(previous==null)batch.add(item);else mergeLiveItemMetadata(previous,item);}}}publishBatch(state,batch);}
     private void startNextFolderLocked(SourceSearchState state){if(state.folder!=null||state.dirDone)return;if(state.folders.isEmpty()){state.dirDone=true;finishSourceLocked(state,false);return;}state.folder=state.folders.removeFirst();state.directorySession=null;state.directoryUa=sourceProfile(state.folder.url).directoryUa;if(state.directoryUa==UA_UNKNOWN)state.directoryUa=UA_ANDROID;state.page=1;state.folderApiPage=0;state.firstApiFolderCount=0;state.replayed=false;state.pageFingerprints.clear();state.dirReady=true;}
     private void queueApiLocked(SourceSearchState state){if(state.active&&!state.terminal&&!state.apiDone&&!state.apiQueued&&!state.apiInFlight){state.apiQueued=true;apiReady.addLast(state);}}
     private void queueDirectoryLocked(SourceSearchState state){if(state.active&&!state.terminal&&!state.dirDone&&state.dirReady&&!state.dirQueued&&!state.dirInFlight){state.dirQueued=true;directoryReady.addLast(state);}}
@@ -205,7 +205,7 @@ final class LanzouCore {
       synchronized(this){state.dirInFlight=false;if(cancelled)return;if(failure!=null){handleDirectoryFailureLocked(state,failure);return;}if(preparing){state.directorySession=prepared;state.directoryUa=prepared.ua;state.firstApiFolderCount=prepared.folderEndpoint.isEmpty()?0:-1;state.dirReady=true;queueDirectoryLocked(state);return;}if(folderPaging)acceptFolderPageLocked(state,folderBatch,folderCount);else acceptListingLocked(state,listing);}}
     private void acceptListingLocked(SourceSearchState state,Models.Folder listing){List<Models.Item> batch=mergeListingLocked(state,listing.items);publishPage(state,batch,state.page,listing.items.size(),mergedSize(state));int pageLimit=pageLimit();if(listing.hasMore&&state.page<pageLimit){int completedPage=state.page++;scheduleDirectoryLocked(state,sourceProfile(state.folder.url).interval(state.directoryUa,completedPage));return;}if(state.firstApiFolderCount<0){state.folderApiPage=1;scheduleDirectoryLocked(state,sourceProfile(state.folder.url).interval(state.directoryUa,state.page));return;}if(options.recursiveFolders&&state.firstApiFolderCount>=PAGE_SIZE&&pageLimit>=2){state.folderApiPage=2;scheduleDirectoryLocked(state,sourceProfile(state.folder.url).interval(state.directoryUa,1));return;}completeFolderLocked(state);}
     private void acceptFolderPageLocked(SourceSearchState state,List<Models.Item> items,int rawCount){int page=state.folderApiPage;List<Models.Item> batch=mergeListingLocked(state,items);publishPage(state,batch,page,rawCount,mergedSize(state));if(page==1){state.firstApiFolderCount=rawCount;if(options.recursiveFolders&&rawCount>=PAGE_SIZE&&pageLimit()>=2){state.folderApiPage=2;scheduleDirectoryLocked(state,sourceProfile(state.folder.url).interval(state.directoryUa,1));}else completeFolderLocked(state);}else if(rawCount>=PAGE_SIZE&&page<pageLimit()){state.folderApiPage=page+1;scheduleDirectoryLocked(state,sourceProfile(state.folder.url).interval(state.directoryUa,page));}else completeFolderLocked(state);}
-    private List<Models.Item> mergeListingLocked(SourceSearchState state,List<Models.Item> items){List<Models.Item> batch=new ArrayList<>();synchronized(state.merged){for(Models.Item item:items){inherit(item,state.folder);if(item.folder&&options.recursiveFolders&&state.folderKeys.add(searchFolderKey(item.url)))state.folders.addLast(item);if(matches(item,state.foldedNeedle,options.fuzzyMatching)&&state.merged.putIfAbsent(item.url,item)==null)batch.add(item);}}return batch;}
+    private List<Models.Item> mergeListingLocked(SourceSearchState state,List<Models.Item> items){List<Models.Item> batch=new ArrayList<>();synchronized(state.merged){for(Models.Item item:items){inherit(item,state.folder);if(item.folder&&options.recursiveFolders&&state.folderKeys.add(searchFolderKey(item.url)))state.folders.addLast(item);if(matches(item,state.foldedNeedle,options.fuzzyMatching)){Models.Item previous=state.merged.putIfAbsent(item.url,item);if(previous==null)batch.add(item);else mergeLiveItemMetadata(previous,item);}}}return batch;}
     private int mergedSize(SourceSearchState state){synchronized(state.merged){return state.merged.size();}}
     private int pageLimit(){return options.untilLastPage?(options.maxPages>0?options.maxPages:1000):1;}
     private void completeFolderLocked(SourceSearchState state){cancelPageTimerLocked(state);state.folder=null;state.directorySession=null;startNextFolderLocked(state);queueDirectoryLocked(state);}
@@ -250,8 +250,22 @@ final class LanzouCore {
   private DirectLink resolveDirectWithSession(String shareUrl,String password,NetSession session)throws Exception{
         DirectLink share=session.getGuarded(shareUrl,"");
         String fileTitle=cleanFileName(cap(share.html,"(?is)<title[^>]*>(.*?)</title>"));
-        String transfer=cap(share.html,"(?is)<a\\b(?=[^>]*\\bid=[\"']downurl[\"'])(?=[^>]*\\bhref=[\"']([^\"']+)[\"'])[^>]*>");
-        if(transfer.isEmpty())transfer=cap(share.html,"(?is)<a[^>]+href=[\"']([^\"']*/tp/[^\"']+)");
+        String transfer=directTransferHref(share.html);
+        if(transfer.isEmpty()&&directShareNeedsLanzouxMirror(share.html)){
+          for(String mirror:lanzouxDirectMirrors(shareUrl)){
+            if(mirror.equals(shareUrl))continue;
+            try{
+              DirectLink candidate=session.getGuarded(mirror,shareUrl);
+              String candidateTransfer=directTransferHref(candidate.html);
+              if(!candidateTransfer.isEmpty()){
+                share=candidate;transfer=candidateTransfer;
+                String mirrorTitle=cleanFileName(cap(share.html,"(?is)<title[^>]*>(.*?)</title>"));
+                if(!mirrorTitle.isEmpty())fileTitle=mirrorTitle;
+                break;
+              }
+            }catch(Exception ignored){}
+          }
+        }
         DirectLink page=share;
         if(!transfer.isEmpty())page=session.getGuarded(new URL(new URL(share.url),transfer).toString(),share.url);
 
@@ -272,14 +286,20 @@ final class LanzouCore {
             Map<String,String> form=new LinkedHashMap<>();
             form.put("file",file);form.put("el","2");form.put("sign",sign);
             String endpoint=new URL(new URL(verify.url),ajax).toString();
+            boolean pending=false;
             for(int exchange=0;exchange<2;exchange++){
               session.sleep(exchange==0?DIRECT_INITIAL_WAIT_MS:DIRECT_RETRY_WAIT_MS);
               JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectPasswordResult(data);
-              String direct=data.optString("url");
-              if(data.optInt("zt")==1&&direct.startsWith("http"))return direct(direct,fileTitle);
-              if(!directExchangePending(data))throw new IOException(data.optString("inf","蓝奏验证失败"));
+              String direct=data.optString("url").trim();
+              String directLower=direct.toLowerCase(Locale.ROOT);
+              if(direct.startsWith("?")||directLower.contains("signerror")||direct.contains("验证码错误"))break;
+              if(data.optInt("zt")==1){
+                if(direct.startsWith("http"))return direct(direct,fileTitle);
+              }
+              if(!directExchangePending(data))throw new IOException(firstNonEmpty(data.optString("inf"),direct,"蓝奏验证失败"));
+              pending=true;
             }
-            throw new DirectRetryException("蓝奏验证未返回真实直链",3000,false);
+            if(pending)continue;
           }
           throw new DirectRetryException("蓝奏验证未返回真实直链",3000,false);
         }
@@ -300,6 +320,16 @@ final class LanzouCore {
         if(!url.startsWith("http"))throw new IOException("蓝奏返回了无效直链");
         return direct(url,fileTitle);
   }
+
+
+  private static String directTransferHref(String html){String transfer=cap(html,"(?is)<a(?=[^>]*id=[\"']downurl[\"'])(?=[^>]*href=[\"']([^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a(?=[^>]*href=[\"']([^\"']+)[\"'])(?=[^>]*id=[\"']downurl[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a[^>]+href=[\"']([^\"']*/tp/[^\"']+)");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe(?=[^>]*class=[\"'][^\"']*n_downlink[^\"']*[\"'])(?=[^>]*src=[\"']([^\"']*/?fn[?][^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe[^>]+src=[\"']([^\"']*/?fn[?][^\"']+)[\"']");return transfer;}
+  private static boolean directShareNeedsLanzouxMirror(String html){String value=html==null?"":html.toLowerCase(Locale.ROOT);if(value.contains("acw_sc__v2")||value.contains("aliyun_waf_")||value.contains("captchav2"))return true;return directTransferHref(html).isEmpty()&&value.contains("<html")&&!value.contains("ajaxm.php")&&!value.contains("downprocess");}
+  private static List<String> lanzouxDirectMirrors(String raw){ArrayList<String> out=new ArrayList<>();try{URL url=new URL(raw);String host=url.getHost();if(host==null)return out;String lower=host.toLowerCase(Locale.ROOT);if(!lower.contains("lanzou"))return out;String file=url.getFile();LinkedHashSet<String> hosts=new LinkedHashSet<>();hosts.add(host.toLowerCase(Locale.ROOT));hosts.add("nekobyran.lanzouw.com");hosts.add("www.lanzouw.com");hosts.add("wwc.lanzouw.com");hosts.add("www.lanzoux.com");hosts.add("wwc.lanzoux.com");hosts.add("www.lanzoup.com");hosts.add("www.lanzouo.com");hosts.add("www.lanzouz.com");for(String candidate:hosts)out.add(new URL(url.getProtocol(),candidate,file).toString());}catch(Exception ignored){}return out;}
+  private static LinkedHashSet<String> directoryMirrorCandidates(String raw){LinkedHashSet<String> out=new LinkedHashSet<>();if(raw==null||raw.trim().isEmpty())return out;out.add(raw.trim());try{URL url=new URL(raw.trim());String host=url.getHost();if(host==null||!host.toLowerCase(Locale.ROOT).contains("lanzou"))return out;String file=url.getFile();String fragment=url.getRef();String suffix=file+(fragment==null||fragment.isEmpty()?"":"#"+fragment);for(String candidate:new String[]{"www.lanzoux.com","wwc.lanzoux.com","www.lanzoup.com","www.lanzouo.com","nekobyran.lanzouw.com","www.lanzouw.com","wwc.lanzouw.com","www.lanzouz.com"})out.add(new URL(url.getProtocol(),candidate,suffix).toString());}catch(Exception ignored){}return out;}
+  private static boolean shouldTryNextDirectoryMirror(Exception error){if(error instanceof DirectPasswordException)return false;if(error instanceof ShareCancelledException)return false;String value=String.valueOf(error==null?"":error.getMessage()).toLowerCase(Locale.ROOT);return value.contains("403")||value.contains("forbidden")||value.contains("502")||value.contains("503")||value.contains("504")||value.contains("timeout")||value.contains("timed out")||value.contains("eof")||value.contains("ssl")||value.contains("waf")||value.contains("captcha")||value.contains("reset")||value.contains("refused")||value.contains("unreachable")||value.contains("too many")||value.contains("rate")||value.contains("missing")||value.contains("no directory")||value.contains("not found")||value.contains("未找到")||value.contains("接口")||value.contains("频")||value.contains("等待")||value.contains("异常")||value.contains("稍后")||value.contains("过快");}
+  private static void noteMirrorSuccess(String original,String mirror){try{SourceProfile from=sourceProfile(original),to=sourceProfile(mirror);from.directoryUa=to.directoryUa==UA_UNKNOWN?from.directoryUa:to.directoryUa;}catch(Exception ignored){}}
+  private static void noteMirrorFailure(String mirror,Exception error){try{SourceProfile profile=sourceProfile(mirror);if(error instanceof PageRateLimitedException||error instanceof RecoverableBrowseException)profile.backoff(profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa,1);}catch(Exception ignored){}}
+
 
   private static Map<String,String> legacyDownprocessFields(String html){
     LinkedHashMap<String,String> best=new LinkedHashMap<>();int bestLength=-1;String source=html==null?"":html;
@@ -325,10 +355,11 @@ final class LanzouCore {
   }
 
   private static String legacyAjaxEndpoint(String html){
-    String value=cap(html,"(?is)url\\s*:\\s*['\"]([^'\"]*ajaxm\\.php(?:\\?file=[0-9]+)?)['\"]");
+    String value=cap(html,"(?is)url[ \t\r\n]*:[ \t\r\n]*['\"]([^'\"]*(?:ajaxm|ajaxfile)[.]php(?:[?]file=[0-9]+)?)['\"]");
     if(!value.isEmpty())return value;
-    return cap(html,"(?is)['\"]([^'\"]*ajaxm\\.php(?:\\?file=[0-9]+)?)['\"]");
+    return cap(html,"(?is)['\"]([^'\"]*(?:ajaxm|ajaxfile)[.]php(?:[?]file=[0-9]+)?)['\"]");
   }
+
   private static boolean directExchangePending(JSONObject data){String info=data.optString("inf").trim();if(DIRECT_TERMINAL_INFO.matcher(info).find())return false;if(data.optInt("zt")==1)return!data.optString("url").startsWith("http");return info.isEmpty()||info.equals("0")||info.contains("稍后")||info.contains("验证")||info.contains("处理中")||info.contains("等待");}
   private static boolean requiresSharePassword(String html){
     String value=html==null?"":html.toLowerCase(Locale.ROOT);if(value.isEmpty())return false;
@@ -512,7 +543,7 @@ final class LanzouCore {
     String html=page.html;if(!isSingleFileSharePage(html))throw new IOException("不是可识别的单文件分享页");Models.SourceMember out=new Models.SourceMember();out.kind=Models.MEMBER_FILE;out.url=url;out.password=password;out.lightweight=true;out.refreshedAt=System.currentTimeMillis();String rawTitle=firstNonEmpty(strip(divInner(html,"appname")),strip(elementByIdInner(html,"filenajax")),strip(cap(html,"(?is)<title[^>]*>(.*?)</title>")));rawTitle=rawTitle.replaceFirst("(?i)[\\s_-]*(?:蓝奏云|lanzou).*$","").trim();out.title=rawTitle.isEmpty()?"未命名软件":rawTitle;out.iconUrl=firstNonEmpty(cap(html,"(?is)<meta[^>]+(?:property|name)=[\"'](?:og:image|twitter:image)[\"'][^>]+content=[\"']([^\"']+)"),cap(html,"(?is)<img[^>]+class=[\"'][^\"']*(?:appico|file-ico|n_file_ico)[^\"']*[\"'][^>]+src=[\"']([^\"']+)"),cap(html,"(?is)<img[^>]+src=[\"']([^\"']+)[\"'][^>]+class=[\"'][^\"']*(?:appico|file-ico|n_file_ico)"),cap(html,"(?is)class=[\"'][^\"']*appico[^\"']*[\"'][^>]+style=[\"'][^\"']*background\\s*:\\s*url\\(([^)]+)\\)"));if(!out.iconUrl.isEmpty())try{out.iconUrl=new URL(new URL(page.url),out.iconUrl.replace("\"","").replace("'","")).toString();}catch(Exception ignored){}out.size=strip(firstNonEmpty(cap(html,"(?is)(?:文件)?大小\\s*[：:]?\\s*</?[^>]*>\\s*([^<\\r\\n]+)"),cap(html,"(?is)class=[\"'][^\"']*(?:filesize|n_filesize)[^\"']*[\"'][^>]*>(.*?)</"),cap(html,"(?is)<meta[^>]+name=[\"']description[\"'][^>]+content=[\"'][^\"']*(?:文件)?大小\\s*[:：]\\s*([^\"']+)")));out.time=cap(html,"((?:19|20)\\d{2}[-/.]\\d{1,2}[-/.]\\d{1,2})").replace('/','-').replace('.','-');out.description=fileDescriptionFromHtml(html);return out;
   }
 
-  private static String fileDescriptionFromHtml(String html){String value=strip(divInner(html,"appdes"));if(value.isEmpty())value=strip(divInner(html,"file-des"));if(value.isEmpty())value=strip(divInner(html,"n_file_info"));if(value.isEmpty())value=strip(cap(html,"(?is)<meta[^>]+name=[\"']description[\"'][^>]+content=[\"']([^\"']*)"));return value.replaceFirst("^(?:文件)?(?:描述|简介)\\s*[：:]\\s*","").trim();}
+  private static String fileDescriptionFromHtml(String html){String value=strip(divInner(html,"appdes"));if(value.isEmpty())value=strip(divInner(html,"file-des"));if(value.isEmpty())value=strip(divInner(html,"n_box_des"));if(value.isEmpty())value=strip(divInner(html,"n_file_info"));if(value.isEmpty())value=strip(divInner(html,"fileinfo"));if(value.isEmpty())value=strip(divInner(html,"info"));if(value.isEmpty())value=strip(cap(html,"(?is)<meta[^>]+(?:name|property)=[\"'](?:description|og:description|twitter:description)[\"'][^>]+content=[\"']([^\"']*)"));return cleanShareDescription(value);}
 
   static String sourceId(Models.Source source){if(source==null)return"";String id=!source.id.isEmpty()?source.id:source.kind==Models.SOURCE_COMPOSITE?"":source.url;return source.kind==Models.SOURCE_COMPOSITE&&!source.nodeId.isEmpty()?id+LOCAL_NODE_MARKER+source.nodeId:id;}
   private static String sourceRootId(String id){if(id==null)return"";int marker=id.indexOf(LOCAL_NODE_MARKER);return marker<0?id:id.substring(0,marker);}
@@ -693,10 +724,12 @@ final class LanzouCore {
   static int normalizeUserAgentScopeMask(int mask){return (mask&UA_SCOPE_ALL)==0?UA_SCOPE_ALL:mask&UA_SCOPE_ALL;}
   static String uaPresetLabel(int preset){switch(normalizeUserAgentPreset(preset)){case UA_PRESET_DESKTOP_CHROME:return "桌面 Chrome";case UA_PRESET_DESKTOP_EDGE:return "桌面 Edge";case UA_PRESET_MOBILE_HUAWEI:return "移动 Chrome · 华为实机";case UA_PRESET_MOBILE_FIREFOX:return "移动 Firefox";default:return "移动 Chrome";}}
   static String uaScopeLabel(int mask){int value=normalizeUserAgentScopeMask(mask);List<String> parts=new ArrayList<>();if((value&UA_SCOPE_FILE_LIST)!=0)parts.add("文件列表");if((value&UA_SCOPE_DIRECTORY_SEARCH)!=0)parts.add("目录搜索");if((value&UA_SCOPE_API_SEARCH)!=0)parts.add("API 搜索");if((value&UA_SCOPE_DIRECT)!=0)parts.add("直链解析");return String.join("、",parts);}
-  static void setUserAgentPolicy(int preset,int scopeMask){configuredUaPreset=normalizeUserAgentPreset(preset);configuredUaScopeMask=normalizeUserAgentScopeMask(scopeMask);}
-  private static String configuredUserAgent(){switch(normalizeUserAgentPreset(configuredUaPreset)){case UA_PRESET_DESKTOP_CHROME:return DESKTOP_SEARCH_UA;case UA_PRESET_DESKTOP_EDGE:return DESKTOP_EDGE_UA;case UA_PRESET_MOBILE_HUAWEI:return MOBILE_HUAWEI_UA;case UA_PRESET_MOBILE_FIREFOX:return MOBILE_FIREFOX_UA;default:return ANDROID_UA;}}
+    static void setUserAgentPolicy(int preset,int scopeMask){int normalized=normalizeUserAgentPreset(preset);configuredUaPreset=normalized;configuredUaScopeMask=normalizeUserAgentScopeMask(scopeMask);if((configuredUaScopeMask&UA_SCOPE_FILE_LIST)!=0)configuredFileListUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_DIRECTORY_SEARCH)!=0)configuredDirectorySearchUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_API_SEARCH)!=0)configuredApiSearchUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_DIRECT)!=0)configuredDirectUaPreset=normalized;}
+  static void setUserAgentPolicy(int fileListPreset,int directorySearchPreset,int apiSearchPreset,int directPreset){configuredUaScopeMask=UA_SCOPE_ALL;configuredFileListUaPreset=normalizeUserAgentPreset(fileListPreset);configuredDirectorySearchUaPreset=normalizeUserAgentPreset(directorySearchPreset);configuredApiSearchUaPreset=normalizeUserAgentPreset(apiSearchPreset);configuredDirectUaPreset=normalizeUserAgentPreset(directPreset);configuredUaPreset=configuredDirectUaPreset;}
+  private static int configuredUserAgentPreset(int scope){if(scope==UA_SCOPE_DIRECTORY_SEARCH)return configuredDirectorySearchUaPreset;if(scope==UA_SCOPE_API_SEARCH)return configuredApiSearchUaPreset;if(scope==UA_SCOPE_DIRECT)return configuredDirectUaPreset;return configuredFileListUaPreset;}
+  private static String configuredUserAgent(int scope){switch(normalizeUserAgentPreset(configuredUserAgentPreset(scope))){case UA_PRESET_DESKTOP_CHROME:return DESKTOP_SEARCH_UA;case UA_PRESET_DESKTOP_EDGE:return DESKTOP_EDGE_UA;case UA_PRESET_MOBILE_HUAWEI:return MOBILE_HUAWEI_UA;case UA_PRESET_MOBILE_FIREFOX:return MOBILE_FIREFOX_UA;default:return ANDROID_UA;}}
   private static String defaultUserAgent(byte ua){return ua==UA_DESKTOP?DESKTOP_SEARCH_UA:ANDROID_UA;}
-  private static String scopedUserAgent(byte ua,int scope){return (configuredUaScopeMask&scope)!=0?configuredUserAgent():defaultUserAgent(ua);}
+  private static String scopedUserAgent(byte ua,int scope){if((configuredUaScopeMask&scope)==0)return defaultUserAgent(ua);int preset=normalizeUserAgentPreset(configuredUserAgentPreset(scope));String primary=scope==UA_SCOPE_DIRECT&&preset==UA_PRESET_MOBILE_CHROME?MOBILE_HUAWEI_UA:configuredUserAgent(scope);if(ua==UA_ANDROID)return primary;return preset==UA_PRESET_DESKTOP_CHROME||preset==UA_PRESET_DESKTOP_EDGE?MOBILE_HUAWEI_UA:DESKTOP_SEARCH_UA;}
   private static String userAgent(byte ua){Integer scope=UA_SCOPE.get();return scopedUserAgent(ua,scope==null?UA_SCOPE_FILE_LIST:scope);}
   private static int pushUaScope(int scope){Integer old=UA_SCOPE.get();UA_SCOPE.set(scope);return old==null?0:old;}
   private static void restoreUaScope(int old){if(old==0)UA_SCOPE.remove();else UA_SCOPE.set(old);}
@@ -961,19 +994,38 @@ final class LanzouCore {
 
   /** Best-effort share-page description; never blocks a download with a parse failure. */
   String fileDescription(String shareUrl)throws Exception{
-    try{if(shareUrl==null||shareUrl.trim().isEmpty())return"";String url=shareUrl.trim();requireLanzouPage(url);DirectLink page=getGuarded(url,NO_DEADLINE,ANDROID_UA);requireLanzouPage(page.url);String value=strip(divInner(page.html,"appdes"));if(value.isEmpty())value=strip(divInner(page.html,"file-des"));if(value.isEmpty())value=strip(divInner(page.html,"n_file_info"));if(value.isEmpty())value=strip(cap(page.html,"(?is)<meta[^>]+name=[\"']description[\"'][^>]+content=[\"']([^\"']*)"));value=value.replaceFirst("^(?:文件)?(?:描述|简介)\\s*[：:]\\s*","").trim();if(value.matches("(?s)^(?:文件)?大小\\s*[：:].*")||value.equals("蓝奏云"))return"";return value;}catch(Exception ignored){return"";}
+    if(shareUrl==null||shareUrl.trim().isEmpty())return"";LinkedHashSet<String> urls=new LinkedHashSet<>();String raw=shareUrl.trim();urls.add(raw);urls.addAll(lanzouxDirectMirrors(raw));for(String url:urls)for(byte ua:new byte[]{UA_ANDROID,UA_DESKTOP})try{requireLanzouPage(url);DirectLink page=getGuarded(url,NO_DEADLINE,userAgent(ua));requireLanzouPage(page.url);String value=isDirectorySharePage(page.html)?folderDescriptionFromHtml(page.html):fileDescriptionFromHtml(page.html);value=cleanShareDescription(value);if(!value.isEmpty())return value;}catch(Exception ignored){}return"";
   }
+
+  private static String folderDescriptionFromHtml(String html){String value=strip(divInner(html,"user-radio"));if(value.isEmpty())value=strip(divInner(html,"infos"));if(value.isEmpty())value=strip(elementByIdInner(html,"info"));if(value.isEmpty())value=strip(cap(html,"(?is)<meta[^>]+(?:name|property)=[\"'](?:description|og:description|twitter:description)[\"'][^>]+content=[\"']([^\"']*)"));return value;}
+  private static String cleanShareDescription(String value){value=value==null?"":strip(value);value=value.replaceFirst("^(?:文件)?(?:描述|简介)\\s*[：:]\\s*","").trim();if(value.matches("(?s)^(?:文件)?大小\\s*[：:].*")||value.equals("蓝奏云")||value.matches("(?is).*文件大小\\s*[:：].*上传时间.*"))return"";return value;}
 
   private Models.Folder browsePage(String url,String password,boolean refresh,int requestedPage,long deadline) throws Exception {
     return browsePage(url,password,refresh,requestedPage,deadline,false);
   }
 
   private Models.Folder browsePage(String url,String password,boolean refresh,int requestedPage,long deadline,boolean strictFolders) throws Exception {
-    int page=Math.max(1,requestedPage);String pwd=password==null?"":password;
-    File cache=folderCache(url,pwd,page);Models.Folder cached=null;if(cache.isFile())try{cached=fromJson(read(cache));}catch(Exception ignored){cached=null;}if(cached!=null&&!refresh)return cached;
+    int page=Math.max(1,requestedPage);String pwd=password==null?"":password;Models.Folder cached=readFolderCache(url,pwd,page);if(cached!=null&&!refresh)return cached;
+    Exception last=null;Models.Folder fallback=null;LinkedHashSet<String> candidates=directoryMirrorCandidates(url);
+    for(String candidate:candidates){
+      try{
+        Models.Folder result=browsePageSingleOrigin(candidate,pwd,refresh,page,deadline,strictFolders);
+        if(!candidate.equals(url))noteMirrorSuccess(url,candidate);
+        return result;
+      }catch(Exception error){
+        last=error;noteMirrorFailure(candidate,error);
+        if(fallback==null&&!strictFolders)fallback=readFolderCache(candidate,pwd,page);
+        if(!shouldTryNextDirectoryMirror(error))break;
+      }
+    }
+    if(fallback!=null)return fallback;if(cached!=null&&!strictFolders)return cached;throw last==null?new IOException("解析目录暂不可用"):last;
+  }
+
+  private Models.Folder browsePageSingleOrigin(String url,String password,boolean refresh,int page,long deadline,boolean strictFolders) throws Exception {
+    String pwd=password==null?"":password;File cache=folderCache(url,pwd,page);Models.Folder cached=null;if(cache.isFile())try{cached=fromJson(read(cache));}catch(Exception ignored){cached=null;}if(cached!=null&&!refresh)return cached;
     SourceProfile profile=sourceProfile(url);byte first=profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa;PageResult empty=null;Exception last=null;
-    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{PageResult result=browsePageUa(url,pwd,refresh,page,deadline,strictFolders,profile,ua);if(result.usable){profile.directoryUa=ua;return result.folder;}if(result.unauthorized){last=new DirectPasswordException("密码错误或授权失效");continue;}if(empty==null)empty=result;}catch(Exception error){last=error;if(page>1&&recoverableBrowseError(error)){invalidateBrowseSessions(url,pwd);awaitRecoverablePageRetry(profile,ua,page,deadline);try{PageResult replay=browsePageUa(url,pwd,true,page,deadline,strictFolders,profile,ua);if(replay.usable){profile.directoryUa=ua;return replay.folder;}if(empty==null)empty=replay;}catch(Exception retryError){last=retryError;}}}}
-    if(empty!=null)return empty.folder;if(cached!=null&&!strictFolders)return cached;throw last==null?new IOException("蓝奏目录暂不可用"):last;
+    for(int attempt=0;attempt<2;attempt++){byte ua=attempt==0?first:otherUa(first);if(!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{PageResult result=browsePageUa(url,pwd,refresh,page,deadline,strictFolders,profile,ua);if(result.usable){profile.directoryUa=ua;return result.folder;}if(result.unauthorized){last=new DirectPasswordException("分享密码授权失效");continue;}if(empty==null)empty=result;}catch(Exception error){last=error;if(page>1&&recoverableBrowseError(error)){invalidateBrowseSessions(url,pwd);awaitRecoverablePageRetry(profile,ua,page,deadline);try{PageResult replay=browsePageUa(url,pwd,true,page,deadline,strictFolders,profile,ua);if(replay.usable){profile.directoryUa=ua;return replay.folder;}if(empty==null)empty=replay;}catch(Exception retryError){last=retryError;}}}}
+    if(empty!=null)return empty.folder;if(cached!=null&&!strictFolders)return cached;throw last==null?new IOException("解析目录暂不可用"):last;
   }
 
   private PageResult browsePageUa(String url,String pwd,boolean refresh,int page,long deadline,boolean strictFolders,SourceProfile profile,byte ua)throws Exception{
@@ -985,8 +1037,8 @@ final class LanzouCore {
       if(!session.folderEndpoint.isEmpty()){int[] count=new int[1];List<Models.Item> folders=apiFolders(session,deadline,1,true,count,profile);out.apiFolderCount=count[0];for(Models.Item folder:folders)items.put(folder.url,folder);}
     }
     Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));
-    JSONObject data=postListing(session,form,deadline,page,profile);JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);if(state==2&&!pwd.isEmpty()&&!session.passwordUnlocked){session=unlockPasswordSession(session,pwd,deadline,profile,ua);out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));data=postListing(session,form,deadline,page,profile);array=data.optJSONArray("text");state=data.optInt("zt",-1);}if(state==1&&(array==null||page>1&&array.length()==0))throw new IOException("目录分页返回空内容");
-    if(state==2)return new PageResult(out,false,true);if(state==1){session.authorized=true;}if(state==1&&array!=null)for(int i=0;i<array.length();i++){
+        JSONObject data=postListing(session,form,deadline,page,profile);JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);String stateInfo=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));if(state==2&&!pwd.isEmpty()&&!session.passwordUnlocked&&DIRECT_PASSWORD_INFO.matcher(stateInfo).find()){session=unlockPasswordSession(session,pwd,deadline,profile,ua);out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));data=postListing(session,form,deadline,page,profile);array=data.optJSONArray("text");state=data.optInt("zt",-1);stateInfo=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));}if(state==1&&(array==null||page>1&&array.length()==0))throw new IOException("目录分页返回空内容");
+    if(state==2){if(!items.isEmpty()){out.items.addAll(items.values());out.hasMore=false;applyAvatarFallback(out);if(directoryCachingEnabled)writeDirectoryCache(cache,toJson(out).toString());return new PageResult(out,true);}return new PageResult(out,false,DIRECT_PASSWORD_INFO.matcher(stateInfo).find());}if(state==1){session.authorized=true;}if(state==1&&array!=null)for(int i=0;i<array.length();i++){
       JSONObject value=array.optJSONObject(i);if(value==null)continue;Models.Item item=item(value,origin(session.page.url),out.title,pwd);if(item.url.isEmpty()||item.url.endsWith("/-1"))continue;valid++;items.put(item.url,item);
     }
     out.items.addAll(items.values());out.hasMore=state==1&&array!=null&&array.length()>=PAGE_SIZE&&valid>0;applyAvatarFallback(out);
@@ -1001,7 +1053,7 @@ final class LanzouCore {
   private void primeListingSession(DirectLink session,long deadline,SourceProfile profile)throws Exception{
     Map<String,String> first=new LinkedHashMap<>(session.form);first.put("pg","1");JSONObject data=postListing(session,first,deadline,1,profile);int state=data.optInt("zt",-1);if(state==1){session.authorized=true;return;}String message=data.optString("info",data.optString("msg","目录接口需要重试"));throw new RecoverableBrowseException(message);
   }
-  private void awaitRecoverablePageRetry(SourceProfile profile,byte ua,int page,long deadline)throws Exception{int delay=Math.max(profile.interval(ua,page),profile.backoff(ua,page));long until=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(Math.min(6000,Math.max(1200,delay)));while(System.nanoTime()<until){checkDeadline(deadline);Thread.sleep(120L);}}
+  private void awaitRecoverablePageRetry(SourceProfile profile,byte ua,int page,long deadline)throws Exception{int delay=Math.max(profile.interval(ua,page),profile.backoff(ua,page));long until=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(Math.min(4200,Math.max(240,delay)));while(System.nanoTime()<until){checkDeadline(deadline);Thread.sleep(80L);}}
 
   private DirectLink unlockPasswordSession(DirectLink session,String pwd,long deadline,SourceProfile profile,byte ua)throws Exception{
     if(pwd==null||pwd.isEmpty())throw new DirectPasswordException();
@@ -1055,8 +1107,8 @@ final class LanzouCore {
   private static List<Models.Item> apiFolders(DirectLink session,long deadline,int page,boolean strict,int[] rawCount,SourceProfile profile)throws Exception{
     List<Models.Item> out=new ArrayList<>();try{
       if(session.folderEndpoint.isEmpty())return out;Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));JSONObject data=postPage(session,session.folderEndpoint,form,deadline,page,profile,"目录子文件夹接口返回异常");int state=data.optInt("zt",-1);if(state==2)return out;JSONArray array=data.optJSONArray("text");if(array==null)return out;if(rawCount!=null)rawCount[0]=array.length();
-      for(int i=0;i<array.length();i++){JSONObject value=array.optJSONObject(i);if(value==null)continue;String id=firstNonEmpty(value.optString("fol_id"),value.optString("folder_id"),value.optString("id"));String title=strip(firstNonEmpty(value.optString("name"),value.optString("folder_name"),value.optString("name_all")));if(id.isEmpty()||id.equals("null")||title.isEmpty())continue;String description=strip(firstNonEmpty(value.optString("folder_des"),value.optString("description"),value.optString("introduce"),value.optString("info"),value.optString("size")));
-        Models.Item item=new Models.Item();item.folder=true;item.folderId=id;item.title=title;item.description=description;item.size=description;item.url=apiFolderUrl(value,session.target.rootUrl,id,title,description);item.shareUrl=item.url;item.iconUrl="https://images.bakstotre.com/assets/images/type/folder.gif";item.source=session.metadata.title;item.password=session.metadata.password;out.add(item);}
+      for(int i=0;i<array.length();i++){JSONObject value=array.optJSONObject(i);if(value==null)continue;String id=firstNonEmpty(value.optString("fol_id"),value.optString("folder_id"),value.optString("id"));String title=strip(firstNonEmpty(value.optString("name"),value.optString("folder_name"),value.optString("name_all")));if(id.isEmpty()||id.equals("null")||title.isEmpty())continue;String description=strip(firstNonEmpty(value.optString("folder_des"),value.optString("description"),value.optString("desc"),value.optString("introduce"),value.optString("info")));String size=cleanMetadataCell(firstNonEmpty(value.optString("size"),value.optString("filesize"),value.optString("file_size"),value.optString("size_all")));String time=normalizeTimeCell(firstNonEmpty(value.optString("time"),value.optString("time_all"),value.optString("date"),value.optString("uploadtime"),value.optString("upload_time"),value.optString("update_time")));
+        Models.Item item=new Models.Item();item.folder=true;item.folderId=id;item.title=title;item.description=description;item.size=size;item.time=time;item.url=apiFolderUrl(value,session.target.rootUrl,id,title,description);item.shareUrl=item.url;item.iconUrl="https://images.bakstotre.com/assets/images/type/folder.gif";item.source=session.metadata.title;item.password=session.metadata.password;out.add(item);}
     }catch(Exception error){if(strict)throw error;}return out;
   }
 
@@ -1244,12 +1296,15 @@ final class LanzouCore {
   }
 
   private static Models.Item item(JSONObject o,String base,String source,String password)throws Exception{
-    Models.Item x=new Models.Item();x.title=strip(firstNonEmpty(o.optString("name_all"),o.optString("name")));String id=firstNonEmpty(o.optString("id"),o.optString("url"));if(!id.isEmpty())x.url=new URL(new URL(base),id.startsWith("http")?id:"/"+id).toString();x.shareUrl=x.url;x.size=o.optString("size");x.description=strip(firstNonEmpty(o.optString("description"),o.optString("introduce"),o.optString("info")));x.source=source;x.password=password==null?"":password;x.folder=o.optBoolean("folder")||o.optInt("folder")==1||o.optString("type").equalsIgnoreCase("folder");
+    Models.Item x=new Models.Item();x.title=strip(firstNonEmpty(o.optString("name_all"),o.optString("name"),o.optString("title"),o.optString("filename")));String id=firstNonEmpty(o.optString("id"),o.optString("url"),o.optString("file_id"),o.optString("f_id"));if(!id.isEmpty())x.url=new URL(new URL(base),id.startsWith("http")?id:"/"+id).toString();x.shareUrl=x.url;x.size=cleanMetadataCell(firstNonEmpty(o.optString("size"),o.optString("filesize"),o.optString("file_size"),o.optString("size_all"),o.optString("f_size"),o.optString("fileSize")));x.description=strip(firstNonEmpty(o.optString("description"),o.optString("desc"),o.optString("introduce"),o.optString("file_description"),o.optString("folder_des"),o.optString("info")));x.source=source;x.password=password==null?"":password;x.folder=o.optBoolean("folder")||o.optInt("folder")==1||o.optString("type").equalsIgnoreCase("folder");
     String type=o.optString("icon").trim(),custom=o.optString("ico").trim();boolean hasCustom=o.optInt("p_ico")==1||"1".equals(o.optString("p_ico"));
     if(hasCustom&&!custom.isEmpty())x.iconUrl=custom.startsWith("http")?custom:"https://image.dmpdmp.com/image/ico/"+custom+"?x-oss-process=image/auto-orient,1/resize,m_fill,w_100,h_100/format,png";
     else if(!type.isEmpty())x.iconUrl=type.startsWith("http")?type:"https://images.bakstotre.com/assets/images/type/"+type+".gif";
-    x.time=firstNonEmpty(o.optString("time"),o.optString("time_all"),o.optString("date"),dateFromIcon(custom));return x;
+    x.time=normalizeTimeCell(firstNonEmpty(o.optString("time"),o.optString("time_all"),o.optString("date"),o.optString("uploadtime"),o.optString("upload_time"),o.optString("file_time"),o.optString("update_time"),o.optString("updated_at"),dateFromIcon(custom)));return x;
   }
+  private static String cleanMetadataCell(String value){return strip(value==null?"":value).replace(' ',' ').trim();}
+  private static String normalizeTimeCell(String value){String out=cleanMetadataCell(value).replace('/','-').replace('.','-');return out.replaceAll("[\\t\\r\\n ]+"," ").trim();}
+  private static void mergeLiveItemMetadata(Models.Item target,Models.Item live){if(target==null||live==null)return;if(!live.title.isEmpty())target.title=live.title;if(!live.shareUrl.isEmpty())target.shareUrl=live.shareUrl;if(!live.size.isEmpty())target.size=live.size;if(!live.time.isEmpty())target.time=live.time;if(!live.description.isEmpty())target.description=live.description;if(!live.iconUrl.isEmpty())target.iconUrl=live.iconUrl;if(!live.source.isEmpty())target.source=live.source;if(!live.password.isEmpty())target.password=live.password;if(!live.folderId.isEmpty())target.folderId=live.folderId;if(!live.error.isEmpty())target.error=live.error;target.folder=target.folder||live.folder;}
   private static boolean matches(Models.Item item,String foldedQuery){return matches(item,foldedQuery,false);}
   private static boolean matches(Models.Item item,String foldedQuery,boolean fuzzy){return matchRank(foldSearchQuery(item.title),foldedQuery,fuzzy)>=0;}
   private static int matchRank(String foldedValue,String foldedQuery,boolean fuzzy){if(foldedQuery==null||foldedQuery.isEmpty())return 0;String value=foldedValue==null?"":foldedValue;if(value.contains(foldedQuery))return 0;return fuzzy&&fuzzySubsequence(value,foldedQuery)?1:-1;}

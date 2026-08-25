@@ -86,30 +86,31 @@ final class SegmentDownloader {
       }
       out.flush();
     }
-    if(done!=total)throw new IOException("文件总长度校验失败");listener.progress(total,total);
+        if(done!=total)throw new IOException("文件总长度校验失败");long persisted=destinationLength(destination);if(persisted!=total)throw new IOException("本地文件长度校验失败");listener.progress(total,total);
   }
 
   private void checkStopped()throws IOException{int stop=terminal.stopMode();if(stop!=0)throw new IOException(stop==1?"下载已暂停":"下载已取消");}
 
-  private long destinationLength(Uri destination)throws Exception{
+    private long destinationLength(Uri destination)throws Exception{
     if("file".equals(destination.getScheme())){File file=new File(destination.getPath());return file.isFile()?file.length():0;}
     try(ParcelFileDescriptor descriptor=context.getContentResolver().openFileDescriptor(destination,"r")){
       if(descriptor==null)return 0;long size=descriptor.getStatSize();if(size>=0)return size;
-      try(FileInputStream input=new FileInputStream(descriptor.getFileDescriptor())){return input.getChannel().size();}
+      try(FileInputStream input=new FileInputStream(descriptor.getFileDescriptor())){try{return input.getChannel().size();}catch(Exception ignored){}}
     }catch(FileNotFoundException missing){return 0;}
+    try(InputStream input=context.getContentResolver().openInputStream(destination)){if(input==null)return 0;long size=0;byte[] buffer=new byte[32768];for(int count;(count=input.read(buffer))>0;)size+=count;return size;}
   }
 
-  private Sink openDestination(Uri destination,long offset)throws Exception{
+    private Sink openDestination(Uri destination,long offset)throws Exception{
     if("file".equals(destination.getScheme())){
       File file=new File(destination.getPath());long length=file.isFile()?file.length():0;if(offset>0&&length!=offset)throw new IOException("本地续传长度已变化");
       return new Sink(new FileOutputStream(file,offset>0),null);
     }
-    ParcelFileDescriptor descriptor=context.getContentResolver().openFileDescriptor(destination,"rw");if(descriptor==null)throw new IOException("无法写入 Download 目录");
+    ParcelFileDescriptor descriptor=null;Exception seekFailure=null;
     try{
-      FileOutputStream output=new FileOutputStream(descriptor.getFileDescriptor());FileChannel channel=output.getChannel();long length=channel.size();
-      if(offset==0)channel.truncate(0);else if(length!=offset)throw new IOException("本地续传长度已变化");channel.position(offset);
-      return new Sink(Channels.newOutputStream(channel),descriptor);
-    }catch(Exception error){descriptor.close();throw error;}
+      descriptor=context.getContentResolver().openFileDescriptor(destination,"rw");if(descriptor==null)throw new IOException("无法写入 Download 目录");FileOutputStream output=new FileOutputStream(descriptor.getFileDescriptor());FileChannel channel=output.getChannel();long length=channel.size();
+      if(offset==0)channel.truncate(0);else if(length!=offset)throw new IOException("本地续传长度已变化");channel.position(offset);return new Sink(Channels.newOutputStream(channel),descriptor);
+    }catch(SecurityException denied){if(descriptor!=null)try{descriptor.close();}catch(Exception ignored){}throw denied;}catch(Exception error){seekFailure=error;if(descriptor!=null)try{descriptor.close();}catch(Exception ignored){}}
+    OutputStream fallback=context.getContentResolver().openOutputStream(destination,offset>0?"wa":"wt");if(fallback==null)throw seekFailure==null?new IOException("无法写入 Download 目录"):seekFailure;return new Sink(fallback,null);
   }
 
   private Response openResume(String url,long existing,long expectedTotal,boolean guarded)throws Exception{

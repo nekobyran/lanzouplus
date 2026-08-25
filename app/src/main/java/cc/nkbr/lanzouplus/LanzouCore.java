@@ -20,7 +20,7 @@ final class LanzouCore {
   private static final String DESKTOP_EDGE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0";
   private static final String MOBILE_HUAWEI_UA="Mozilla/5.0 (Linux; Android 12; BRQ-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
   private static final String MOBILE_FIREFOX_UA="Mozilla/5.0 (Android 12; Mobile; rv:126.0) Gecko/126.0 Firefox/126.0";
-    private static volatile int configuredUaPreset=UA_PRESET_MOBILE_CHROME,configuredUaScopeMask=UA_SCOPE_ALL,configuredFileListUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectorySearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredApiSearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectUaPreset=UA_PRESET_MOBILE_CHROME;
+    private static volatile int configuredUaPreset=UA_PRESET_MOBILE_CHROME,configuredUaScopeMask=UA_SCOPE_ALL,configuredFileListUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectorySearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredApiSearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectUaPreset=UA_PRESET_MOBILE_CHROME; private static volatile String configuredCustomUserAgent="";
   private static final int[] POS={15,35,29,24,33,16,1,38,10,9,19,31,40,27,22,23,25,13,6,11,39,18,20,8,14,21,32,26,2,30,7,4,17,5,3,28,34,37,12,36};
   private static final String MASK="3000176000856006061501533003690027800375";
   private static final long NO_DEADLINE=Long.MAX_VALUE;
@@ -57,8 +57,11 @@ final class LanzouCore {
   private static final Pattern ICON_DATE=Pattern.compile("(?:^|/)(\\d{4})/(\\d{2})/(\\d{2})(?:/|$)");
   private static final Pattern INVALID_FILE_NAME=Pattern.compile("[\\\\/:*?\"<>|]");
   private static final Pattern LANZOU_TYPO_HOST=Pattern.compile("(?:[a-z0-9-]+\\.)*laozouw\\.com");
-  private static final Pattern LANZOU_HOST=Pattern.compile("(?i)(?:[a-z0-9-]+\\.)*lanzou[a-z0-9]?\\.com");
-  private static final Pattern SMART_SOURCE_LINK=Pattern.compile("(?i)https?://(?:[a-z0-9-]+\\.)*(?:lanzou[a-z0-9]?|laozouw)\\.com/[a-z0-9._~%!$&()*+,;=:@/?#-]+");
+  private static final Pattern LANZOU_HOST=Pattern.compile("(?i)(?:[a-z0-9-]+[.])*(?:lanzou[a-z0-9]?|lanzov)[.]com");
+    private static final Pattern URL_SCHEME=Pattern.compile("(?i)^[a-z][a-z0-9+.-]*://.*");
+  private static final Pattern HOST_PATH=Pattern.compile("(?i)^(?:[a-z0-9-]+[.])+[a-z]{2,63}/.+");
+  private static final Pattern SHARE_SEGMENT=Pattern.compile("(?i)[a-z0-9._~-]{3,96}");
+  private static final Pattern SMART_SOURCE_LINK=Pattern.compile("(?i)(?:https?://)?(?:[a-z0-9-]+[.])+[a-z]{2,63}/[a-z0-9._~%!$&()*+,;=:@/?#-]+");
   private static final Pattern SMART_PASSWORD=Pattern.compile("(?i)(?:密码|提取码|访问码|口令|pwd|password)\\s*(?:为\\s*)?[:：=-]{0,3}\\s*([a-z0-9_-]{1,64})");
   private static final Pattern TRAILING_PASSWORD=Pattern.compile("^\\s+([a-z0-9_-]{1,64})(?=\\s*(?:$|[,，;；]))",Pattern.CASE_INSENSITIVE);
   private static final Pattern DIRECT_RATE_LIMIT_INFO=Pattern.compile("(?i)请求(?:过多|频繁)|操作频繁|访问(?:过于)?频繁|稍后再试|已达上限|too many|rate.?limit|频率限制");
@@ -174,7 +177,7 @@ final class LanzouCore {
     final List<SourceSearchState> states;final LinkedHashMap<String,List<SourceSearchState>> groups=new LinkedHashMap<>();final ArrayDeque<String> waitingGroups=new ArrayDeque<>();final ArrayDeque<SourceSearchState> apiReady=new ArrayDeque<>(),directoryReady=new ArrayDeque<>();final Map<String,Integer> remaining=new HashMap<>();final Set<String> activeGroups=new HashSet<>(),failedGroups=new HashSet<>();final Map<String,ScheduledFuture<?>> rotations=new HashMap<>();final List<Models.Item> out;final Set<String> seen;final Models.SearchOptions options;final Models.Progress progress;final int total,maxActive,matchedCompositeLeafCount,httpLimit;final java.util.concurrent.atomic.AtomicInteger done=new java.util.concurrent.atomic.AtomicInteger(),found=new java.util.concurrent.atomic.AtomicInteger(),pagesSeen=new java.util.concurrent.atomic.AtomicInteger();
     final Set<Future<?>> httpFutures=Collections.newSetFromMap(new IdentityHashMap<>());final Set<HttpURLConnection> openConnections=Collections.newSetFromMap(new IdentityHashMap<>());final Object resultLock=new Object();
     int active,runningHttp,apiBurst;volatile boolean paused,cancelled;
-    SearchCoordinator(List<SourceSearchState> states,List<Models.Item> out,Set<String> seen,Models.SearchOptions options,Models.Progress progress){this.states=states;this.out=out;this.seen=seen;this.options=options;this.progress=progress;int matched=0;for(SourceSearchState state:states){if(options.indexOnly()){state.apiDone=true;state.dirDone=true;state.folders.clear();}else{if(!options.directoryEnabled()&&state.hydrate==null&&state.source.kind!=Models.SOURCE_COMPOSITE){state.dirDone=true;state.folders.clear();}if(!options.apiEnabled())state.apiDone=true;}groups.computeIfAbsent(state.groupKey,key->new ArrayList<>()).add(state);if(state.hydrate!=null&&!state.apiDone)matched++;}for(Map.Entry<String,List<SourceSearchState>> entry:groups.entrySet()){waitingGroups.addLast(entry.getKey());remaining.put(entry.getKey(),entry.getValue().size());}total=groups.size();int requested=options.concurrency<=0?total:options.concurrency;maxActive=Math.max(1,Math.min(requested,total));matchedCompositeLeafCount=matched;httpLimit=adaptiveNetworkWorkers(Math.max(1,maxActive+matchedCompositeLeafCount));}
+    SearchCoordinator(List<SourceSearchState> states,List<Models.Item> out,Set<String> seen,Models.SearchOptions options,Models.Progress progress){this.states=states;this.out=out;this.seen=seen;this.options=options;this.progress=progress;int matched=0;for(SourceSearchState state:states){if(options.indexOnly()){state.apiDone=true;state.dirDone=true;state.folders.clear();}else{if(!options.directoryEnabled()&&state.hydrate==null&&state.source.kind!=Models.SOURCE_COMPOSITE){state.dirDone=true;state.folders.clear();}if(!options.apiEnabled())state.apiDone=true;}groups.computeIfAbsent(state.groupKey,key->new ArrayList<>()).add(state);if(state.hydrate!=null&&!state.apiDone)matched++;}for(Map.Entry<String,List<SourceSearchState>> entry:groups.entrySet()){waitingGroups.addLast(entry.getKey());remaining.put(entry.getKey(),entry.getValue().size());}total=groups.size();int requested=options.concurrency<=0?total:options.concurrency;int activeLimit=adaptiveSourceWorkers(options.concurrency,total);maxActive=Math.max(1,Math.min(Math.min(requested,total),Math.max(1,activeLimit)));matchedCompositeLeafCount=matched;httpLimit=adaptiveNetworkWorkers(Math.max(1,maxActive+matchedCompositeLeafCount));}
     List<Models.Item> run()throws InterruptedException{
       boolean interrupted=false;
       try{synchronized(this){refillActiveLocked();pumpNetworkLocked();}while(true){if(isSearchCancelled(progress)){synchronized(this){cancelLocked();}break;}if(progress!=null){synchronized(this){if(cancelled||done.get()>=total)break;paused=true;}boolean resume;try{resume=progress.awaitIfPaused();}catch(RuntimeException ignored){resume=false;}synchronized(this){paused=false;if(!resume){cancelLocked();break;}refillActiveLocked();pumpNetworkLocked();}}synchronized(this){if(cancelled||done.get()>=total)break;wait(50L);pumpNetworkLocked();}}}catch(InterruptedException error){interrupted=true;synchronized(this){cancelLocked();}}
@@ -228,9 +231,9 @@ final class LanzouCore {
   DirectLink resolveDirect(String shareUrl)throws Exception{return resolveDirect(shareUrl,"");}
   DirectLink resolveDirect(String shareUrl,String password)throws Exception{
     String pwd=password==null?"":password.trim();if(pwd.length()>64||containsControl(pwd))throw new DirectPasswordException("密码格式无效");
-    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DIRECT_RESOLVE_TIMEOUT_MS);Exception last=null;Set<String> attempted=new HashSet<>();int firstProfile=-1;
+    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DIRECT_RESOLVE_TIMEOUT_MS);Exception last=null;Set<String> attempted=new HashSet<>();
     for(int attempt=0;attempt<2;attempt++){
-      directRemainingMillis(deadline);long now=System.currentTimeMillis();int preferred=attempt==0?-1:(firstProfile==DirectCookiePool.PROFILE_ANDROID?DirectCookiePool.PROFILE_DESKTOP:DirectCookiePool.PROFILE_ANDROID);DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now,preferred);if(attempt==0)firstProfile=lease.profile;attempted.add(lease.id);NetSession session=new NetSession(lease.jar,lease.profile,deadline);
+      directRemainingMillis(deadline);long now=System.currentTimeMillis();int preferred=attempt==0?DirectCookiePool.PROFILE_ANDROID:DirectCookiePool.PROFILE_DESKTOP;DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now,preferred);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,lease.profile,deadline);
       try{DirectLink direct=resolveDirectWithSession(shareUrl,pwd,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;
       }catch(Exception error){last=error;DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());if(error instanceof DirectPasswordException||retry==null&&terminalDirectFailure(error))throw error;}
     }
@@ -334,11 +337,6 @@ final class LanzouCore {
   private static String directTransferHref(String html){String transfer=cap(html,"(?is)<a(?=[^>]*id=[\"']downurl[\"'])(?=[^>]*href=[\"']([^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a(?=[^>]*href=[\"']([^\"']+)[\"'])(?=[^>]*id=[\"']downurl[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a[^>]+href=[\"']([^\"']*/tp/[^\"']+)");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe(?=[^>]*class=[\"'][^\"']*n_downlink[^\"']*[\"'])(?=[^>]*src=[\"']([^\"']*/?fn[?][^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe[^>]+src=[\"']([^\"']*/?fn[?][^\"']+)[\"']");return transfer;}
   private static boolean directShareNeedsLanzouxMirror(String html){String value=html==null?"":html.toLowerCase(Locale.ROOT);if(value.contains("acw_sc__v2")||value.contains("aliyun_waf_")||value.contains("captchav2"))return true;return directTransferHref(html).isEmpty()&&value.contains("<html")&&!value.contains("ajaxm.php")&&!value.contains("downprocess");}
   private static List<String> lanzouxDirectMirrors(String raw){ArrayList<String> out=new ArrayList<>();try{URL url=new URL(raw);String host=url.getHost();if(host==null)return out;String lower=host.toLowerCase(Locale.ROOT);if(!lower.contains("lanzou"))return out;String file=url.getFile();LinkedHashSet<String> hosts=new LinkedHashSet<>();hosts.add(host.toLowerCase(Locale.ROOT));hosts.add("nekobyran.lanzouw.com");hosts.add("www.lanzouw.com");hosts.add("wwc.lanzouw.com");hosts.add("www.lanzoux.com");hosts.add("wwc.lanzoux.com");hosts.add("www.lanzoup.com");hosts.add("www.lanzouo.com");hosts.add("www.lanzouz.com");for(String candidate:hosts)out.add(new URL(url.getProtocol(),candidate,file).toString());}catch(Exception ignored){}return out;}
-  private static LinkedHashSet<String> directoryMirrorCandidates(String raw){LinkedHashSet<String> out=new LinkedHashSet<>();if(raw==null||raw.trim().isEmpty())return out;out.add(raw.trim());try{URL url=new URL(raw.trim());String host=url.getHost();if(host==null||!host.toLowerCase(Locale.ROOT).contains("lanzou"))return out;String file=url.getFile();String fragment=url.getRef();String suffix=file+(fragment==null||fragment.isEmpty()?"":"#"+fragment);for(String candidate:new String[]{"www.lanzoux.com","wwc.lanzoux.com","www.lanzoup.com","www.lanzouo.com","nekobyran.lanzouw.com","www.lanzouw.com","wwc.lanzouw.com","www.lanzouz.com"})out.add(new URL(url.getProtocol(),candidate,suffix).toString());}catch(Exception ignored){}return out;}
-  private static boolean shouldTryNextDirectoryMirror(Exception error){if(error instanceof DirectPasswordException)return false;if(error instanceof ShareCancelledException)return false;String value=String.valueOf(error==null?"":error.getMessage()).toLowerCase(Locale.ROOT);return value.contains("403")||value.contains("forbidden")||value.contains("502")||value.contains("503")||value.contains("504")||value.contains("timeout")||value.contains("timed out")||value.contains("eof")||value.contains("ssl")||value.contains("waf")||value.contains("captcha")||value.contains("reset")||value.contains("refused")||value.contains("unreachable")||value.contains("too many")||value.contains("rate")||value.contains("missing")||value.contains("no directory")||value.contains("not found")||value.contains("未找到")||value.contains("接口")||value.contains("频")||value.contains("等待")||value.contains("异常")||value.contains("稍后")||value.contains("过快");}
-  private static void noteMirrorSuccess(String original,String mirror){try{SourceProfile from=sourceProfile(original),to=sourceProfile(mirror);from.directoryUa=to.directoryUa==UA_UNKNOWN?from.directoryUa:to.directoryUa;}catch(Exception ignored){}}
-  private static void noteMirrorFailure(String mirror,Exception error){try{SourceProfile profile=sourceProfile(mirror);if(error instanceof PageRateLimitedException||error instanceof RecoverableBrowseException)profile.backoff(profile.directoryUa==UA_UNKNOWN?UA_ANDROID:profile.directoryUa,1);}catch(Exception ignored){}}
-
 
   private static Map<String,String> legacyDownprocessFields(String html){
     LinkedHashMap<String,String> best=new LinkedHashMap<>();int bestLength=-1;String source=html==null?"":html;
@@ -733,12 +731,14 @@ final class LanzouCore {
   static int normalizeUserAgentScopeMask(int mask){return (mask&UA_SCOPE_ALL)==0?UA_SCOPE_ALL:mask&UA_SCOPE_ALL;}
   static String uaPresetLabel(int preset){switch(normalizeUserAgentPreset(preset)){case UA_PRESET_DESKTOP_CHROME:return "桌面 Chrome";case UA_PRESET_DESKTOP_EDGE:return "桌面 Edge";case UA_PRESET_MOBILE_HUAWEI:return "移动 Chrome · 华为实机";case UA_PRESET_MOBILE_FIREFOX:return "移动 Firefox";default:return "移动 Chrome";}}
   static String uaScopeLabel(int mask){int value=normalizeUserAgentScopeMask(mask);List<String> parts=new ArrayList<>();if((value&UA_SCOPE_FILE_LIST)!=0)parts.add("文件列表");if((value&UA_SCOPE_DIRECTORY_SEARCH)!=0)parts.add("目录搜索");if((value&UA_SCOPE_API_SEARCH)!=0)parts.add("API 搜索");if((value&UA_SCOPE_DIRECT)!=0)parts.add("直链解析");return String.join("、",parts);}
-    static void setUserAgentPolicy(int preset,int scopeMask){int normalized=normalizeUserAgentPreset(preset);configuredUaPreset=normalized;configuredUaScopeMask=normalizeUserAgentScopeMask(scopeMask);if((configuredUaScopeMask&UA_SCOPE_FILE_LIST)!=0)configuredFileListUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_DIRECTORY_SEARCH)!=0)configuredDirectorySearchUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_API_SEARCH)!=0)configuredApiSearchUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_DIRECT)!=0)configuredDirectUaPreset=normalized;}
-  static void setUserAgentPolicy(int fileListPreset,int directorySearchPreset,int apiSearchPreset,int directPreset){configuredUaScopeMask=UA_SCOPE_ALL;configuredFileListUaPreset=normalizeUserAgentPreset(fileListPreset);configuredDirectorySearchUaPreset=normalizeUserAgentPreset(directorySearchPreset);configuredApiSearchUaPreset=normalizeUserAgentPreset(apiSearchPreset);configuredDirectUaPreset=normalizeUserAgentPreset(directPreset);configuredUaPreset=configuredDirectUaPreset;}
+  static String normalizeCustomUserAgent(String value){String raw=value==null?"":value;StringBuilder out=new StringBuilder();for(int i=0;i<raw.length()&&out.length()<512;i++){char ch=raw.charAt(i);if(ch<32||ch==127){if(out.length()>0&&out.charAt(out.length()-1)!=' ')out.append(' ');}else out.append(ch);}return out.toString().trim();}
+  static void setUserAgentPolicy(int preset,int scopeMask){int normalized=normalizeUserAgentPreset(preset);configuredUaPreset=normalized;configuredUaScopeMask=normalizeUserAgentScopeMask(scopeMask);if((configuredUaScopeMask&UA_SCOPE_FILE_LIST)!=0)configuredFileListUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_DIRECTORY_SEARCH)!=0)configuredDirectorySearchUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_API_SEARCH)!=0)configuredApiSearchUaPreset=normalized;if((configuredUaScopeMask&UA_SCOPE_DIRECT)!=0)configuredDirectUaPreset=normalized;}
+  static void setUserAgentPolicy(int fileListPreset,int directorySearchPreset,int apiSearchPreset,int directPreset){setUserAgentPolicy(fileListPreset,directorySearchPreset,apiSearchPreset,directPreset,configuredCustomUserAgent);}
+  static void setUserAgentPolicy(int fileListPreset,int directorySearchPreset,int apiSearchPreset,int directPreset,String customUserAgent){configuredUaScopeMask=UA_SCOPE_ALL;configuredFileListUaPreset=normalizeUserAgentPreset(fileListPreset);configuredDirectorySearchUaPreset=normalizeUserAgentPreset(directorySearchPreset);configuredApiSearchUaPreset=normalizeUserAgentPreset(apiSearchPreset);configuredDirectUaPreset=normalizeUserAgentPreset(directPreset);configuredUaPreset=configuredDirectUaPreset;configuredCustomUserAgent=normalizeCustomUserAgent(customUserAgent);}
   private static int configuredUserAgentPreset(int scope){if(scope==UA_SCOPE_DIRECTORY_SEARCH)return configuredDirectorySearchUaPreset;if(scope==UA_SCOPE_API_SEARCH)return configuredApiSearchUaPreset;if(scope==UA_SCOPE_DIRECT)return configuredDirectUaPreset;return configuredFileListUaPreset;}
-  private static String configuredUserAgent(int scope){switch(normalizeUserAgentPreset(configuredUserAgentPreset(scope))){case UA_PRESET_DESKTOP_CHROME:return DESKTOP_SEARCH_UA;case UA_PRESET_DESKTOP_EDGE:return DESKTOP_EDGE_UA;case UA_PRESET_MOBILE_HUAWEI:return MOBILE_HUAWEI_UA;case UA_PRESET_MOBILE_FIREFOX:return MOBILE_FIREFOX_UA;default:return ANDROID_UA;}}
-  private static String defaultUserAgent(byte ua){return ua==UA_DESKTOP?DESKTOP_SEARCH_UA:ANDROID_UA;}
-  private static String scopedUserAgent(byte ua,int scope){if((configuredUaScopeMask&scope)==0)return defaultUserAgent(ua);int preset=normalizeUserAgentPreset(configuredUserAgentPreset(scope));String primary=scope==UA_SCOPE_DIRECT&&preset==UA_PRESET_MOBILE_CHROME?MOBILE_HUAWEI_UA:configuredUserAgent(scope);if(ua==UA_ANDROID)return primary;return preset==UA_PRESET_DESKTOP_CHROME||preset==UA_PRESET_DESKTOP_EDGE?MOBILE_HUAWEI_UA:DESKTOP_SEARCH_UA;}
+  private static String configuredUserAgent(int scope){String custom=configuredCustomUserAgent;if(custom!=null&&!custom.isEmpty())return custom;switch(normalizeUserAgentPreset(configuredUserAgentPreset(scope))){case UA_PRESET_DESKTOP_CHROME:return DESKTOP_SEARCH_UA;case UA_PRESET_DESKTOP_EDGE:return DESKTOP_EDGE_UA;case UA_PRESET_MOBILE_HUAWEI:return MOBILE_HUAWEI_UA;case UA_PRESET_MOBILE_FIREFOX:return MOBILE_FIREFOX_UA;default:return ANDROID_UA;}}
+  private static String defaultUserAgent(byte ua){String custom=configuredCustomUserAgent;if(custom!=null&&!custom.isEmpty())return custom;return ua==UA_DESKTOP?DESKTOP_SEARCH_UA:ANDROID_UA;}
+  private static String scopedUserAgent(byte ua,int scope){if((configuredUaScopeMask&scope)==0)return defaultUserAgent(ua);String custom=configuredCustomUserAgent;if(custom!=null&&!custom.isEmpty())return custom;int preset=normalizeUserAgentPreset(configuredUserAgentPreset(scope));String primary=scope==UA_SCOPE_DIRECT&&preset==UA_PRESET_MOBILE_CHROME?MOBILE_HUAWEI_UA:configuredUserAgent(scope);if(ua==UA_ANDROID)return primary;return preset==UA_PRESET_DESKTOP_CHROME||preset==UA_PRESET_DESKTOP_EDGE?MOBILE_HUAWEI_UA:DESKTOP_SEARCH_UA;}
   private static String userAgent(byte ua){Integer scope=UA_SCOPE.get();return scopedUserAgent(ua,scope==null?UA_SCOPE_FILE_LIST:scope);}
   private static int pushUaScope(int scope){Integer old=UA_SCOPE.get();UA_SCOPE.set(scope);return old==null?0:old;}
   private static void restoreUaScope(int old){if(old==0)UA_SCOPE.remove();else UA_SCOPE.set(old);}
@@ -774,10 +774,13 @@ final class LanzouCore {
   private static UserSourceInput parseUserSourceInput(String raw,String explicitPassword)throws IOException{
     try{
       String value=(raw==null?"":raw.trim()).replace('。','.').replace('．','.');
+            if(!URL_SCHEME.matcher(value).matches()&&HOST_PATH.matcher(value).matches())value="https://"+value;
       URI uri=new URI(value);String scheme=uri.getScheme(),host=uri.getHost(),path=uri.getRawPath();
-      boolean typo=host!=null&&LANZOU_TYPO_HOST.matcher(host.toLowerCase(Locale.ROOT)).matches();
-      if(scheme==null||(!scheme.equalsIgnoreCase("http")&&!scheme.equalsIgnoreCase("https"))||host==null||(!LANZOU_HOST.matcher(host).matches()&&!typo)||uri.getRawUserInfo()!=null||uri.getPort()!=-1)throw new IOException("请输入有效的蓝奏目录链接");
+      if(scheme==null||(!scheme.equalsIgnoreCase("http")&&!scheme.equalsIgnoreCase("https"))||host==null||uri.getRawUserInfo()!=null||uri.getPort()!=-1)throw new IOException("请输入有效的蓝奏目录链接");
       if(path==null||path.isEmpty()||path.equals("/"))throw new IOException("请输入蓝奏目录分享链接");
+      String sharePath=sourcePathFromLastSegment(path);
+      // Directory identity is the terminal share token; the entered host only carries that token.
+      // Persistence/runtime access composes it onto the canonical or user-selected Lanzou base origin.
       String embeddedPassword="",rawQuery=uri.getRawQuery();boolean passwordSeen=false;StringBuilder keptQuery=new StringBuilder();
       if(rawQuery!=null&&!rawQuery.isEmpty())for(String part:rawQuery.split("&",-1)){
         int equals=part.indexOf('=');String rawName=equals<0?part:part.substring(0,equals);
@@ -791,10 +794,11 @@ final class LanzouCore {
       if(passwordSeen&&!password.isEmpty()&&!password.equals(embeddedPassword))throw new IOException("链接密码与单独填写的密码不一致");
       if(password.isEmpty()&&passwordSeen)password=embeddedPassword;
       if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");
-      String normalized=CANONICAL_SOURCE_ORIGIN+path+(keptQuery.length()==0?"":"?"+keptQuery);
+      String normalized=CANONICAL_SOURCE_ORIGIN+sharePath+(keptQuery.length()==0?"":"?"+keptQuery);
       return new UserSourceInput(normalized,password);
     }catch(IOException error){throw error;}catch(Exception ignored){throw new IOException("请输入有效的蓝奏目录链接");}
   }
+  private static String sourcePathFromLastSegment(String rawPath)throws IOException{String path=rawPath==null?"":rawPath.trim();while(path.endsWith("/")&&path.length()>1)path=path.substring(0,path.length()-1);int slash=path.lastIndexOf('/');String segment=slash>=0?path.substring(slash+1):path;if(segment.isEmpty())throw new IOException("请输入蓝奏目录分享链接");if(!SHARE_SEGMENT.matcher(segment).matches())throw new IOException("蓝奏分享路径格式无效");return "/"+segment;}
 
   Models.Folder browse(String url,String password,boolean refresh) throws Exception {
     long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(FOREGROUND_BROWSE_TIMEOUT_MS);
@@ -1015,19 +1019,7 @@ final class LanzouCore {
 
   private Models.Folder browsePage(String url,String password,boolean refresh,int requestedPage,long deadline,boolean strictFolders) throws Exception {
     int page=Math.max(1,requestedPage);String pwd=password==null?"":password;Models.Folder cached=readFolderCache(url,pwd,page);if(cached!=null&&!refresh)return cached;
-    Exception last=null;Models.Folder fallback=null;LinkedHashSet<String> candidates=directoryMirrorCandidates(url);
-    for(String candidate:candidates){
-      try{
-        Models.Folder result=browsePageSingleOrigin(candidate,pwd,refresh,page,deadline,strictFolders);
-        if(!candidate.equals(url))noteMirrorSuccess(url,candidate);
-        return result;
-      }catch(Exception error){
-        last=error;noteMirrorFailure(candidate,error);
-        if(fallback==null&&!strictFolders)fallback=readFolderCache(candidate,pwd,page);
-        if(!shouldTryNextDirectoryMirror(error))break;
-      }
-    }
-    if(fallback!=null)return fallback;if(cached!=null&&!strictFolders)return cached;throw last==null?new IOException("解析目录暂不可用"):last;
+    try{return browsePageSingleOrigin(url,pwd,refresh,page,deadline,strictFolders);}catch(Exception error){Models.Folder fallback=!strictFolders?readFolderCache(url,pwd,page):null;if(fallback!=null)return fallback;if(cached!=null&&!strictFolders)return cached;throw error;}
   }
 
   private Models.Folder browsePageSingleOrigin(String url,String password,boolean refresh,int page,long deadline,boolean strictFolders) throws Exception {
@@ -1177,8 +1169,9 @@ final class LanzouCore {
         String group=sourceId(source);Set<String> scope=compositeScope(source);
         if(searchOptions.directoryEnabled()){
           states.add(new SourceSearchState(source,query,cached,group));
-          // Cached names render first; every composite file is refreshed so uncached names can match and persist.
-          for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty())states.add(new SourceSearchState(source,member,query));
+          // Cached names render first. Full-source search must not block live network startup by hydrating every composite leaf.
+          boolean hydrateCompositeLeaves=allowedSourceIds!=null&&allowedSourceIds.size()<=1;
+          if(hydrateCompositeLeaves)for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty())states.add(new SourceSearchState(source,member,query));
         }
         for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&member.kind==Models.MEMBER_REMOTE_FOLDER&&(searchOptions.directoryEnabled()||searchOptions.apiEnabled()&&member.searchable)&&!member.url.isEmpty()&&remoteSeen.add(member.url+'\n'+member.password)){Models.Source nested=remoteSource(member);states.add(new SourceSearchState(nested,query,Collections.emptyList(),group,source.title));}
       }else states.add(new SourceSearchState(source,query,cached));

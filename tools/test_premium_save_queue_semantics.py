@@ -76,7 +76,8 @@ public final class PremiumSaveHarness {
 
     List<PremiumSaveCoordinator.Request> unlimitedRequests=new ArrayList<>();
     for(int index=0;index<20;index++)unlimitedRequests.add(request("unlimited-"+index));
-    CountDownLatch unlimitedStarted=new CountDownLatch(unlimitedRequests.size());
+        int adaptiveSave=PremiumSaveCoordinator.adaptiveParallelism(unlimitedRequests.size());
+    CountDownLatch unlimitedStarted=new CountDownLatch(adaptiveSave);
     CountDownLatch unlimitedRelease=new CountDownLatch(1),unlimitedFinished=new CountDownLatch(1);
     PremiumSaveCoordinator.Task unlimited=PremiumSaveCoordinator.start(
       unlimitedRequests,Collections.singletonList("ok"),0,
@@ -86,8 +87,8 @@ public final class PremiumSaveHarness {
         public void capacityBlocked(PremiumSaveCoordinator.Task ignored,PremiumSaveCoordinator.Snapshot snapshot){}
         public void finished(PremiumSaveCoordinator.Task ignored,PremiumSaveCoordinator.Snapshot snapshot,List<PremiumSaveCoordinator.Attempt> attempts){unlimitedFinished.countDown();}
       });
-    require(unlimitedStarted.await(3,TimeUnit.SECONDS),"unlimited mode must start every pending save without the finite cap");
-    require(unlimited.snapshot().parallelism==0&&unlimited.snapshot().active==unlimitedRequests.size(),"unlimited snapshot semantics");
+        require(unlimitedStarted.await(3,TimeUnit.SECONDS),"auto mode must fill the device-adaptive save width");
+    require(unlimited.snapshot().parallelism==0&&unlimited.snapshot().active==adaptiveSave,"auto snapshot semantics");
     unlimitedRelease.countDown();
     require(unlimitedFinished.await(3,TimeUnit.SECONDS)&&unlimited.snapshot().succeeded==unlimitedRequests.size(),"unlimited completion");
 
@@ -301,13 +302,25 @@ class PremiumSaveAndroidIntegrationContractTest(unittest.TestCase):
         dialog = method_body(MAIN, "showPremiumSaveParallelismDialog")
         self.assertIn("同时保存", settings)
         self.assertIn("premiumSaveParallelism()", settings)
-        self.assertIn("同时保存：无限", settings)
-        self.assertIn("最右为无限", settings)
+        self.assertIn("同时保存：自动适配", settings)
+        self.assertIn("adaptiveSaveLimit", settings)
         self.assertIn('putInt("parallel_saves"', setter)
-        self.assertIn("同时保存：无限", dialog)
-        self.assertIn("最右为无限", dialog)
+        self.assertIn("同时保存：自动适配", dialog)
+        self.assertIn("adaptiveParallelism(Integer.MAX_VALUE)", dialog)
         self.assertIn("task.setParallelism", dialog)
+        self.assertNotIn("MAX_PARALLELISM", settings+dialog)
         self.assertNotIn("premiumSaveTasks.values()", setter)
+
+    def test_save_executor_is_device_adaptive_not_cached_unbounded(self) -> None:
+        coordinator = COORDINATOR.read_text(encoding="utf-8")
+        self.assertIn("adaptiveParallelism(Math.max(1,remaining))", coordinator)
+        self.assertIn("newFixedThreadPool(executorCapacity,factory)", coordinator)
+        self.assertNotIn("newCachedThreadPool", coordinator)
+    def test_multi_account_cloud_work_uses_device_adaptive_workers(self) -> None:
+        run_accounts = method_body(CLOUD, "runAccounts")
+        self.assertIn("adaptiveNetworkWorkers(names.size())", run_accounts)
+        self.assertIn("newFixedThreadPool(workers)", run_accounts)
+        self.assertNotIn("newFixedThreadPool(names.size())", run_accounts)
 
     def test_terminating_save_disconnects_inflight_premium_http_requests(self) -> None:
         start = method_body(MAIN, "startPremiumSaveTask")

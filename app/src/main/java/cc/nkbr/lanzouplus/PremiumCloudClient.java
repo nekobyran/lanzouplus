@@ -533,7 +533,7 @@ final class PremiumCloudClient {
   private <T> List<T> runAccounts(List<String> names,boolean concurrent,AccountWork<T> work)throws CloudException{
     List<T> results=new ArrayList<>(names.size());
     if(!concurrent||names.size()<2){for(String name:names)results.add(work.run(name));return results;}
-    ExecutorService executor=Executors.newFixedThreadPool(names.size());List<Future<T>> futures=new ArrayList<>(names.size());
+        int workers=Math.max(1,LanzouCore.adaptiveNetworkWorkers(names.size()));ExecutorService executor=Executors.newFixedThreadPool(workers);List<Future<T>> futures=new ArrayList<>(names.size());
     try{
       for(String name:names)futures.add(executor.submit(()->work.run(name)));
       for(Future<T> future:futures)results.add(future.get());

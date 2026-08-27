@@ -22,7 +22,6 @@ import java.util.concurrent.ThreadFactory;
  */
 final class PremiumSaveCoordinator {
   static final int MIN_PARALLELISM=1;
-  static final int MAX_PARALLELISM=16;
   static final String STATE_WAITING="等待保存";
   static final String STATE_RUNNING="保存中";
   static final String STATE_PAUSED="已暂停";
@@ -30,7 +29,9 @@ final class PremiumSaveCoordinator {
   static final String STATE_COMPLETED="保存完成";
   static final String STATE_FAILED="保存失败";
 
-  private PremiumSaveCoordinator(){}
+    private PremiumSaveCoordinator(){}
+
+  static int adaptiveParallelism(int taskCount){if(taskCount<=0)return 0;Runtime runtime=Runtime.getRuntime();int processors=Math.max(1,runtime.availableProcessors());long maxMiB=Math.max(1L,runtime.maxMemory()/(1024L*1024L)),usedMiB=Math.max(0L,(runtime.totalMemory()-runtime.freeMemory())/(1024L*1024L));long headroomMiB=Math.max(32L,maxMiB-usedMiB),usableMiB=Math.max(64L,Math.min(maxMiB,headroomMiB+maxMiB/4L)),requestsPerCore=Math.max(8L,usableMiB/8L),capacity=(long)processors*requestsPerCore;return(int)Math.max(1L,Math.min((long)taskCount,Math.min((long)Integer.MAX_VALUE,capacity)));}
 
   interface Operation {
     Outcome save(Request request,String account)throws Exception;
@@ -180,7 +181,6 @@ final class PremiumSaveCoordinator {
       this.listener=listener;
       parallelism=clampParallelism(requestedParallelism);
       ThreadFactory factory=r->{Thread thread=new Thread(r,"premium-save");thread.setDaemon(true);return thread;};
-      executor=Executors.newCachedThreadPool(factory);
       LinkedHashSet<String> names=new LinkedHashSet<>();
       if(accounts!=null)for(String account:accounts)if(!clean(account).isEmpty())names.add(clean(account));
       if(requests!=null)for(Request request:requests)if(request!=null)for(String account:names){
@@ -189,6 +189,7 @@ final class PremiumSaveCoordinator {
         else pending.addLast(unit);
       }
       remaining=total-succeeded;
+      int executorCapacity=Math.max(1,adaptiveParallelism(Math.max(1,remaining)));executor=Executors.newFixedThreadPool(executorCapacity,factory);
       if(total==0){finished=true;state=STATE_FAILED;}
       else if(remaining==0){finished=true;state=STATE_COMPLETED;}
       else state=STATE_RUNNING;
@@ -307,8 +308,10 @@ final class PremiumSaveCoordinator {
       executor.shutdownNow();
     }
 
+        private int effectiveParallelismLocked(){int demand=Math.max(1,active+pending.size());int adaptive=adaptiveParallelism(demand),desired=parallelism==0?adaptive:Math.min(parallelism,adaptive);return Math.max(MIN_PARALLELISM,desired);}
+
     private void pumpLocked(){
-      int limit=parallelism==0?Integer.MAX_VALUE:parallelism;
+      int limit=effectiveParallelismLocked();
       while(!finished&&!cancelled&&!paused&&active<limit&&!pending.isEmpty()){
         Unit unit=pending.removeFirst();
         if(blockedAccounts.contains(unit.account)&&!unit.probe){capacityUnits.add(unit);continue;}
@@ -396,7 +399,7 @@ final class PremiumSaveCoordinator {
     return task;
   }
 
-  static int clampParallelism(int value){return value==0?0:Math.max(MIN_PARALLELISM,Math.min(MAX_PARALLELISM,value));}
+    static int clampParallelism(int value){return Math.max(0,value);}
 
   static boolean indicatesCapacity(String message){
     String value=clean(message).toLowerCase(Locale.ROOT).replaceAll("\\s+","");

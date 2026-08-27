@@ -8,7 +8,7 @@ import java.util.*;
 
 /** Persistent browser-profile sessions that grow on demand and are retained for reuse. */
 final class DirectCookiePool {
-  static final int HOURLY_DIRECT_LIMIT=32,PROFILE_ANDROID=0,PROFILE_DESKTOP=1;
+    static final int HOURLY_DIRECT_LIMIT=32,PROFILE_UNSPECIFIED=-1;
   static final long WINDOW_MS=60L*60L*1000L;
   private static final String PREFS="direct-cookie-pool-v1",LEGACY_ENTRIES="entries",ENTRY="entry:";
   private final SharedPreferences prefs;
@@ -17,10 +17,10 @@ final class DirectCookiePool {
 
   DirectCookiePool(Context context){prefs=context.getApplicationContext().getSharedPreferences(PREFS,Context.MODE_PRIVATE);load();}
 
-  Lease acquire(Set<String> excluded,long now){return acquire(excluded,now,-1);}
+    Lease acquire(Set<String> excluded,long now){return acquire(excluded,now,PROFILE_UNSPECIFIED);}
   Lease acquire(Set<String> excluded,long now,int preferredProfile){
     synchronized(lock){
-      Entry selected=null;boolean prefer=preferredProfile==PROFILE_ANDROID||preferredProfile==PROFILE_DESKTOP;
+            Entry selected=null;boolean prefer=preferredProfile>=0;
       for(Entry entry:entries){rollWindow(entry,now);if(excluded!=null&&excluded.contains(entry.id)||entry.count>=HOURLY_DIRECT_LIMIT||entry.cooldownUntil>now||prefer&&entry.profile!=preferredProfile)continue;if(selected==null||entry.count<selected.count||entry.count==selected.count&&entry.lastUsed<selected.lastUsed)selected=entry;}
       if(selected==null)selected=newEntry(now,preferredProfile);
       selected.count++;selected.lastUsed=now;saveEntryLocked(selected);return new Lease(selected.id,selected.profile,copyJar(selected.jar));
@@ -33,8 +33,8 @@ final class DirectCookiePool {
 
   int size(){synchronized(lock){return entries.size();}}
 
-  private Entry newEntry(long now){return newEntry(now,-1);}
-  private Entry newEntry(long now,int preferredProfile){int android=0,desktop=0;for(Entry value:entries)if(value.profile==PROFILE_DESKTOP)desktop++;else android++;Entry entry=new Entry();entry.id=UUID.randomUUID().toString();boolean prefer=preferredProfile==PROFILE_ANDROID||preferredProfile==PROFILE_DESKTOP;entry.profile=prefer?preferredProfile:(desktop<android?PROFILE_DESKTOP:PROFILE_ANDROID);entry.windowStarted=now;entries.add(entry);saveEntryLocked(entry);return entry;}
+    private Entry newEntry(long now){return newEntry(now,PROFILE_UNSPECIFIED);}
+  private Entry newEntry(long now,int preferredProfile){Entry entry=new Entry();entry.id=UUID.randomUUID().toString();entry.profile=preferredProfile>=0?preferredProfile:PROFILE_UNSPECIFIED;entry.windowStarted=now;entries.add(entry);saveEntryLocked(entry);return entry;}
   private Entry find(String id){for(Entry entry:entries)if(entry.id.equals(id))return entry;return null;}
   private static void rollWindow(Entry entry,long now){if(entry.windowStarted<=0||now<entry.windowStarted||now-entry.windowStarted>=WINDOW_MS){entry.windowStarted=now;entry.count=0;}}
 
@@ -47,7 +47,7 @@ final class DirectCookiePool {
     }
   }
 
-  private static Entry entry(JSONObject raw){if(raw==null)return null;Entry entry=new Entry();entry.id=raw.optString("id");if(entry.id.isEmpty())return null;int profile=raw.optInt("profile",PROFILE_ANDROID);entry.profile=profile==PROFILE_DESKTOP?PROFILE_DESKTOP:PROFILE_ANDROID;entry.windowStarted=raw.optLong("window");entry.count=Math.max(0,raw.optInt("count"));entry.lastUsed=raw.optLong("used");entry.cooldownUntil=raw.optLong("cooldown");entry.failures=Math.max(0,raw.optInt("failures"));JSONObject hosts=raw.optJSONObject("cookies");if(hosts!=null)for(Iterator<String> keys=hosts.keys();keys.hasNext();){String host=keys.next();JSONObject cookies=hosts.optJSONObject(host);if(cookies==null)continue;LinkedHashMap<String,String> bucket=new LinkedHashMap<>();for(Iterator<String> names=cookies.keys();names.hasNext();){String name=names.next(),value=cookies.optString(name);if(!name.isEmpty()&&!value.isEmpty())bucket.put(name,value);}if(!bucket.isEmpty())entry.jar.put(host,bucket);}return entry;}
+    private static Entry entry(JSONObject raw){if(raw==null)return null;Entry entry=new Entry();entry.id=raw.optString("id");if(entry.id.isEmpty())return null;entry.profile=raw.optInt("profile",PROFILE_UNSPECIFIED);if(entry.profile<PROFILE_UNSPECIFIED)entry.profile=PROFILE_UNSPECIFIED;entry.windowStarted=raw.optLong("window");entry.count=Math.max(0,raw.optInt("count"));entry.lastUsed=raw.optLong("used");entry.cooldownUntil=raw.optLong("cooldown");entry.failures=Math.max(0,raw.optInt("failures"));JSONObject hosts=raw.optJSONObject("cookies");if(hosts!=null)for(Iterator<String> keys=hosts.keys();keys.hasNext();){String host=keys.next();JSONObject cookies=hosts.optJSONObject(host);if(cookies==null)continue;LinkedHashMap<String,String> bucket=new LinkedHashMap<>();for(Iterator<String> names=cookies.keys();names.hasNext();){String name=names.next(),value=cookies.optString(name);if(!name.isEmpty()&&!value.isEmpty())bucket.put(name,value);}if(!bucket.isEmpty())entry.jar.put(host,bucket);}return entry;}
   private static JSONObject json(Entry entry)throws Exception{JSONObject hosts=new JSONObject();for(Map.Entry<String,LinkedHashMap<String,String>> host:entry.jar.entrySet()){JSONObject cookies=new JSONObject();for(Map.Entry<String,String> cookie:host.getValue().entrySet())cookies.put(cookie.getKey(),cookie.getValue());hosts.put(host.getKey(),cookies);}return new JSONObject().put("id",entry.id).put("profile",entry.profile).put("window",entry.windowStarted).put("count",entry.count).put("used",entry.lastUsed).put("cooldown",entry.cooldownUntil).put("failures",entry.failures).put("cookies",hosts);}
   private void saveEntryLocked(Entry entry){try{prefs.edit().putString(ENTRY+entry.id,json(entry).toString()).apply();}catch(Exception ignored){}}
   private static Map<String,LinkedHashMap<String,String>> copyJar(Map<String,? extends Map<String,String>> source){Map<String,LinkedHashMap<String,String>> copy=new HashMap<>();if(source!=null)for(Map.Entry<String,? extends Map<String,String>> host:source.entrySet())copy.put(host.getKey(),new LinkedHashMap<>(host.getValue()));return copy;}

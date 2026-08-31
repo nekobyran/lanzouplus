@@ -113,6 +113,8 @@ final class Models {
     void onProgress(int done,int total,int found,String current);
     /** Logical sources currently scheduled; independent from the bounded HTTP worker count. */
     default void onActivity(int active,int total,String current) {}
+    /** Completed API/directory work units; used for smooth progress without redefining source completion. */
+    default void onWorkProgress(int doneUnits,int totalUnits) {}
 
     /**
      * Called from a search worker as soon as one source has produced new,

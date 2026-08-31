@@ -24,7 +24,7 @@ final class DirectLinkResolver implements AutoCloseable {
   private final ScheduledThreadPoolExecutor retries=new ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"lanzou-resolve-retry");t.setDaemon(true);return t;});
   private volatile boolean closed;
   private volatile int parallelism;
-  private int emergencyWorkerCeiling=Integer.MAX_VALUE,active;
+    private int emergencyWorkerCeiling=Integer.MAX_VALUE,active,pressureSuccesses;
   private long nextSequence;
 
   DirectLinkResolver(Context context,LanzouCore core){this(context,core,System::currentTimeMillis);}
@@ -41,7 +41,11 @@ final class DirectLinkResolver implements AutoCloseable {
   int parallelism(){return parallelism;}
   int effectiveParallelism(){synchronized(lock){return effectiveLimitLocked();}}
   private static int normalizeParallelism(int value){return Math.max(0,value);}
-  private int effectiveLimitLocked(){int device=LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE),desired=parallelism==0?device:parallelism;return Math.max(1,Math.min(Math.min(desired,device),emergencyWorkerCeiling));}
+    private int effectiveLimitLocked(){int device=LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE),desired=parallelism==0?device:parallelism;return Math.max(1,Math.min(Math.min(desired,device),emergencyWorkerCeiling));}
+  private static boolean upstreamPressure(Throwable error){String value=failureMessage(error).toLowerCase(Locale.ROOT);return value.contains("验证")||value.contains("captcha")||value.contains("waf")||value.contains("429")||value.contains("频率")||value.contains("限流")||value.contains("rate limit")||value.contains("too many requests");}
+  private boolean adaptToUpstreamPressure(){synchronized(lock){int limit=effectiveLimitLocked();boolean serial=limit<=1&&active<=1;if(!serial&&active<=limit){int reduced=Math.max(1,limit/2);emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);pressureSuccesses=0;pumpLocked();}return !serial;}}
+  private void recordPressureFreeSuccess(){synchronized(lock){if(emergencyWorkerCeiling==Integer.MAX_VALUE)return;int current=Math.max(1,emergencyWorkerCeiling);pressureSuccesses++;if(pressureSuccesses<Math.max(1,current/2))return;int device=LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE),raised=Math.min(device,current+Math.max(1,current/2));emergencyWorkerCeiling=raised>=device?Integer.MAX_VALUE:raised;pressureSuccesses=0;pumpLocked();}}
+
 
   void prewarm(String shareUrl){resolve(shareUrl,false,null);}
   void prewarm(String shareUrl,Callback callback){resolve(shareUrl,false,callback);}
@@ -99,6 +103,6 @@ final class DirectLinkResolver implements AutoCloseable {
   private final class Request {
     final String url;final List<Callback> callbacks=new ArrayList<>();final long sequence;volatile boolean confirmed,running,queued,done,awaitingPassword,resumePending;String password;int failures;
     Request(String url,boolean confirmed,long sequence,String password){this.url=url;this.confirmed=confirmed;this.sequence=sequence;this.password=password==null?"":password;}
-    void resolveNow(){try{LanzouCore.DirectLink link=core.resolveDirect(url,password);if(link==null||link.url==null||link.url.isEmpty())throw new IllegalStateException("未解析到下载直链");long at=clock.now();if(!password.isEmpty())rememberPassword(url,password);finished(this,link.url,at,null);}catch(LanzouCore.DirectPasswordException rejected){boolean hadPassword=!password.isEmpty();if(hadPassword)forgetPassword(url);awaitPassword(this,hadPassword);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();if(!closed)finished(this,null,0,failureMessage(interrupted));}catch(Exception error){long delay=LanzouCore.directRetryDelay(error,++failures);if(delay>0)defer(this,delay);else finished(this,null,0,failureMessage(error));}}
+        void resolveNow(){try{LanzouCore.DirectLink link=core.resolveDirect(url,password);if(link==null||link.url==null||link.url.isEmpty())throw new IllegalStateException("未解析到下载直链");long at=clock.now();if(!password.isEmpty())rememberPassword(url,password);recordPressureFreeSuccess();finished(this,link.url,at,null);}catch(LanzouCore.DirectPasswordException rejected){boolean hadPassword=!password.isEmpty();if(hadPassword)forgetPassword(url);awaitPassword(this,hadPassword);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();if(!closed)finished(this,null,0,failureMessage(interrupted));}catch(Exception error){++failures;if(upstreamPressure(error)&&adaptToUpstreamPressure()){synchronized(lock){if(!done&&!closed)resumePending=true;}return;}long delay=LanzouCore.directRetryDelay(error,failures);if(delay>0)defer(this,delay);else finished(this,null,0,failureMessage(error));}}
   }
 }

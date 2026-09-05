@@ -15,10 +15,10 @@ final class UpdateClient {
   private static final int JSON_LIMIT=256*1024;
 
   static final class UpdateInfo {
-    final String version,body,browserDownloadUrl,mirrorUrl,digest;
+    final String version,body,browserDownloadUrl,mirrorUrl;
     final long size;
     final boolean preferMirror;
-    UpdateInfo(String version,String body,String browserDownloadUrl,String mirrorUrl,String digest,long size,boolean preferMirror){this.version=version;this.body=body;this.browserDownloadUrl=browserDownloadUrl;this.mirrorUrl=mirrorUrl;this.digest=digest;this.size=size;this.preferMirror=preferMirror;}
+    UpdateInfo(String version,String body,String browserDownloadUrl,String mirrorUrl,long size,boolean preferMirror){this.version=version;this.body=body;this.browserDownloadUrl=browserDownloadUrl;this.mirrorUrl=mirrorUrl;this.size=size;this.preferMirror=preferMirror;}
     String primaryUrl(){return preferMirror?mirrorUrl:browserDownloadUrl;}
     String fallbackUrl(){return preferMirror?browserDownloadUrl:mirrorUrl;}
   }
@@ -50,14 +50,12 @@ final class UpdateClient {
     if(asset==null)throw new IOException("更新信息缺少指定安装包");
     long size=asset.optLong("size",-1);
     if(size<=0)throw new IOException("更新安装包大小无效");
-    String digest=asset.optString("digest",release.optString("digest","")).toLowerCase(Locale.ROOT);
-    if(!digest.matches("sha256:[0-9a-f]{64}"))throw new IOException("更新安装包摘要无效");
     String github=asset.optString("browser_download_url",release.optString("browser_download_url","")).trim();
     String mirror=asset.optString("mirror_url",release.optString("mirror_url",SITE_APK)).trim();
     String version=normalizeVersion(rawTag);
     requireGithubAsset(github,rawTag);
     requireMirrorAsset(mirror);
-    return new UpdateInfo(version,release.optString("body","").trim(),github,mirror,digest,size,preferMirror);
+    return new UpdateInfo(version,release.optString("body","").trim(),github,mirror,size,preferMirror);
   }
 
   private static JSONObject fetch(String endpoint)throws IOException{

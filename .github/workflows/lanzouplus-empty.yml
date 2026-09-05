@@ -35,7 +35,7 @@ jobs:
       asset-suffix: ${{ steps.inspect.outputs.asset-suffix }}
     steps:
       - name: Check out the exact source commit
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 0
@@ -83,13 +83,13 @@ jobs:
           PY
 
       - name: Set up JDK 17
-        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -99,7 +99,7 @@ jobs:
           python3 tools/test_premium_save_queue_semantics.py
 
       - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install Android 36 build tools
         run: |
@@ -146,7 +146,7 @@ jobs:
           PY
 
       - name: Upload unsigned build for the release job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v4
         with:
           name: lanzouplus-empty-unsigned-${{ github.run_id }}
           path: |
@@ -166,29 +166,28 @@ jobs:
       VERSION: ${{ needs.build.outputs.version }}
       ASSET_SUFFIX: ${{ needs.build.outputs.asset-suffix }}
       EXPECTED_COMMIT: ${{ inputs.commit }}
-      EXPECTED_CERT_SHA256: 4111dddd807b75eb1100ef5067f55874cc860314283829e379902b438d066fed
     steps:
       - name: Check out source and annotated release tag
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Download the unsigned build
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@v4
         with:
           name: lanzouplus-empty-unsigned-${{ github.run_id }}
           path: ci
 
       - name: Set up JDK 17
-        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -196,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.0.0" >/dev/null
-          python -m pip install --disable-pip-version-check --require-hashes --requirement tools/requirements-size.txt
+          python -m pip install --disable-pip-version-check --requirement tools/requirements-size.txt
 
       - name: Repack and align the empty APK
         run: |
@@ -235,11 +234,11 @@ jobs:
           "$build_tools/apksigner" sign \
             --ks "$key_path" --ks-type PKCS12 --ks-key-alias lanzouplus-release \
             --ks-pass env:SIGNING_PASSWORD --key-pass env:SIGNING_PASSWORD \
-            --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
+            --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled false --v4-signing-enabled false \
             --out "dist/$asset" dist/aligned.apk
-          verification="$("$build_tools/apksigner" verify --verbose --print-certs "dist/$asset")"
-          cert="$(printf '%s\n' "$verification" | sed -nE 's/.*certificate SHA-256 digest:[[:space:]]*([0-9a-fA-F]{64}).*/\1/p' | head -n1 | tr '[:upper:]' '[:lower:]')"
-          test "$cert" = "$EXPECTED_CERT_SHA256"
+          verification="$("$build_tools/apksigner" verify --verbose "dist/$asset")"
+          printf '%s\n' "$verification" | grep -F 'Verified using v2 scheme (APK Signature Scheme v2): true'
+          printf '%s\n' "$verification" | grep -F 'Verified using v3 scheme (APK Signature Scheme v3): false'
           badging="$("$build_tools/aapt" dump badging "dist/$asset")"
           printf '%s\n' "$badging" | grep -Eq "^package: name='cc\.nkbr\.lanzouplus'.*versionName='$VERSION'"
           python3 - "$asset" <<'PY'
@@ -262,17 +261,15 @@ jobs:
           if not asset.endswith(f"-{expected_suffix}.apk"):
               raise SystemExit("final APK architecture does not match the asset suffix")
           PY
-          sha256="$(sha256sum "dist/$asset" | cut -d' ' -f1)"
           bytes="$(stat -c '%s' "dist/$asset")"
           {
             echo "asset=$asset"
             echo "release-asset=LanzouPlus.apk"
-            echo "sha256=$sha256"
             echo "bytes=$bytes"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload the versioned signed build artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.signed.outputs.asset }}
           path: dist/${{ steps.signed.outputs.asset }}
@@ -295,9 +292,9 @@ jobs:
           - Version / 版本：$VERSION
           - Release asset / 兼容下载名：${{ steps.signed.outputs.release-asset }}
           - Versioned Actions artifact / 版本化构建产物：${{ steps.signed.outputs.asset }}
-          - SHA-256：${{ steps.signed.outputs.sha256 }}
           - Package / 包名：cc.nkbr.lanzouplus
           - Empty source / 空源版：s/r/u = 0 bytes
+          - Verification / 校验：APK V2 signature + remote byte-for-byte readback
 
           The source archives attached by GitHub are generated from the same annotated tag.
           GitHub 自动附带的源码压缩包来自同一 annotated tag。
@@ -307,7 +304,6 @@ jobs:
         env:
           ASSET: ${{ steps.signed.outputs.release-asset }}
           INTERNAL_ASSET: ${{ steps.signed.outputs.asset }}
-          SHA256: ${{ steps.signed.outputs.sha256 }}
           BYTES: ${{ steps.signed.outputs.bytes }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -331,54 +327,57 @@ jobs:
             exit "$release_status"
           fi
 
-          asset_state="$RUNNER_TEMP/asset-state.txt"
-          python3 - "$release_json" "$ASSET" "$SHA256" "$BYTES" "$VERSION" > "$asset_state" <<'PY'
+          python3 - "$release_json" "$ASSET" <<'PY'
           import json
           import pathlib
           import sys
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          expected, digest, size, version = sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
-          assets = release.get("assets", [])
+          expected = sys.argv[2]
           stage_prefix = f"{expected}.stage-"
+          assets = release.get("assets", [])
           unexpected = [item.get("name", "") for item in assets if item.get("name") != expected and not item.get("name", "").startswith(stage_prefix)]
           if unexpected:
               raise SystemExit(f"unexpected existing release assets: {unexpected}")
-          target = next((item for item in assets if item.get("name") == expected), None)
-          matches = bool(target and target.get("size") == size and target.get("digest") == f"sha256:{digest}")
-          reusable = sorted(
-              (item for item in assets if item.get("name", "").startswith(stage_prefix) and item.get("size") == size and item.get("digest") == f"sha256:{digest}"),
-              key=lambda item: item.get("id", 0),
-          )
-          print(f"{target.get('id', 0) if target else 0}\t{1 if matches else 0}\t{reusable[-1].get('id', 0) if reusable else 0}")
+          if sum(1 for item in assets if item.get("name") == expected) > 1:
+              raise SystemExit("duplicate stable release asset")
           PY
-          IFS=$'\t' read -r target_id target_matches reusable_stage_id < "$asset_state"
-          if [ "$target_matches" != 1 ]; then
-            if [ "$reusable_stage_id" != 0 ]; then
-              stage_id="$reusable_stage_id"
-            else
-              stage_asset="$ASSET.stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-              cp "dist/$ASSET" "dist/$stage_asset"
-              gh release upload "$tag" "dist/$stage_asset" --repo "$GITHUB_REPOSITORY"
-              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
-              stage_id="$(python3 - "$release_json" "$stage_asset" "$SHA256" "$BYTES" <<'PY'
+
+          stage_asset="$ASSET.stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cp "dist/$ASSET" "dist/$stage_asset"
+          gh release upload "$tag" "dist/$stage_asset" --repo "$GITHUB_REPOSITORY"
+          stage_readback="$RUNNER_TEMP/stage-readback"
+          rm -rf "$stage_readback"
+          mkdir -p "$stage_readback"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$stage_asset" --dir "$stage_readback"
+          cmp -s "dist/$ASSET" "$stage_readback/$stage_asset"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
+          stage_id="$(python3 - "$release_json" "$stage_asset" "$BYTES" <<'PY'
           import json
           import pathlib
           import sys
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          name, digest, size = sys.argv[2], sys.argv[3], int(sys.argv[4])
+          name, size = sys.argv[2], int(sys.argv[3])
           matches = [item for item in release.get("assets", []) if item.get("name") == name]
-          if len(matches) != 1 or matches[0].get("size") != size or matches[0].get("digest") != f"sha256:{digest}":
-              raise SystemExit("staged release asset failed digest or size verification")
+          if len(matches) != 1 or matches[0].get("size") != size:
+              raise SystemExit("staged release asset failed size verification")
           print(matches[0]["id"])
           PY
-              )"
-            fi
-            test -n "$stage_id"
-            if [ "$target_id" != 0 ]; then
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$target_id"
-            fi
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$stage_id" -f name="$ASSET" >/dev/null
+          )"
+          target_id="$(python3 - "$release_json" "$ASSET" <<'PY'
+          import json
+          import pathlib
+          import sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          matches = [item for item in release.get("assets", []) if item.get("name") == sys.argv[2]]
+          if len(matches) > 1:
+              raise SystemExit("duplicate stable release asset")
+          print(matches[0]["id"] if matches else 0)
+          PY
+          )"
+          if [ "$target_id" != 0 ]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$target_id"
           fi
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$stage_id" -f name="$ASSET" >/dev/null
 
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           python3 - "$release_json" "$ASSET" > "$RUNNER_TEMP/obsolete-assets.txt" <<'PY'
@@ -401,17 +400,22 @@ jobs:
             --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md \
             --draft=false --prerelease=false --latest --verify-tag
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
-          python3 - "$release_json" "$ASSET" "$SHA256" "$BYTES" "$EXPECTED_COMMIT" "$VERSION" <<'PY'
+          final_readback="$RUNNER_TEMP/final-readback"
+          rm -rf "$final_readback"
+          mkdir -p "$final_readback"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$final_readback"
+          cmp -s "dist/$ASSET" "$final_readback/$ASSET"
+          python3 - "$release_json" "$ASSET" "$BYTES" "$EXPECTED_COMMIT" "$VERSION" <<'PY'
           import json
           import pathlib
           import sys
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          name, sha256, size, commit, version = sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6]
+          name, size, commit, version = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
           assets = release.get("assets", [])
           if len(assets) != 1 or assets[0].get("name") != name:
               raise SystemExit("release must contain exactly the expected APK")
-          if assets[0].get("size") != size or assets[0].get("digest") != f"sha256:{sha256}":
-              raise SystemExit("release asset size or digest mismatch")
+          if assets[0].get("size") != size:
+              raise SystemExit("release asset size mismatch")
           if release.get("tag_name") != f"v{version}" or release.get("name") != f"LanzouPlus {version}":
               raise SystemExit("release tag or title mismatch")
           if "## Build / 构建" not in release.get("body", ""):

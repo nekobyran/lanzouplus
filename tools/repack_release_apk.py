@@ -9,7 +9,6 @@ names, uncompressed bytes and Android resources remain byte-for-byte identical.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -45,13 +44,8 @@ class _BufferedDeflater:
         return stream.compress(data) + stream.flush()
 
 
-def _digest(entries: list[tuple[zipfile.ZipInfo, bytes]]) -> str:
-    checksum = hashlib.sha256()
-    for info, data in entries:
-        checksum.update(info.filename.encode("utf-8"))
-        checksum.update(b"\0")
-        checksum.update(data)
-    return checksum.hexdigest()
+def _content(entries: list[tuple[zipfile.ZipInfo, bytes]]) -> list[tuple[str, bytes]]:
+    return [(info.filename, data) for info, data in entries]
 
 
 def _copy_info(source: zipfile.ZipInfo) -> zipfile.ZipInfo:
@@ -77,7 +71,7 @@ def repack(apk: Path) -> tuple[int, int, str]:
     before = apk.stat().st_size
     with zipfile.ZipFile(apk, "r") as source:
         entries = [(info, source.read(info)) for info in source.infolist()]
-    expected = _digest(entries)
+    expected = _content(entries)
 
     fd, raw_temp = tempfile.mkstemp(prefix="lanzou-repack-", suffix=".apk", dir=apk.parent)
     os.close(fd)
@@ -92,7 +86,7 @@ def repack(apk: Path) -> tuple[int, int, str]:
                 output.writestr(_copy_info(info), data)
         with zipfile.ZipFile(temp, "r") as check:
             actual_entries = [(info, check.read(info)) for info in check.infolist()]
-        actual = _digest(actual_entries)
+        actual = _content(actual_entries)
         if actual != expected:
             raise RuntimeError("repacked APK content verification failed")
         after = temp.stat().st_size

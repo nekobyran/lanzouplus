@@ -14,7 +14,7 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 - 正式下载：[lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
 - 官网：[lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
 
-正式 APK 会校验发布元数据、SHA-256 与已安装应用的签名证书后再交给系统安装器。
+正式 APK 会校验发布元数据、安装包大小与已安装应用的签名身份后再交给系统安装器。
 
 ## 功能
 
@@ -66,7 +66,7 @@ This public repository contains only the **empty-source edition with no home rec
 - Minimum Android: 7.0 (API 24)
 - Official page and download: [lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
 
-The release APK validates release metadata, SHA-256, and the installed application's signing certificate before handing an update to Android's package installer.
+The release APK validates release metadata, package size, and the installed application's signing identity before handing an update to Android's package installer.
 
 ### Build
 

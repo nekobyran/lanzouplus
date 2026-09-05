@@ -13,7 +13,7 @@ import java.util.regex.*;
 
 /** Bounded process-wide transfer engine with restart-safe Range continuation. */
 final class SegmentDownloader {
-  interface Listener { void progress(long done,long total); void completed(); void failed(String error); default void paused(long done,long total){} default void cancelled(long done,long total){} }
+    interface Listener { void progress(long done,long total); void completed(); void failed(String error); default void metadata(String contentType,String contentDisposition,String finalUrl){} default void paused(long done,long total){} default void cancelled(long done,long total){} }
   private static final String UA="Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/138 Mobile Safari/537.36";
   private static final Pattern CONTENT_RANGE=Pattern.compile("(?i)bytes\\s+(\\d+)-(\\d+)/(\\d+)");
   private static final int WORKER_COUNT=TransferCoordinator.adaptiveUnlimitedLimit();
@@ -64,7 +64,8 @@ final class SegmentDownloader {
 
   private void download(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded,Transfer stats)throws Exception{
     checkStopped();long existing=destinationLength(destination);Response response=existing>0?openResume(url,existing,expectedTotal,guarded):openFirst(url,guarded);active=response.connection;checkStopped();
-    long total=response.total,done=response.start;stats.total=total;stats.done=done;
+        long total=response.total,done=response.start;stats.total=total;stats.done=done;
+    listener.metadata(response.connection.getContentType(),response.connection.getHeaderField("Content-Disposition"),response.connection.getURL()==null?url:response.connection.getURL().toString());
     listener.progress(done,total);
     Sink destinationOut;
     try{destinationOut=openDestination(destination,response.start);}catch(Exception error){response.connection.disconnect();throw error;}

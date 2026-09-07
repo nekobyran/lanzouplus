@@ -47,7 +47,7 @@ jobs:
 
       - name: Validate commit, version and public-source boundary
         env:
-                    EXPECTED_COMMIT: ${{ inputs.commit }}
+          EXPECTED_COMMIT: ${{ inputs.commit }}
           EXPECTED_VERSION: ${{ inputs.version }}
           MODE: ${{ inputs.mode }}
           RELEASE_NOTES: ${{ inputs.release_notes }}

@@ -68,7 +68,7 @@ jobs:
           codes = re.findall(r'\bversionCode\s*=\s*(\d+)', build)
           if len(versions) != 1 or len(codes) != 1 or int(codes[0]) <= 0:
               raise SystemExit("public Android version metadata is invalid")
-                    expected = os.environ.get("EXPECTED_VERSION", "")
+          expected = os.environ.get("EXPECTED_VERSION", "")
           mode = os.environ.get("MODE", "validate")
           release_notes = os.environ.get("RELEASE_NOTES", "")
           if mode == "release" and (not re.fullmatch(r"\d+\.\d+\.\d+", expected) or versions[0] != expected):

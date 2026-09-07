@@ -339,7 +339,7 @@ jobs:
           if [ "$release_status" -eq 0 ]; then
             :
           elif grep -Eq 'HTTP 404|Not Found' "$release_error"; then
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \\
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
               --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md
 
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
@@ -416,7 +416,7 @@ jobs:
               gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$obsolete_id"
             fi
           done < "$RUNNER_TEMP/obsolete-assets.txt"
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \\
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
             --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md \
             --draft=false --prerelease=false --latest
 

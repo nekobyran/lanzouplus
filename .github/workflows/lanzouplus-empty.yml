@@ -15,10 +15,15 @@ on:
         description: Semantic version used by release mode
         required: false
         type: string
-      commit:
+            commit:
         description: Exact main commit to build
         required: true
         type: string
+      release_notes:
+        description: Markdown notes used only by formal release mode
+        required: false
+        type: string
+
 
 concurrency:
   group: lanzouplus-empty-${{ inputs.mode }}-${{ inputs.commit }}
@@ -43,9 +48,11 @@ jobs:
 
       - name: Validate commit, version and public-source boundary
         env:
-          EXPECTED_COMMIT: ${{ inputs.commit }}
+                    EXPECTED_COMMIT: ${{ inputs.commit }}
           EXPECTED_VERSION: ${{ inputs.version }}
           MODE: ${{ inputs.mode }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
@@ -62,10 +69,14 @@ jobs:
           codes = re.findall(r'\bversionCode\s*=\s*(\d+)', build)
           if len(versions) != 1 or len(codes) != 1 or int(codes[0]) <= 0:
               raise SystemExit("public Android version metadata is invalid")
-          expected = os.environ.get("EXPECTED_VERSION", "")
+                    expected = os.environ.get("EXPECTED_VERSION", "")
           mode = os.environ.get("MODE", "validate")
+          release_notes = os.environ.get("RELEASE_NOTES", "")
           if mode == "release" and (not re.fullmatch(r"\d+\.\d+\.\d+", expected) or versions[0] != expected):
               raise SystemExit("release input version does not match app/build.gradle.kts")
+          if mode == "release" and not release_notes.strip():
+              raise SystemExit("formal release notes must not be empty")
+
           for name in ("s", "r", "u"):
               path = root / "app/src/empty/assets" / name
               if not path.is_file() or path.stat().st_size != 0:
@@ -222,10 +233,7 @@ jobs:
           test -n "$SIGNING_PASSWORD"
           test "$VERSION" = "${{ inputs.version }}"
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-          tag="v$VERSION"
-          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
-          test "$(git cat-file -t "refs/tags/$tag")" = tag
-          test "$(git rev-list -n 1 "$tag")" = "$EXPECTED_COMMIT"
+          
           build_tools="$ANDROID_HOME/build-tools/36.0.0"
           key_path="$RUNNER_TEMP/lanzouplus-release.p12"
           trap 'rm -f "$key_path"' EXIT
@@ -275,14 +283,13 @@ jobs:
           path: dist/${{ steps.signed.outputs.asset }}
           if-no-files-found: error
           retention-days: 14
-
-      - name: Build release notes from the annotated tag
+      - name: Build formal release notes
+        env:
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           set -euo pipefail
-          tag="v$VERSION"
-          git for-each-ref --format='%(contents)' "refs/tags/$tag" > dist/tag-notes.md
-          test -s dist/tag-notes.md
-          cp dist/tag-notes.md dist/release-notes.md
+          test -n "${RELEASE_NOTES//[[:space:]]/}"
+          printf '%s\n' "$RELEASE_NOTES" > dist/release-notes.md
           cat >> dist/release-notes.md <<EOF
 
           ---
@@ -296,9 +303,10 @@ jobs:
           - Empty source / 空源版：s/r/u = 0 bytes
           - Verification / 校验：APK V2 signature + remote byte-for-byte readback
 
-          The source archives attached by GitHub are generated from the same annotated tag.
-          GitHub 自动附带的源码压缩包来自同一 annotated tag。
+          The GitHub Release and its source archives are bound to the exact main commit above.
+          GitHub Release 与源码压缩包绑定到上方精确 main 提交。
           EOF
+
 
       - name: Create or replace the GitHub Release
         env:
@@ -310,7 +318,20 @@ jobs:
           set -euo pipefail
           tag="v$VERSION"
           cp "dist/$INTERNAL_ASSET" "dist/$ASSET"
+          ref_json="$RUNNER_TEMP/release-tag-ref.json"
+          ref_error="$RUNNER_TEMP/release-tag-ref.error"
+          set +e
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" > "$ref_json" 2> "$ref_error"
+          ref_status=$?
+          set -e
+          if [ "$ref_status" -eq 0 ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha="$EXPECTED_COMMIT" -F force=true >/dev/null
+          elif ! grep -Eq 'HTTP 404|Not Found' "$ref_error"; then
+            cat "$ref_error" >&2
+            exit "$ref_status"
+          fi
           release_json="$RUNNER_TEMP/release.json"
+
           release_error="$RUNNER_TEMP/release.error"
           set +e
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json" 2> "$release_error"
@@ -319,8 +340,9 @@ jobs:
           if [ "$release_status" -eq 0 ]; then
             :
           elif grep -Eq 'HTTP 404|Not Found' "$release_error"; then
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
-              --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md --verify-tag
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \\
+              --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md
+
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           else
             cat "$release_error" >&2
@@ -395,10 +417,10 @@ jobs:
               gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$obsolete_id"
             fi
           done < "$RUNNER_TEMP/obsolete-assets.txt"
-
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \\
             --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md \
-            --draft=false --prerelease=false --latest --verify-tag
+            --draft=false --prerelease=false --latest
+
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           final_readback="$RUNNER_TEMP/final-readback"
           rm -rf "$final_readback"
@@ -423,7 +445,6 @@ jobs:
           if release.get("target_commitish") != commit or release.get("draft") or release.get("prerelease"):
               raise SystemExit("release target or publication state mismatch")
           PY
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object | select(.type == "tag") | .sha')" != ""
-          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object | select(.type == "tag") | .sha')"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.object | select(.type == "commit") | .sha')" = "$EXPECTED_COMMIT"
+                    test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object | select(.type == "commit") | .sha')" = "$EXPECTED_COMMIT"
+
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$EXPECTED_COMMIT"

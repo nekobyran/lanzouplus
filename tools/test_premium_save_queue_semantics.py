@@ -48,12 +48,12 @@ public final class PremiumSaveHarness {
   static void require(boolean value,String message){if(!value)throw new AssertionError(message);}
   static PremiumSaveCoordinator.Request request(String id){return new PremiumSaveCoordinator.Request(id,id,"https://example.test/"+id,"",true);}
   public static void main(String[] args)throws Exception{
-    CountDownLatch capacity=new CountDownLatch(1),finished=new CountDownLatch(1);
+    CountDownLatch capacity=new CountDownLatch(1),finished=new CountDownLatch(1),retryEntered=new CountDownLatch(1),retryRelease=new CountDownLatch(1);
     AtomicInteger fullAttempts=new AtomicInteger();
     PremiumSaveCoordinator.Task task=PremiumSaveCoordinator.start(
       Arrays.asList(request("a"),request("b")),Collections.singletonList("full"),1,
       (request,account)->{
-        if(account.equals("full")){fullAttempts.incrementAndGet();return PremiumSaveCoordinator.Outcome.capacity(507,"空间不足");}
+        if(account.equals("full")){int attempt=fullAttempts.incrementAndGet();if(attempt>=2){retryEntered.countDown();retryRelease.await();}return PremiumSaveCoordinator.Outcome.capacity(507,"空间不足");}
         return PremiumSaveCoordinator.Outcome.success("保存成功");
       },
       new PremiumSaveCoordinator.Listener(){
@@ -64,11 +64,11 @@ public final class PremiumSaveHarness {
     require(capacity.await(3,TimeUnit.SECONDS),"capacity callback");
     require(task.snapshot().paused&&task.snapshot().done==0,"capacity must pause without consuming work");
     task.retryCapacity();
-    long retryDeadline=System.currentTimeMillis()+3000;
-    while(fullAttempts.get()<2&&System.currentTimeMillis()<retryDeadline)Thread.sleep(10);
-    require(fullAttempts.get()>=2,"resume must retry the previous account first");
-    task.switchCapacityTo("other");
+    require(retryEntered.await(3,TimeUnit.SECONDS),"resume must retry the previous account first");
+    require(fullAttempts.get()>=2,"resume retry count");
+    require(task.switchCapacityTo("other"),"switch while probe is in flight");
     task.setParallelism(2);
+    retryRelease.countDown();
     require(finished.await(4,TimeUnit.SECONDS),"switched task completion");
     PremiumSaveCoordinator.Snapshot done=task.snapshot();
     require(done.finished&&done.succeeded==2&&done.failed==0&&done.percent()==100,"switched results");

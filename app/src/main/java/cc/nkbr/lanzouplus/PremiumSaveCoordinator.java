@@ -158,6 +158,8 @@ final class PremiumSaveCoordinator {
     private final java.util.Map<String,String> blockedMessages=new java.util.HashMap<>();
     private final Set<String> usedAccounts=new LinkedHashSet<>();
     private final Set<String> successfulKeys=new HashSet<>();
+    private final java.util.Map<String,Integer> activeAccounts=new java.util.HashMap<>();
+    private final java.util.Map<String,String> switchedAccounts=new java.util.HashMap<>();
     private final Operation operation;
     private final Listener listener;
     private final ExecutorService executor;
@@ -261,6 +263,11 @@ final class PremiumSaveCoordinator {
         List<Unit> moving=new ArrayList<>();
         for(java.util.Iterator<Unit> iterator=capacityUnits.iterator();iterator.hasNext();){Unit unit=iterator.next();if(unit.account.equals(blockedName)){moving.add(unit);iterator.remove();}}
         if(moving.isEmpty())return false;
+        for(java.util.Iterator<java.util.Map.Entry<String,String>> iterator=switchedAccounts.entrySet().iterator();iterator.hasNext();){
+          java.util.Map.Entry<String,String> entry=iterator.next();
+          if(entry.getValue().equals(blockedName)){if(entry.getKey().equals(alternate))iterator.remove();else entry.setValue(alternate);}
+        }
+        if(!blockedName.equals(alternate)&&activeAccounts.getOrDefault(blockedName,0)>0)switchedAccounts.put(blockedName,alternate);else switchedAccounts.remove(blockedName);
         blockedAccounts.remove(blockedName);blockedMessages.remove(blockedName);usedAccounts.add(alternate);
         for(Unit unit:moving){
           Unit replacement=new Unit(unit.request,alternate,false);
@@ -315,7 +322,7 @@ final class PremiumSaveCoordinator {
       while(!finished&&!cancelled&&!paused&&active<limit&&!pending.isEmpty()){
         Unit unit=pending.removeFirst();
         if(blockedAccounts.contains(unit.account)&&!unit.probe){capacityUnits.add(unit);continue;}
-        active++;
+        active++;activeAccounts.put(unit.account,activeAccounts.getOrDefault(unit.account,0)+1);
         executor.execute(()->run(unit));
       }
     }
@@ -328,10 +335,17 @@ final class PremiumSaveCoordinator {
       Snapshot snapshot;boolean firstCapacity=false,shouldFinish=false;
       synchronized(lock){
         active=Math.max(0,active-1);
+        String switched=switchedAccounts.get(unit.account);
+        int accountActive=Math.max(0,activeAccounts.getOrDefault(unit.account,0)-1);
+        if(accountActive==0){activeAccounts.remove(unit.account);switchedAccounts.remove(unit.account);}else activeAccounts.put(unit.account,accountActive);
         if(finished||cancelled)return;
         if(unit.probe&&!outcome.saved&&!outcome.capacity)outcome=Outcome.capacity(outcome.errorCode,outcome.message);
         attempts.add(new Attempt(unit.request,unit.account,outcome));
-        if(outcome.capacity){
+        if(outcome.capacity&&!clean(switched).isEmpty()&&!switched.equals(unit.account)){
+          Unit replacement=new Unit(unit.request,switched,false);
+          if(successfulKeys.contains(replacement.key())){remaining--;succeeded++;}else pending.addLast(replacement);
+          if(remaining==0){finishLocked();shouldFinish=true;}else state=capacityUnits.isEmpty()?STATE_RUNNING:STATE_PAUSED;
+        }else if(outcome.capacity){
           blockedAccounts.add(unit.account);blockedMessages.put(unit.account,outcome.message);capacityUnits.add(new Unit(unit.request,unit.account,false));
           for(java.util.Iterator<Unit> iterator=pending.iterator();iterator.hasNext();){
             Unit queued=iterator.next();if(queued.account.equals(unit.account)){capacityUnits.add(new Unit(queued.request,queued.account,false));iterator.remove();}
@@ -354,7 +368,6 @@ final class PremiumSaveCoordinator {
       if(firstCapacity)notifyCapacity(snapshot);
       if(shouldFinish)notifyFinished(snapshot);
     }
-
     private void finishLocked(){
       if(finished)return;
       finished=true;paused=false;state=failed==0?STATE_COMPLETED:STATE_FAILED;

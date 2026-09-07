@@ -14,7 +14,7 @@ on:
       version:
         description: Semantic version used by release mode
         required: false
-                type: string
+        type: string
       commit:
         description: Exact main commit to build
         required: true
@@ -23,7 +23,6 @@ on:
         description: Markdown notes used only by formal release mode
         required: false
         type: string
-
 
 concurrency:
   group: lanzouplus-empty-${{ inputs.mode }}-${{ inputs.commit }}

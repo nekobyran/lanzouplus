@@ -14,8 +14,8 @@ on:
       version:
         description: Semantic version used by release mode
         required: false
-        type: string
-            commit:
+                type: string
+      commit:
         description: Exact main commit to build
         required: true
         type: string

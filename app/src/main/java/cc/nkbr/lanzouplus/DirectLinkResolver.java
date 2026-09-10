@@ -20,6 +20,8 @@ final class DirectLinkResolver implements AutoCloseable {
   private final Object lock=new Object();
   private final ConcurrentHashMap<String,Request> inflight=new ConcurrentHashMap<>();
   private final PriorityQueue<Request> pending=new PriorityQueue<>((first,second)->first.confirmed==second.confirmed?Long.compare(first.sequence,second.sequence):(first.confirmed?-1:1));
+  /** Only one unresolved request per generic route-policy group performs route discovery. */
+  private final Set<String> routeDiscoveries=new HashSet<>();
   private final ThreadPoolExecutor executor;
   private final ScheduledThreadPoolExecutor retries=new ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"lanzou-resolve-retry");t.setDaemon(true);return t;});
   private volatile boolean closed;
@@ -82,8 +84,22 @@ final class DirectLinkResolver implements AutoCloseable {
   boolean cancelPasswordRequest(String shareUrl){String url=clean(shareUrl);Request request;synchronized(lock){request=inflight.get(url);if(request==null||request.done||!request.awaitingPassword)return false;request.awaitingPassword=false;}finished(request,null,0,"直链解析已取消");return true;}
 
   private void enqueueLocked(Request request){if(closed||request.done||request.queued||request.running||request.awaitingPassword)return;request.queued=true;pending.add(request);pumpLocked();}
-  private void pumpLocked(){if(closed)return;int limit=effectiveLimitLocked();while(active<limit&&!pending.isEmpty()){Request request=pending.poll();request.queued=false;if(request.done||request.awaitingPassword)continue;request.running=true;active++;try{executor.execute(()->runAdmitted(request));}catch(RejectedExecutionException rejected){request.running=false;active--;request.done=true;inflight.remove(request.url,request);}catch(OutOfMemoryError exhausted){request.running=false;if(active>0)active--;int reduced=Math.max(1,Math.max(active,limit/2));emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);request.queued=true;pending.add(request);if(active==0){pending.remove(request);request.queued=false;request.done=true;inflight.remove(request.url,request);for(Callback callback:new ArrayList<>(request.callbacks))try{callback.failed("系统资源不足，请降低解析并发");}catch(RuntimeException ignored){}}return;}}}
-  private void runAdmitted(Request request){try{request.resolveNow();}finally{synchronized(lock){if(request.running){request.running=false;if(active>0)active--;}if(request.resumePending&&!request.done&&!request.awaitingPassword){request.resumePending=false;enqueueLocked(request);}pumpLocked();}}}
+    private Request pollRunnableLocked(){
+    int scan=pending.size();
+    while(scan-->0&&!pending.isEmpty()){
+      Request request=pending.poll();request.queued=false;
+      if(request.done||request.awaitingPassword)continue;
+      if(!LanzouCore.hasLearnedDirectRoute(request.url)){
+        if(routeDiscoveries.contains(request.routeGroup)){request.queued=true;pending.add(request);continue;}
+        routeDiscoveries.add(request.routeGroup);request.discoveryGroup=request.routeGroup;
+      }
+      return request;
+    }
+    return null;
+  }
+  private void releaseDiscoveryLocked(Request request){if(request.discoveryGroup.isEmpty())return;routeDiscoveries.remove(request.discoveryGroup);request.discoveryGroup="";}
+  private void pumpLocked(){if(closed)return;int limit=effectiveLimitLocked();while(active<limit&&!pending.isEmpty()){Request request=pollRunnableLocked();if(request==null)return;request.running=true;active++;try{executor.execute(()->runAdmitted(request));}catch(RejectedExecutionException rejected){releaseDiscoveryLocked(request);request.running=false;active--;request.done=true;inflight.remove(request.url,request);}catch(OutOfMemoryError exhausted){releaseDiscoveryLocked(request);request.running=false;if(active>0)active--;int reduced=Math.max(1,Math.max(active,limit/2));emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);request.queued=true;pending.add(request);if(active==0){pending.remove(request);request.queued=false;request.done=true;inflight.remove(request.url,request);for(Callback callback:new ArrayList<>(request.callbacks))try{callback.failed("系统资源不足，请降低解析并发");}catch(RuntimeException ignored){}}return;}}}
+    private void runAdmitted(Request request){try{request.resolveNow();}finally{synchronized(lock){releaseDiscoveryLocked(request);if(request.running){request.running=false;if(active>0)active--;}if(request.resumePending&&!request.done&&!request.awaitingPassword){request.resumePending=false;enqueueLocked(request);}pumpLocked();}}}
   private boolean cancel(Request request,Callback callback){synchronized(lock){if(request.done||!request.callbacks.remove(callback))return false;if(request.callbacks.isEmpty()&&!request.running){request.done=true;request.awaitingPassword=false;if(request.queued){pending.remove(request);request.queued=false;}inflight.remove(request.url,request);}return true;}}
 
   void invalidate(String shareUrl,String directUrl){String url=clean(shareUrl);if(url.isEmpty())return;String stored=prefs.getString(DIRECT+url,"");if(directUrl==null||directUrl.isEmpty()||directUrl.equals(stored))prefs.edit().remove(DIRECT+url).remove(TIME+url).apply();}
@@ -95,14 +111,14 @@ final class DirectLinkResolver implements AutoCloseable {
   private void defer(Request request,long delay){synchronized(lock){if(request.done||closed||request.awaitingPassword)return;}try{retries.schedule(()->{synchronized(lock){if(request.done||closed||request.awaitingPassword)return;enqueueLocked(request);}},Math.max(1,delay),TimeUnit.MILLISECONDS);}catch(RejectedExecutionException rejected){if(!closed)finished(request,null,0,"直链解析已取消");}}
   private void awaitPassword(Request request,boolean rejectedPrevious){PasswordCallback interactive=null;synchronized(lock){if(request.done||closed)return;request.awaitingPassword=true;request.password="";for(Callback callback:request.callbacks)if(callback instanceof PasswordCallback){interactive=(PasswordCallback)callback;break;}}if(interactive==null){finished(request,null,0,"无法解析下载链接：需要访问密码");return;}try{interactive.passwordRequired(rejectedPrevious);}catch(RuntimeException ignored){}}
 
-  @Override public void close(){List<Callback> callbacks=new ArrayList<>();synchronized(lock){if(closed)return;closed=true;pending.clear();for(Request request:inflight.values())if(!request.done){request.done=true;request.queued=false;request.awaitingPassword=false;callbacks.addAll(request.callbacks);}inflight.clear();}retries.shutdownNow();executor.shutdownNow();for(Callback callback:callbacks)try{callback.failed("直链解析已取消");}catch(RuntimeException ignored){}}
+    @Override public void close(){List<Callback> callbacks=new ArrayList<>();synchronized(lock){if(closed)return;closed=true;pending.clear();routeDiscoveries.clear();for(Request request:inflight.values())if(!request.done){request.done=true;request.queued=false;request.awaitingPassword=false;callbacks.addAll(request.callbacks);}inflight.clear();}retries.shutdownNow();executor.shutdownNow();for(Callback callback:callbacks)try{callback.failed("直链解析已取消");}catch(RuntimeException ignored){}}
   private static String failureMessage(Throwable error){Throwable current=error;while(current.getCause()!=null)current=current.getCause();String value=current.getMessage();if(value==null||value.trim().isEmpty())value=current.getClass().getSimpleName();return value.startsWith("无法解析下载链接：")?value:"无法解析下载链接："+value;}
   private static boolean validPassword(String value){if(value==null||value.isEmpty()||value.length()>64)return false;for(int i=0;i<value.length();i++)if(Character.isISOControl(value.charAt(i)))return false;return true;}
   private static String clean(String value){return value==null?"":value.trim();}
   private static final class Cache { final String url;final long at;Cache(String url,long at){this.url=url;this.at=at;} }
   private final class Request {
-    final String url;final List<Callback> callbacks=new ArrayList<>();final long sequence;volatile boolean confirmed,running,queued,done,awaitingPassword,resumePending;String password;int failures;
-    Request(String url,boolean confirmed,long sequence,String password){this.url=url;this.confirmed=confirmed;this.sequence=sequence;this.password=password==null?"":password;}
+        final String url,routeGroup;final List<Callback> callbacks=new ArrayList<>();final long sequence;volatile boolean confirmed,running,queued,done,awaitingPassword,resumePending;String password,discoveryGroup="";int failures;
+        Request(String url,boolean confirmed,long sequence,String password){this.url=url;this.routeGroup=LanzouCore.directRouteGroupKey(url);this.confirmed=confirmed;this.sequence=sequence;this.password=password==null?"":password;}
         void resolveNow(){try{LanzouCore.DirectLink link=core.resolveDirect(url,password);if(link==null||link.url==null||link.url.isEmpty())throw new IllegalStateException("未解析到下载直链");long at=clock.now();if(!password.isEmpty())rememberPassword(url,password);recordPressureFreeSuccess();finished(this,link.url,at,null);}catch(LanzouCore.DirectPasswordException rejected){boolean hadPassword=!password.isEmpty();if(hadPassword)forgetPassword(url);awaitPassword(this,hadPassword);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();if(!closed)finished(this,null,0,failureMessage(interrupted));}catch(Exception error){++failures;if(upstreamPressure(error)&&adaptToUpstreamPressure()){synchronized(lock){if(!done&&!closed)resumePending=true;}return;}long delay=LanzouCore.directRetryDelay(error,failures);if(delay>0)defer(this,delay);else finished(this,null,0,failureMessage(error));}}
   }
 }

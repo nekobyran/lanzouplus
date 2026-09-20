@@ -1124,20 +1124,26 @@ final class LanzouCore {
   }
   private static boolean localCompositeFolder(Models.Source source,Models.Item item){return source!=null&&source.kind==Models.SOURCE_COMPOSITE&&item!=null&&item.folder&&!item.folderId.isEmpty()&&!item.folderId.startsWith("remote:");}
 
-  /** Flattens selected files and folders without concurrently hitting the same directory. */
+  /** Flattens selected files and folders while expanding independent folders in parallel. */
+  static final class FolderExpansionResult{final Models.Item folder;final List<Models.Item> files=new ArrayList<>(),folders=new ArrayList<>();FolderExpansionResult(Models.Item folder){this.folder=folder;}}
   List<Models.Item> collectFiles(Collection<Models.Item> roots,Models.FolderProgress progress)throws Exception{return collectFiles(null,roots,progress);}
   List<Models.Item> collectFiles(Models.Source compositeContext,Collection<Models.Item> roots,Models.FolderProgress progress)throws Exception{
     LinkedHashMap<String,Models.Item> files=new LinkedHashMap<>();ArrayDeque<Models.Item> folders=new ArrayDeque<>();Set<String> queued=new HashSet<>();int completed=0;
-        if(roots!=null)for(Models.Item item:roots)if(item!=null){if(localCompositeFolder(compositeContext,item)){for(Models.Item child:portableCompositeFolderItems(compositeContext,item.folderId))if(child.folder)enqueueFolder(folders,queued,child,null);else addFile(files,child);}else if(item.folder)enqueueFolder(folders,queued,item,null);else addFile(files,item);}
+    if(roots!=null)for(Models.Item item:roots)if(item!=null){if(localCompositeFolder(compositeContext,item)){for(Models.Item child:portableCompositeFolderItems(compositeContext,item.folderId))if(child.folder)enqueueFolder(folders,queued,child,null);else addFile(files,child);}else if(item.folder)enqueueFolder(folders,queued,item,null);else addFile(files,item);}
     if(progress!=null)progress.onProgress(0,files.size(),"");
-    while(!folders.isEmpty()){
-      Models.Item folder=folders.removeFirst();completed++;int firstApiFolderCount=0;
-      for(int page=1;page<=100;page++){
-        Models.Folder listing=browsePage(folder.url,folder.password,true,page,NO_DEADLINE,true);if(page==1)firstApiFolderCount=listing.apiFolderCount;for(Models.Item item:listing.items){inherit(item,folder);if(item.folder)enqueueFolder(folders,queued,item,folder);else addFile(files,item);}if(progress!=null)progress.onProgress(completed,files.size(),folder.title);if(!listing.hasMore)break;if(page==100)throw new IOException("目录文件超过100页，未完整展开");
-      }
-      if(firstApiFolderCount>=PAGE_SIZE){DirectLink session=browseSession(folder.url,folder.password,NO_DEADLINE,false);SourceProfile profile=sourceProfile(folder.url);for(int page=2;page<=100;page++){int[] count={0};List<Models.Item> batch=apiFolders(session,NO_DEADLINE,page,true,count,profile);for(Models.Item item:batch){inherit(item,folder);enqueueFolder(folders,queued,item,folder);}if(progress!=null)progress.onProgress(completed,files.size(),folder.title);if(count[0]<PAGE_SIZE)break;if(page==100)throw new IOException("目录子文件夹超过100页，未完整展开");}}
-    }
+    if(folders.isEmpty())return new ArrayList<>(files.values());
+    ExecutorCompletionService<FolderExpansionResult> completedTasks=new ExecutorCompletionService<>(SOURCE_UA_POOL);List<Future<FolderExpansionResult>> futures=new ArrayList<>();int running=0;
+    try{while(!folders.isEmpty()||running>0){int limit=Math.max(1,adaptiveSourceWorkers(0,Math.max(1,folders.size()+running)));while(!folders.isEmpty()&&running<limit){Models.Item folder=folders.removeFirst();futures.add(completedTasks.submit(()->expandFolderForCollection(folder)));running++;}
+        Future<FolderExpansionResult> future=completedTasks.take();running--;FolderExpansionResult expanded;try{expanded=future.get();}catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof Exception)throw(Exception)cause;throw new IOException(cause==null?"文件夹解析失败":cause.toString(),cause);}
+        completed++;for(Models.Item file:expanded.files)addFile(files,file);for(Models.Item folder:expanded.folders)enqueueFolder(folders,queued,folder,expanded.folder);if(progress!=null)progress.onProgress(completed,files.size(),expanded.folder==null?"":expanded.folder.title);}
+    }catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw interrupted;}finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
     return new ArrayList<>(files.values());
+  }
+  private FolderExpansionResult expandFolderForCollection(Models.Item folder)throws Exception{
+    FolderExpansionResult result=new FolderExpansionResult(folder);int firstApiFolderCount=0;
+    for(int page=1;page<=100;page++){Models.Folder listing=browsePage(folder.url,folder.password,true,page,NO_DEADLINE,true);if(page==1)firstApiFolderCount=listing.apiFolderCount;for(Models.Item item:listing.items){inherit(item,folder);if(item.folder)result.folders.add(item);else result.files.add(item);}if(!listing.hasMore)break;if(page==100)throw new IOException("目录文件超过100页仍未完全展开");}
+    if(firstApiFolderCount>=PAGE_SIZE){DirectLink session=browseSession(folder.url,folder.password,NO_DEADLINE,false);SourceProfile profile=sourceProfile(folder.url);for(int page=2;page<=100;page++){int[] count={0};List<Models.Item> batch=apiFolders(session,NO_DEADLINE,page,true,count,profile);for(Models.Item item:batch){inherit(item,folder);result.folders.add(item);}if(count[0]<PAGE_SIZE)break;if(page==100)throw new IOException("目录子文件夹列表超过100页仍未完全展开");}}
+    return result;
   }
 
   private static boolean enqueueFolder(Deque<Models.Item> folders,Set<String> queued,Models.Item item,Models.Item parent){if(item.url.isEmpty())return false;inherit(item,parent);DirectLink target=parseFolderTarget(item.url);String key=target.rootUrl+'\n'+target.folderId;if(!queued.add(key))return false;folders.addLast(item);return true;}

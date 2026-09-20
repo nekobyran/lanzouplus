@@ -3,7 +3,7 @@ package cc.nkbr.lanzouplus;
 import java.util.*;
 
 final class Models {
-  static final byte SOURCE_OFFICIAL=0,SOURCE_COMPOSITE=1,SOURCE_SINGLE=2;
+  static final byte SOURCE_OFFICIAL=0,SOURCE_COMPOSITE=1,SOURCE_SINGLE=2,SOURCE_WEB=3;
   static final byte MEMBER_UNKNOWN=0,MEMBER_FILE=1,MEMBER_DIRECTORY=2,MEMBER_FOLDER=3,MEMBER_REMOTE_FOLDER=4;
   static final class Item {
     String title="", url="", shareUrl="", size="", time="", iconUrl="", source="", password="", description="", folderId="", sourceId="", error="";

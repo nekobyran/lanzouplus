@@ -395,10 +395,33 @@ jobs:
           print(matches[0]["id"] if matches else 0)
           PY
           )"
+          retry_release_api() {
+            local allow_not_found="$1"
+            shift
+            local attempt output status
+            for attempt in 1 2 3 4 5; do
+              set +e
+              output="$(gh api "$@" 2>&1)"
+              status=$?
+              set -e
+              if [ "$status" -eq 0 ]; then
+                return 0
+              fi
+              if [ "$allow_not_found" = true ] && grep -Eq 'HTTP 404|Not Found' <<<"$output"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                printf '%s\n' "$output" >&2
+                return "$status"
+              fi
+              sleep "$((attempt * 2))"
+            done
+          }
+
           if [ "$target_id" != 0 ]; then
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$target_id"
+            retry_release_api true --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$target_id"
           fi
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$stage_id" -f name="$ASSET" >/dev/null
+          retry_release_api false --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$stage_id" -f name="$ASSET" >/dev/null
 
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           python3 - "$release_json" "$ASSET" > "$RUNNER_TEMP/obsolete-assets.txt" <<'PY'
@@ -413,7 +436,7 @@ jobs:
           PY
           while IFS= read -r obsolete_id; do
             if [ -n "$obsolete_id" ]; then
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$obsolete_id"
+              retry_release_api true --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$obsolete_id"
             fi
           done < "$RUNNER_TEMP/obsolete-assets.txt"
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \

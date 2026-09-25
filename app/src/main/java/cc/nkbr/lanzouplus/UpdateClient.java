@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import org.json.*;
 
-/** Minimal, blocking GitHub Release client. Call {@link #check(String)} off the UI thread. */
+/** Minimal, blocking GitHub Release client for LanzouPlus. Call check off the UI thread. */
 final class UpdateClient {
   static final String ASSET_NAME="LanzouPlus.apk";
   private static final String GITHUB_LATEST="https://api.github.com/repos/nekobyran/lanzouplus/releases/latest";
@@ -15,15 +15,14 @@ final class UpdateClient {
   private static final int JSON_LIMIT=256*1024;
 
   static final class UpdateInfo {
-    final String version,body,browserDownloadUrl,mirrorUrl;
+    final String version,body,browserDownloadUrl,mirrorUrl,assetName;
     final long size;
     final boolean preferMirror;
-    UpdateInfo(String version,String body,String browserDownloadUrl,String mirrorUrl,long size,boolean preferMirror){this.version=version;this.body=body;this.browserDownloadUrl=browserDownloadUrl;this.mirrorUrl=mirrorUrl;this.size=size;this.preferMirror=preferMirror;}
-    String primaryUrl(){return preferMirror?mirrorUrl:browserDownloadUrl;}
+    UpdateInfo(String version,String body,String browserDownloadUrl,String mirrorUrl,long size,boolean preferMirror,String assetName){this.version=version;this.body=body;this.browserDownloadUrl=browserDownloadUrl;this.mirrorUrl=mirrorUrl;this.size=size;this.preferMirror=preferMirror;this.assetName=assetName;}
+    String primaryUrl(){return preferMirror&&!mirrorUrl.isEmpty()?mirrorUrl:browserDownloadUrl;}
     String fallbackUrl(){return preferMirror?browserDownloadUrl:mirrorUrl;}
   }
 
-  /** Returns null when the latest stable release is not newer than currentVersion. */
   static UpdateInfo check(String currentVersion)throws IOException{
     long[] current=parseVersion(currentVersion);
     boolean china="CN".equalsIgnoreCase(Locale.getDefault().getCountry());
@@ -55,7 +54,7 @@ final class UpdateClient {
     String version=normalizeVersion(rawTag);
     requireGithubAsset(github,rawTag);
     requireMirrorAsset(mirror);
-    return new UpdateInfo(version,release.optString("body","").trim(),github,mirror,size,preferMirror);
+    return new UpdateInfo(version,release.optString("body","").trim(),github,mirror,size,preferMirror,ASSET_NAME);
   }
 
   private static JSONObject fetch(String endpoint)throws IOException{
@@ -113,7 +112,6 @@ final class UpdateClient {
     }catch(IOException error){throw error;}catch(Exception error){throw new IOException("镜像安装包地址无效",error);}
   }
 
-  /** Redirect allowlist used by SegmentDownloader's direct update entry point. */
   static boolean isAllowedDownloadUrl(URL url){
     if(url==null||!"https".equalsIgnoreCase(url.getProtocol())||url.getUserInfo()!=null||!defaultHttpsPort(url))return false;
     String host=url.getHost().toLowerCase(Locale.ROOT);

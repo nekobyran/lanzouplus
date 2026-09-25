@@ -340,7 +340,7 @@ jobs:
             :
           elif grep -Eq 'HTTP 404|Not Found' "$release_error"; then
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
-              --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md
+              --title "LanzouPlus / LanzouMax $VERSION" --notes-file dist/release-notes.md
 
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           else
@@ -356,7 +356,8 @@ jobs:
           expected = sys.argv[2]
           stage_prefix = f"{expected}.stage-"
           assets = release.get("assets", [])
-          unexpected = [item.get("name", "") for item in assets if item.get("name") != expected and not item.get("name", "").startswith(stage_prefix)]
+          allowed = {expected, "LanzouMax.apk"}
+          unexpected = [item.get("name", "") for item in assets if item.get("name") not in allowed and not item.get("name", "").startswith(stage_prefix)]
           if unexpected:
               raise SystemExit(f"unexpected existing release assets: {unexpected}")
           if sum(1 for item in assets if item.get("name") == expected) > 1:
@@ -431,7 +432,7 @@ jobs:
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
           expected = sys.argv[2]
           for item in release.get("assets", []):
-              if item.get("name") != expected:
+              if item.get("name") not in {expected, "LanzouMax.apk"}:
                   print(item["id"])
           PY
           while IFS= read -r obsolete_id; do
@@ -440,7 +441,7 @@ jobs:
             fi
           done < "$RUNNER_TEMP/obsolete-assets.txt"
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
-            --title "LanzouPlus $VERSION" --notes-file dist/release-notes.md \
+            --title "LanzouPlus / LanzouMax $VERSION" --notes-file dist/release-notes.md \
             --draft=false --prerelease=false --latest
 
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
@@ -456,11 +457,14 @@ jobs:
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
           name, size, commit, version = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
           assets = release.get("assets", [])
-          if len(assets) != 1 or assets[0].get("name") != name:
-              raise SystemExit("release must contain exactly the expected APK")
-          if assets[0].get("size") != size:
-              raise SystemExit("release asset size mismatch")
-          if release.get("tag_name") != f"v{version}" or release.get("name") != f"LanzouPlus {version}":
+          matches = [item for item in assets if item.get("name") == name]
+          max_matches = [item for item in assets if item.get("name") == "LanzouMax.apk"]
+          unexpected = [item.get("name", "") for item in assets if item.get("name") not in {name, "LanzouMax.apk"}]
+          if len(matches) != 1 or len(max_matches) > 1 or unexpected:
+              raise SystemExit("release asset set must contain one LanzouPlus.apk and at most one LanzouMax.apk")
+          if matches[0].get("size") != size:
+              raise SystemExit("LanzouPlus release asset size mismatch")
+          if release.get("tag_name") != f"v{version}" or release.get("name") != f"LanzouPlus / LanzouMax {version}":
               raise SystemExit("release tag or title mismatch")
           if "## Build / 构建" not in release.get("body", ""):
               raise SystemExit("release title or notes mismatch")

@@ -129,6 +129,7 @@ final class Models {
     /** Waits at a source/page boundary; false means the search was superseded. */
     default boolean awaitIfPaused(){return !isCancelled();}
     default void onFailure(String current) {}
+    default void onFailure(String sourceId,String current,String reason) { onFailure(current); }
     /** A full directory scan for this logical source completed and may advance the persisted index region. */
     default void onIndexSource(String sourceId,String current) {}
   }

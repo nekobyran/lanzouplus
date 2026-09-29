@@ -6,8 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Independent admission gate for already-resolved transfers. Zero means memory-adaptive unlimited mode. */
 final class TransferCoordinator<T> {
   interface Starter<T> { void start(T task,Runnable completed); }
-  private static final long MIB=1024L*1024L;
-  private static final int MIN_ADAPTIVE=8;
+  
   private final ArrayDeque<T> ready=new ArrayDeque<>();
   private final int limit;
   private final Starter<T> starter;
@@ -15,7 +14,7 @@ final class TransferCoordinator<T> {
   private boolean draining;
 
   TransferCoordinator(int configured,Starter<T> starter){limit=effectiveLimit(configured);this.starter=starter;}
-  static int adaptiveUnlimitedLimit(){long heap=Runtime.getRuntime().maxMemory();long byHeap=heap/(8L*MIB);return (int)Math.max(MIN_ADAPTIVE,byHeap);}
+    static int adaptiveUnlimitedLimit(){return LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE);}
     static int effectiveLimit(int configured){int adaptive=adaptiveUnlimitedLimit(),desired=configured<=0?adaptive:Math.max(1,configured);return Math.max(1,Math.min(desired,adaptive));}
 
   void enqueue(T task){boolean run;synchronized(this){ready.addLast(task);run=!draining;if(run)draining=true;}if(run)drain();}

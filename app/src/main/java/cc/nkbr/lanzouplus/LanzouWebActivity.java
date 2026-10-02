@@ -22,7 +22,7 @@ import java.util.regex.*;
 public final class LanzouWebActivity extends Activity{
     static final String EXTRA_URL="u",EXTRA_CHALLENGE="challenge",EXTRA_VERIFICATION_URL="verification_url",EXTRA_VERIFICATION_COOKIE="verification_cookie",PREFS="web-browser-v2",HISTORY="history",FAVORITES="favorites",SEARCH_HISTORY="search_queries"; static final int FILE_PICK=401,MAX_HISTORY=120,MAX_SEARCH_HISTORY=30;
 
-    WebView web;EditText address,suggestionInput;TextView title;ImageView siteIcon;ProgressBar progress;FrameLayout shell,noticeLayer,suggestionLayer,contextLayer;LinearLayout suggestionResults;PopupWindow menuPopup;String currentUrl="",currentTitle="";int BG,SURFACE,TEXT,MUTED,DIV,PRIMARY,topInset,bottomInset;float lastTouchX,lastTouchY;ValueCallback<Uri[]> fileCallback;boolean syncingSuggestionInput,challengeMode,verificationFinishing;String verificationInitialCookie="";long verificationStartedAt;
+    WebView web;EditText address,suggestionInput;TextView title;ImageView siteIcon;ProgressBar progress;FrameLayout shell,noticeLayer,suggestionLayer,contextLayer;LinearLayout suggestionResults;PopupWindow menuPopup;String currentUrl="",currentTitle="";int BG,SURFACE,TEXT,MUTED,DIV,PRIMARY,topInset,bottomInset;float lastTouchX,lastTouchY;ValueCallback<Uri[]> fileCallback;boolean syncingSuggestionInput,challengeMode,verificationFinishing,automaticVerificationAttempted;LanzouSliderVerification automaticVerification;
 
     final ExecutorService webIo=Executors.newSingleThreadExecutor();final ArrayList<Entry> history=new ArrayList<>(),favorites=new ArrayList<>();final ArrayList<String> searchQueries=new ArrayList<>();int suggestionGeneration;
 
@@ -38,7 +38,7 @@ public final class LanzouWebActivity extends Activity{
 
     web.setWebViewClient(new WebViewClient(){@Override public boolean shouldOverrideUrlLoading(WebView v,String u){return handleNavigation(v,u);}@Override public boolean shouldOverrideUrlLoading(WebView v,WebResourceRequest r){return r!=null&&r.isForMainFrame()&&handleNavigation(v,r.getUrl()==null?"":r.getUrl().toString());}@Override public void onPageStarted(WebView v,String u,Bitmap favicon){currentUrl=u==null?"":u;setAddress(currentUrl,false);progress.setVisibility(View.VISIBLE);progress.setProgress(5);}@Override public void onPageFinished(WebView v,String u){currentUrl=u==null?"":u;currentTitle=cleanTitle(v.getTitle(),currentUrl);title.setText(currentTitle);setAddress(currentUrl,false);if(!challengeMode)pushHistory(currentTitle,currentUrl);progress.setVisibility(View.GONE);if(challengeMode)maybeFinishVerificationAfterPage();}});
     web.setWebChromeClient(new WebChromeClient(){@Override public void onReceivedIcon(WebView view,Bitmap icon){if(icon!=null&&siteIcon!=null)siteIcon.setImageBitmap(icon);}@Override public void onProgressChanged(WebView view,int value){progress.setProgress(value);progress.setVisibility(value>=100?View.GONE:View.VISIBLE);}@Override public boolean onShowFileChooser(WebView view,ValueCallback<Uri[]> callback,FileChooserParams params){if(fileCallback!=null)fileCallback.onReceiveValue(null);fileCallback=callback;try{Intent i=params==null?new Intent(Intent.ACTION_OPEN_DOCUMENT):params.createIntent();i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,FILE_PICK);return true;}catch(Exception error){fileCallback=null;notice("无法打开系统文件选择器",true);return false;}}});
-    web.setDownloadListener((u,ua,d,m,z)->download(u,d,m,z));web.setOnTouchListener((v,e)->{lastTouchX=e.getRawX();lastTouchY=e.getRawY();return false;});web.setOnLongClickListener(v->{showHitMenu();return true;});root.addView(web,new LinearLayout.LayoutParams(-1,0,1));root.addView(buildAddressBar(),new LinearLayout.LayoutParams(-1,addressBarHeight()));setContentView(shell);String initialUrl=getIntent().getStringExtra(EXTRA_URL);if(challengeMode){verificationInitialCookie=safeCookie(initialUrl);verificationStartedAt=System.currentTimeMillis();}load(initialUrl);
+    web.setDownloadListener((u,ua,d,m,z)->download(u,d,m,z));web.setOnTouchListener((v,e)->{lastTouchX=e.getRawX();lastTouchY=e.getRawY();return false;});web.setOnLongClickListener(v->{showHitMenu();return true;});root.addView(web,new LinearLayout.LayoutParams(-1,0,1));root.addView(buildAddressBar(),new LinearLayout.LayoutParams(-1,addressBarHeight()));setContentView(shell);String initialUrl=getIntent().getStringExtra(EXTRA_URL);load(initialUrl);
   }
 
   int toolbarHeight(){return dp(42);}
@@ -93,11 +93,29 @@ public final class LanzouWebActivity extends Activity{
   void load(String raw){String u=resolveInput(raw);currentUrl=u;setAddress(u,false);web.loadUrl(u);}
   void setAddress(String value,boolean select){if(address==null||address.hasFocus())return;address.setText(value==null?"":value);if(select)address.selectAll();else address.setSelection(address.length());}
     static String cleanTitle(String value,String fallback){String v=value==null?"":value.trim();return v.isEmpty()?fallback:v;}
-    String verificationCheckScript(){return"(function(){var h=document.documentElement?String(document.documentElement.innerHTML):'';var l=h.toLowerCase();var blocked=l.indexOf('aliyun_waf')>=0||l.indexOf('captchav2')>=0||h.indexOf('请完成以下操作，验证您是真人')>=0||l.indexOf('verify that you are a real person')>=0||l.indexOf('nc_1_n1z')>=0||l.indexOf('nocaptcha')>=0||(l.indexOf('slider')>=0&&(l.indexOf('captcha')>=0||l.indexOf('waf')>=0||l.indexOf('verify')>=0));return !blocked;})()";}
   String safeCookie(String raw){try{String target=raw==null?"":raw.trim();if(target.isEmpty())return"";android.webkit.CookieManager.getInstance().flush();String cookie=android.webkit.CookieManager.getInstance().getCookie(target);return cookie==null?"":cookie.trim();}catch(Throwable ignored){return"";}}
-  boolean verificationCookieLooksSolved(String cookie){String value=cookie==null?"":cookie.trim();if(value.isEmpty()||value.equals(verificationInitialCookie))return false;String lower=value.toLowerCase(Locale.ROOT);if(lower.contains("aliyun_waf")||lower.contains("x5sec")||lower.contains("acw_tc")||lower.contains("acw_sc__v2")||lower.contains("__jsl_clearance")||lower.contains("sec_waf")||lower.contains("tfstk"))return true;return System.currentTimeMillis()-verificationStartedAt>1200L&&value.length()>verificationInitialCookie.length()+12;}
-  void checkVerificationCompletion(boolean userInitiated){if(!challengeMode||verificationFinishing||web==null)return;web.evaluateJavascript(verificationCheckScript(),value->{String target=verificationTarget();String cookie=safeCookie(target);boolean passed="true".equalsIgnoreCase(value==null?"":value.trim());if((passed&&!cookie.isEmpty())||verificationCookieLooksSolved(cookie))finishVerification();else if(userInitiated)notice("验证仍未完成，请先完成页面中的滑动验证",false);});}
-  void maybeFinishVerificationAfterPage(){if(!challengeMode||verificationFinishing||web==null)return;final String loaded=currentUrl;web.postDelayed(()->{if(!challengeMode||verificationFinishing||web==null||!Objects.equals(loaded,currentUrl))return;checkVerificationCompletion(false);},650);}
+  void checkVerificationCompletion(boolean userInitiated){
+    if(!challengeMode||verificationFinishing||web==null)return;
+    web.evaluateJavascript("(function(){return document.documentElement?document.documentElement.outerHTML:'';})()",value->{
+      if(verificationFinishing||web==null)return;
+      try{
+        LanzouCore.DirectLink page=new LanzouCore.DirectLink();page.html=value==null?"":new JSONArray('['+value+']').optString(0);
+        if(LanzouCore.browserUseful(page)&&!safeCookie(verificationTarget()).isEmpty())finishVerification();
+        else if(userInitiated)notice("验证仍未完成，请先完成页面中的滑动验证",false);
+      }catch(JSONException error){if(userInitiated)notice("未能读取验证页面",false);}
+    });
+  }
+  void maybeFinishVerificationAfterPage(){
+    if(!challengeMode||verificationFinishing||web==null)return;final String loaded=currentUrl;
+    web.postDelayed(()->{
+      if(!challengeMode||verificationFinishing||web==null||!Objects.equals(loaded,currentUrl))return;
+      checkVerificationCompletion(false);
+      if(automaticVerificationAttempted||!isLanzouVerificationUrl(currentUrl))return;
+      automaticVerificationAttempted=true;
+      automaticVerification=new LanzouSliderVerification(web,System.nanoTime()+TimeUnit.SECONDS.toNanos(12),passed->{automaticVerification=null;if(passed)checkVerificationCompletion(false);});
+      automaticVerification.start();
+    },650);
+  }
 
     boolean isLanzouVerificationUrl(String raw){try{Uri uri=Uri.parse(raw==null?"":raw.trim());String scheme=uri.getScheme(),host=uri.getHost();return scheme!=null&&(scheme.equalsIgnoreCase("http")||scheme.equalsIgnoreCase("https"))&&host!=null&&host.matches("(?i)(?:[a-z0-9-]+[.])*(?:lanzou[a-z0-9-]*|lanzov)[.]com");}catch(Exception ignored){return false;}}
   String verificationTarget(){String entered=getIntent()==null?"":getIntent().getStringExtra(EXTRA_URL);if(isLanzouVerificationUrl(currentUrl))return currentUrl;return entered==null?"":entered;}
@@ -159,7 +177,7 @@ public final class LanzouWebActivity extends Activity{
 
   @SuppressLint("GestureBackNavigation") public void onBackPressed(){handleBack();}
   @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){super.onActivityResult(requestCode,resultCode,data);if(requestCode==FILE_PICK){ValueCallback<Uri[]> callback=fileCallback;fileCallback=null;if(callback!=null)callback.onReceiveValue(resultCode==RESULT_OK?WebChromeClient.FileChooserParams.parseResult(resultCode,data):null);}}
-  @Override protected void onDestroy(){if(fileCallback!=null)fileCallback.onReceiveValue(null);webIo.shutdownNow();if(web!=null){web.stopLoading();web.destroy();}super.onDestroy();}
+  @Override protected void onDestroy(){if(fileCallback!=null)fileCallback.onReceiveValue(null);webIo.shutdownNow();if(automaticVerification!=null){automaticVerification.close();automaticVerification=null;}if(web!=null){web.stopLoading();web.destroy();web=null;}super.onDestroy();}
   int dp(int v){return(int)(v*getResources().getDisplayMetrics().density+.5f);}
   static final class Entry{final String title,url;final long at;Entry(String t,String u,long a){title=t==null?"":t;url=u==null?"":u;at=a;}}
   static final class Action{final String label;final Runnable run;Action(String l,Runnable r){label=l;run=r;}}

@@ -14,6 +14,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -146,7 +147,8 @@ final class PremiumCloudClient {
     boolean isCancelled(){synchronized(lock){return cancelled;}}
     void register(HttpURLConnection connection)throws CloudException{synchronized(lock){if(cancelled){connection.disconnect();throw new CloudException(ERROR_NETWORK,"操作已中断");}connections.add(connection);}}
     void unregister(HttpURLConnection connection){if(connection==null)return;synchronized(lock){connections.remove(connection);}}
-    void cancel(){List<HttpURLConnection> active;synchronized(lock){if(cancelled)return;cancelled=true;active=new ArrayList<>(connections);connections.clear();}for(HttpURLConnection connection:active)try{connection.disconnect();}catch(RuntimeException ignored){}}
+        void cancel(){List<HttpURLConnection> active;synchronized(lock){if(cancelled)return;cancelled=true;active=new ArrayList<>(connections);connections.clear();}for(HttpURLConnection connection:active)connection.disconnect();}
+
   }
 
   /** Fast local check used to decide whether the account dialog is needed. */
@@ -521,7 +523,8 @@ final class PremiumCloudClient {
 
   private void clearStoredLogin(){
     preferences.edit().remove(PREF_IV).remove(PREF_SECRET).apply();sessions.clear();accountLocks.clear();
-    try{KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);if(store.containsAlias(KEY_ALIAS))store.deleteEntry(KEY_ALIAS);}catch(Exception ignored){}
+        try{KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);if(store.containsAlias(KEY_ALIAS))store.deleteEntry(KEY_ALIAS);}catch(Exception error){throw new IllegalStateException("无法清理蓝奏云优享登录密钥",error);}
+
   }
 
   private static String normalizedName(String loginName)throws CloudException{
@@ -596,14 +599,16 @@ final class PremiumCloudClient {
       if(auth.startsWith("1-"))auth=auth.substring(2);
       if(auth.length()<4||auth.length()>2048||auth.indexOf('\n')>=0||auth.indexOf('\r')>=0)return "";
       return auth;
-    }catch(Exception ignored){return "";}
+        }catch(IllegalArgumentException invalid){return "";}
+    catch(UnsupportedEncodingException impossible){throw new AssertionError(impossible);}
+
   }
 
   private static String findOfficialUrl(String body){
     if(body==null||body.isEmpty())return "";
     try{
       JSONObject object=new JSONObject(body);String found=findUrl(object,0);if(!found.isEmpty())return found;
-    }catch(Exception ignored){}
+        }catch(org.json.JSONException invalidJson){}
     Matcher matcher=Pattern.compile("https://(?:[A-Za-z0-9-]+\\.)*ilanzou\\.com/[^\\\"'\\s<]+",Pattern.CASE_INSENSITIVE).matcher(body);
     return matcher.find()?matcher.group():"";
   }

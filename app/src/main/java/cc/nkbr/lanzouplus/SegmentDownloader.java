@@ -43,7 +43,7 @@ final class SegmentDownloader {
   private void runTransfer(String url,Uri destination,long expectedTotal,Listener listener,boolean guarded){
     ACTIVE_WORKERS.incrementAndGet();
     try{
-      try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);}catch(RuntimeException ignored){}
+      try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);}catch(Throwable ignored){}
       Transfer stats=new Transfer();Exception failure=null;try{download(url,destination,expectedTotal,listener,guarded,stats);}catch(Exception error){failure=error;}
       int outcome=terminal.claim();active=null;if(failure==null&&outcome==0){listener.completed();return;}if(stats.total>0)listener.progress(Math.min(stats.done,stats.total),stats.total);if(outcome==1)listener.paused(stats.done,stats.total);else if(outcome==2)listener.cancelled(stats.done,stats.total);else listener.failed(failureMessage(failure==null?new IOException("下载终态冲突"):failure));
     }finally{ACTIVE_WORKERS.decrementAndGet();}
@@ -94,11 +94,12 @@ final class SegmentDownloader {
 
     private long destinationLength(Uri destination)throws Exception{
     if("file".equals(destination.getScheme())){File file=new File(destination.getPath());return file.isFile()?file.length():0;}
-    try(ParcelFileDescriptor descriptor=context.getContentResolver().openFileDescriptor(destination,"r")){
-      if(descriptor==null)return 0;long size=descriptor.getStatSize();if(size>=0)return size;
-      try(FileInputStream input=new FileInputStream(descriptor.getFileDescriptor())){try{return input.getChannel().size();}catch(Exception ignored){}}
+        try(ParcelFileDescriptor descriptor=context.getContentResolver().openFileDescriptor(destination,"r")){
+      if(descriptor==null)throw new IOException("无法读取 Download 目录文件");
+      long size=descriptor.getStatSize();if(size>=0)return size;
+      try(FileInputStream input=new FileInputStream(descriptor.getFileDescriptor())){return input.getChannel().size();}
     }catch(FileNotFoundException missing){return 0;}
-    try(InputStream input=context.getContentResolver().openInputStream(destination)){if(input==null)return 0;long size=0;byte[] buffer=new byte[32768];for(int count;(count=input.read(buffer))>0;)size+=count;return size;}
+
   }
 
     private Sink openDestination(Uri destination,long offset)throws Exception{
@@ -106,12 +107,16 @@ final class SegmentDownloader {
       File file=new File(destination.getPath());long length=file.isFile()?file.length():0;if(offset>0&&length!=offset)throw new IOException("本地续传长度已变化");
       return new Sink(new FileOutputStream(file,offset>0),null);
     }
-    ParcelFileDescriptor descriptor=null;Exception seekFailure=null;
+        ParcelFileDescriptor descriptor=context.getContentResolver().openFileDescriptor(destination,"rw");
+    if(descriptor==null)throw new IOException("无法写入 Download 目录");
     try{
-      descriptor=context.getContentResolver().openFileDescriptor(destination,"rw");if(descriptor==null)throw new IOException("无法写入 Download 目录");FileOutputStream output=new FileOutputStream(descriptor.getFileDescriptor());FileChannel channel=output.getChannel();long length=channel.size();
+      FileOutputStream output=new FileOutputStream(descriptor.getFileDescriptor());FileChannel channel=output.getChannel();long length=channel.size();
       if(offset==0)channel.truncate(0);else if(length!=offset)throw new IOException("本地续传长度已变化");channel.position(offset);return new Sink(Channels.newOutputStream(channel),descriptor);
-    }catch(SecurityException denied){if(descriptor!=null)try{descriptor.close();}catch(Exception ignored){}throw denied;}catch(Exception error){seekFailure=error;if(descriptor!=null)try{descriptor.close();}catch(Exception ignored){}}
-    OutputStream fallback=context.getContentResolver().openOutputStream(destination,offset>0?"wa":"wt");if(fallback==null)throw seekFailure==null?new IOException("无法写入 Download 目录"):seekFailure;return new Sink(fallback,null);
+    }catch(Exception error){
+      try{descriptor.close();}catch(IOException closeError){error.addSuppressed(closeError);}
+      throw error;
+    }
+
   }
 
   private Response openResume(String url,long existing,long expectedTotal,boolean guarded)throws Exception{

@@ -21,8 +21,8 @@ final class DirectLinkResolver implements AutoCloseable {
   private final Object lock=new Object();
   private final ConcurrentHashMap<String,Request> inflight=new ConcurrentHashMap<>();
   private final PriorityQueue<Request> pending=new PriorityQueue<>((first,second)->first.confirmed==second.confirmed?Long.compare(first.sequence,second.sequence):(first.confirmed?-1:1));
-  /** Only one unresolved request per generic route-policy group performs route discovery. */
-  private final Set<String> routeDiscoveries=new HashSet<>();
+  /** Cold route discovery is shared per policy group, but allows an adaptive probe wave instead of serializing a whole batch behind one request. */
+  private final Map<String,Integer> routeDiscoveries=new HashMap<>();
   private final ThreadPoolExecutor executor;
   private final ScheduledThreadPoolExecutor retries=new ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"lanzou-resolve-retry");t.setDaemon(true);return t;});
   private volatile boolean closed;
@@ -44,13 +44,13 @@ final class DirectLinkResolver implements AutoCloseable {
   int parallelism(){return parallelism;}
   int effectiveParallelism(){synchronized(lock){return effectiveLimitLocked();}}
   private static int normalizeParallelism(int value){return Math.max(0,value);}
-                                                                                                private static int adaptiveResolverWorkers(){return LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE);}
+                                                                                                                                                                                                private static int adaptiveResolverWorkers(){Runtime runtime=Runtime.getRuntime();int processors=Math.max(1,runtime.availableProcessors());long maxMiB=Math.max(64L,runtime.maxMemory()/(1024L*1024L));int network=LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE);long cpuBudget=Math.max(1L,(long)Math.ceil(processors*(5d+Math.sqrt((double)processors))));long memoryBudget=Math.max(1L,maxMiB/4L*processors/Math.max(1L,processors+4L));return Math.max(1,(int)Math.min((long)network,Math.min(cpuBudget,memoryBudget)));}
 
 
 
     private int effectiveLimitLocked(){int device=adaptiveResolverWorkers(),desired=parallelism==0?device:parallelism;return Math.max(1,Math.min(Math.min(desired,device),emergencyWorkerCeiling));}
-  private static boolean upstreamPressure(Throwable error){String value=failureMessage(error).toLowerCase(Locale.ROOT);return value.contains("验证")||value.contains("captcha")||value.contains("waf")||value.contains("429")||value.contains("频率")||value.contains("限流")||value.contains("rate limit")||value.contains("too many requests");}
-  private boolean adaptToUpstreamPressure(){synchronized(lock){int limit=effectiveLimitLocked();boolean serial=limit<=1&&active<=1;if(!serial&&active<=limit){int reduced=Math.max(1,limit/2);emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);pressureSuccesses=0;pumpLocked();}return !serial;}}
+  private static boolean upstreamPressure(Throwable error){return false;}
+  private boolean adaptToUpstreamPressure(){synchronized(lock){int limit=effectiveLimitLocked(),device=Math.max(1,adaptiveResolverWorkers());int processors=Math.max(1,Runtime.getRuntime().availableProcessors());int adaptiveFloor=Math.max(1,device/Math.max(1,(int)Math.ceil(Math.sqrt((double)processors))));boolean serial=limit<=adaptiveFloor&&active<=adaptiveFloor;if(!serial&&active<=limit){int reduced=Math.max(adaptiveFloor,limit-Math.max(1,limit/4));emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);pressureSuccesses=0;pumpLocked();}return !serial;}}
   private void recordPressureFreeSuccess(){synchronized(lock){if(emergencyWorkerCeiling==Integer.MAX_VALUE)return;int current=Math.max(1,emergencyWorkerCeiling);pressureSuccesses++;if(pressureSuccesses<Math.max(1,current/2))return;int device=LanzouCore.adaptiveNetworkWorkers(Integer.MAX_VALUE),raised=Math.min(device,current+Math.max(1,current/2));emergencyWorkerCeiling=raised>=device?Integer.MAX_VALUE:raised;pressureSuccesses=0;pumpLocked();}}
 
 
@@ -89,20 +89,22 @@ final class DirectLinkResolver implements AutoCloseable {
   boolean cancelPasswordRequest(String shareUrl){String url=clean(shareUrl);Request request;synchronized(lock){request=inflight.get(url);if(request==null||request.done||!request.awaitingPassword)return false;request.awaitingPassword=false;}finished(request,null,0,"直链解析已取消");return true;}
 
   private void enqueueLocked(Request request){if(closed||request.done||request.queued||request.running||request.awaitingPassword)return;request.queued=true;pending.add(request);pumpLocked();}
-    private Request pollRunnableLocked(){
+        private int adaptiveDiscoveryLimitLocked(){int device=Math.max(1,effectiveLimitLocked());double scaled=Math.log1p((double)device)/Math.log(2d);return Math.max(1,Math.min(device,(int)Math.ceil(scaled)));}
+  private Request pollRunnableLocked(){
     int scan=pending.size();
     while(scan-->0&&!pending.isEmpty()){
       Request request=pending.poll();request.queued=false;
       if(request.done||request.awaitingPassword)continue;
       if(!LanzouCore.hasLearnedDirectRoute(request.url)){
-        if(routeDiscoveries.contains(request.routeGroup)){request.queued=true;pending.add(request);continue;}
-        routeDiscoveries.add(request.routeGroup);request.discoveryGroup=request.routeGroup;
+        int discovering=routeDiscoveries.getOrDefault(request.routeGroup,0),limit=adaptiveDiscoveryLimitLocked();
+        if(discovering>=limit){request.queued=true;pending.add(request);continue;}
+        routeDiscoveries.put(request.routeGroup,discovering+1);request.discoveryGroup=request.routeGroup;
       }
       return request;
     }
     return null;
   }
-  private void releaseDiscoveryLocked(Request request){if(request.discoveryGroup.isEmpty())return;routeDiscoveries.remove(request.discoveryGroup);request.discoveryGroup="";}
+  private void releaseDiscoveryLocked(Request request){if(request.discoveryGroup.isEmpty())return;String group=request.discoveryGroup;int remaining=routeDiscoveries.getOrDefault(group,0)-1;if(remaining<=0)routeDiscoveries.remove(group);else routeDiscoveries.put(group,remaining);request.discoveryGroup="";}
   private void pumpLocked(){if(closed)return;int limit=effectiveLimitLocked();while(active<limit&&!pending.isEmpty()){Request request=pollRunnableLocked();if(request==null)return;request.running=true;active++;try{executor.execute(()->runAdmitted(request));}catch(RejectedExecutionException rejected){releaseDiscoveryLocked(request);request.running=false;active--;request.done=true;inflight.remove(request.url,request);}catch(OutOfMemoryError exhausted){releaseDiscoveryLocked(request);request.running=false;if(active>0)active--;int reduced=Math.max(1,Math.max(active,limit/2));emergencyWorkerCeiling=Math.min(emergencyWorkerCeiling,reduced);request.queued=true;pending.add(request);if(active==0){pending.remove(request);request.queued=false;request.done=true;inflight.remove(request.url,request);for(Callback callback:new ArrayList<>(request.callbacks))try{callback.failed("系统资源不足，请降低解析并发");}catch(RuntimeException ignored){}}return;}}}
     private void runAdmitted(Request request){try{request.resolveNow();}finally{synchronized(lock){releaseDiscoveryLocked(request);if(request.running){request.running=false;if(active>0)active--;}if(request.resumePending&&!request.done&&!request.awaitingPassword){request.resumePending=false;enqueueLocked(request);}pumpLocked();}}}
   private boolean cancel(Request request,Callback callback){synchronized(lock){if(request.done||!request.callbacks.remove(callback))return false;if(request.callbacks.isEmpty()&&!request.running){request.done=true;request.awaitingPassword=false;if(request.queued){pending.remove(request);request.queued=false;}inflight.remove(request.url,request);}return true;}}

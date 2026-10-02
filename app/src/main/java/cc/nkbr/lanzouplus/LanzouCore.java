@@ -60,19 +60,71 @@ final class LanzouCore {
     private static final String SEARCH_INDEX_FILE="search-index-v1.json",SEARCH_INDEX_JOURNAL_FILE="search-index-v1.journal";
         private static final int MAX_SEARCH_INDEX_ITEMS=50000;
     private static int searchIndexFlushItems(){Runtime runtime=Runtime.getRuntime();long maxMiB=Math.max(64L,runtime.maxMemory()/(1024L*1024L));int processors=Math.max(1,runtime.availableProcessors());long adaptive=Math.max(512L,Math.min(8192L,maxMiB*processors/2L));return(int)adaptive;}
-        private static final String[] LANZOU_BASE_ORIGINS={"https://www.lanzoux.com","https://wwc.lanzoux.com","https://wwop.lanzoul.com","https://www.lanzoul.com","https://www.lanzoup.com","https://www.lanzouo.com","https://www.lanzouz.com","https://www.lanzouq.com","https://www.lanzou.com","https://www.lanzoui.com","https://www.lanzoum.com","https://www.lanzouw.com","https://wwc.lanzouw.com"};
+        private static final String[] LANZOU_BASE_ORIGINS={"https://www.lanzoux.com","https://wwc.lanzoux.com","https://wwop.lanzoul.com","https://www.lanzoul.com","https://www.lanzoup.com","https://www.lanzouo.com","https://www.lanzouz.com","https://www.lanzouq.com","https://www.lanzou.com","https://www.lanzoui.com","https://www.lanzoum.com"};
         private static final String CANONICAL_SOURCE_ORIGIN="https://www.lanzoux.com";
             private static volatile String configuredPreferredBaseOrigin="";
   private static volatile boolean configuredBaseOriginTimeoutFailover=true;
+  private static volatile boolean configuredWebViewFallbackEnabled=true;
     private static volatile int configuredCompositeHydrationWorkers=0;
   private static final ConcurrentHashMap<String,String> USER_VERIFICATION_COOKIES=new ConcurrentHashMap<>();
 
     static String[] baseOrigins(){return LANZOU_BASE_ORIGINS.clone();}
+    private static final char[] RANDOM_PREFIX_AUTO_SUFFIXES={'k'};
+    private static final char[] RANDOM_PREFIX_USER_COMPAT_SUFFIXES={'w'};
+    private static String randomLanzouPrefixOrigin(char suffix){ThreadLocalRandom random=ThreadLocalRandom.current();char[] prefix=new char[4];for(int i=0;i<prefix.length;i++)prefix[i]=(char)('a'+random.nextInt(26));return "https://"+new String(prefix)+".lanzou"+suffix+".com";}
+    private static boolean originalLanzouwReference(String referenceUrl){try{DirectLink target=parseFolderTarget(referenceUrl==null?"":referenceUrl.trim());String original=validatedRouteOrigin(target.rootUrl);if(original.isEmpty())return false;return "lanzouw.com".equals(lanzouSiteCookieKey(new URL(original).getHost()));}catch(Exception ignored){return false;}}
+    private static List<String> randomPrefixBaseOrigins(String referenceUrl,int desiredCount){LinkedHashSet<String> values=new LinkedHashSet<>();char[] primary=RANDOM_PREFIX_AUTO_SUFFIXES;char[] compat=originalLanzouwReference(referenceUrl)?RANDOM_PREFIX_USER_COMPAT_SUFFIXES:new char[0];int desired=Math.max(1,desiredCount);int attempts=Math.max(desired*4,primary.length+compat.length);for(int i=0;values.size()<desired&&i<attempts;i++){char[] pool=(compat.length>0&&i%3==2)?compat:primary;if(pool.length==0)pool=primary;values.add(randomLanzouPrefixOrigin(pool[ThreadLocalRandom.current().nextInt(pool.length)]));}return new ArrayList<>(values);}
     List<BaseOriginProbe> probeBaseOrigins(String referenceUrl,String referencePassword,BaseOriginProbeProgress progress)throws InterruptedException{
     String[] origins=baseOrigins();if(origins.length==0)return Collections.emptyList();int workers=adaptiveSourceWorkers(0,origins.length);ExecutorCompletionService<BaseOriginProbe> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);Map<String,BaseOriginProbe> values=new HashMap<>();List<Future<BaseOriginProbe>> futures=new ArrayList<>(origins.length);int next=0,running=0,done=0;try{while(next<origins.length&&running<workers){String origin=origins[next++];futures.add(completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword)));running++;}while(running>0){Future<BaseOriginProbe> future=completed.take();running--;done++;try{BaseOriginProbe result=future.get();values.put(result.origin,result);if(progress!=null)progress.onResult(result,done,origins.length);}catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}if(next<origins.length){String origin=origins[next++];futures.add(completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword)));running++;}}}finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
     List<BaseOriginProbe> ordered=new ArrayList<>(origins.length);for(String origin:origins){BaseOriginProbe result=values.get(origin);if(result!=null)ordered.add(result);}return ordered;
   }
-    BaseOriginProbe findUsableBaseOriginRandomized(String referenceUrl,String referencePassword,BaseOriginProbeProgress progress)throws InterruptedException{probeTrace("search start ref="+referenceUrl);List<String> origins=new ArrayList<>(Arrays.asList(baseOrigins()));if(origins.isEmpty())return null;Collections.shuffle(origins);int workers=adaptiveSourceWorkers(0,origins.size());ExecutorCompletionService<BaseOriginProbe> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);List<Future<BaseOriginProbe>> futures=new ArrayList<>(origins.size());BaseOriginProbe challenge=null;int next=0,running=0,done=0;try{while(next<origins.size()&&running<workers){String origin=origins.get(next++);futures.add(completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword)));running++;}while(running>0){Future<BaseOriginProbe> future=completed.take();running--;done++;try{BaseOriginProbe result=future.get();if(progress!=null)progress.onResult(result,done,origins.size());if(result.available&&(!result.referenceTested||result.referenceReachable))return result;if(challenge==null&&result.challenge)challenge=result;}catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}if(challenge==null&&next<origins.size()){String origin=origins.get(next++);futures.add(completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword)));running++;}}probeTrace("final="+(challenge==null?"null":("origin="+challenge.origin+" available="+challenge.available+" challenge="+challenge.challenge+" refReachable="+challenge.referenceReachable)));return challenge;}finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}}
+        BaseOriginProbe findUsableBaseOriginRandomized(String referenceUrl,String referencePassword,BaseOriginProbeProgress progress)throws InterruptedException{
+      probeTrace("search start ref="+referenceUrl);
+      List<String> origins=new ArrayList<>(randomPrefixBaseOrigins(referenceUrl,Math.max(1,adaptiveSourceWorkers(0,LANZOU_BASE_ORIGINS.length))));for(String fallback:baseOrigins())origins.add(fallback);if(origins.isEmpty())return null;
+      int workers=adaptiveSourceWorkers(0,origins.size());
+      ExecutorCompletionService<BaseOriginProbe> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);
+      List<Future<BaseOriginProbe>> futures=new ArrayList<>(origins.size());
+      List<BaseOriginProbe> usable=new ArrayList<>();BaseOriginProbe challenge=null;int next=0,running=0,done=0;
+            long selectionWindowMillis=Math.max(160L,Math.min(700L,STARTUP_BASE_ORIGIN_TIMEOUT_MS/Math.max(8L,(long)workers*2L)));
+      long selectionWindowNanos=TimeUnit.MILLISECONDS.toNanos(selectionWindowMillis),selectionDeadline=0L;
+      try{
+        while(next<origins.size()&&running<workers){String origin=origins.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword));futures.add(f);running++;}
+        while(running>0){
+          Future<BaseOriginProbe> future;
+          if(usable.isEmpty()){future=completed.take();}
+          else{
+            long wait=Math.max(0L,selectionDeadline-System.nanoTime());
+            if(wait<=0L)break;
+            future=completed.poll(wait,TimeUnit.NANOSECONDS);if(future==null)break;
+          }
+          running--;done++;
+          try{
+            BaseOriginProbe result=future.get();
+            if(progress!=null)progress.onResult(result,done,origins.size());
+                        if(result.available&&(!result.referenceTested||result.referenceReachable)){usable.add(result);if(selectionDeadline==0L)selectionDeadline=System.nanoTime()+selectionWindowNanos;}
+            else if(challenge==null&&result.challenge)challenge=result;
+          }catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}
+          if(next<origins.size()){String origin=origins.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword));futures.add(f);running++;}
+          if(!usable.isEmpty()&&System.nanoTime()>=selectionDeadline)break;
+        }
+        if(!usable.isEmpty()){
+          BaseOriginProbe selected=usable.get(ThreadLocalRandom.current().nextInt(usable.size()));
+          probeTrace("random selected="+selected.origin+" usableCandidates="+usable.size());
+          return selected;
+        }
+        while(running>0){
+          Future<BaseOriginProbe> future=completed.take();running--;done++;
+          try{
+            BaseOriginProbe result=future.get();
+            if(progress!=null)progress.onResult(result,done,origins.size());
+            if(result.available&&(!result.referenceTested||result.referenceReachable)){probeTrace("random late selected="+result.origin);return result;}
+            if(challenge==null&&result.challenge)challenge=result;
+          }catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}
+          if(next<origins.size()){String origin=origins.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword));futures.add(f);running++;}
+        }
+        probeTrace("final="+(challenge==null?"null":("origin="+challenge.origin+" available="+challenge.available+" challenge="+challenge.challenge+" refReachable="+challenge.referenceReachable)));return challenge;
+      }finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
+    }
         BaseOriginProbe probeBaseOrigin(String origin,String referenceUrl,String referencePassword)throws InterruptedException{
     long started=System.nanoTime(),deadline=started+TimeUnit.MILLISECONDS.toNanos(STARTUP_BASE_ORIGIN_TIMEOUT_MS);
     String selected=validatedRouteOrigin(origin);
@@ -115,7 +167,7 @@ final class LanzouCore {
   static String completeLanzouHostAlias(String rawHost){String host=rawHost==null?"":rawHost.trim().toLowerCase(Locale.ROOT);while(host.endsWith("."))host=host.substring(0,host.length()-1);if(host.isEmpty())return"";if(LANZOU_HOST.matcher(host).matches())return host;if(LANZOU_HOST_WITHOUT_COM.matcher(host).matches())return host+".com";return host;}
   private static URI completeLanzouUriAlias(URI uri)throws Exception{String host=completeLanzouHostAlias(uri.getHost());if(host.isEmpty()||host.equalsIgnoreCase(uri.getHost()))return uri;return new URI(uri.getScheme(),uri.getRawUserInfo(),host,uri.getPort(),uri.getRawPath(),uri.getRawQuery(),uri.getRawFragment());}
   private static String validatedRouteOrigin(String raw){try{String value=raw==null?"":raw.trim();if(value.isEmpty())return"";URL url=new URL(value);if(!url.getProtocol().equalsIgnoreCase("http")&&!url.getProtocol().equalsIgnoreCase("https"))return"";String host=completeLanzouHostAlias(url.getHost());if(!LANZOU_HOST.matcher(host).matches())return"";URI normalized=new URI(url.getProtocol(),null,host,url.getPort(),"/",null,null);return origin(normalized.toString());}catch(Exception ignored){return"";}}
-        static void setBaseOriginPolicy(String preferredOrigin,boolean timeoutFailover){configuredPreferredBaseOrigin=validatedRouteOrigin(preferredOrigin);configuredBaseOriginTimeoutFailover=timeoutFailover;}
+        static void setBaseOriginPolicy(String preferredOrigin,boolean timeoutFailover){configuredPreferredBaseOrigin=validatedRouteOrigin(preferredOrigin);configuredBaseOriginTimeoutFailover=timeoutFailover;}  static void setWebViewFallbackEnabled(boolean enabled){configuredWebViewFallbackEnabled=enabled;}
     static void importUserVerificationCookie(String rawUrl,String cookie){try{URL url=new URL(rawUrl==null?"":rawUrl.trim());String host=completeLanzouHostAlias(url.getHost());String value=cookie==null?"":cookie.trim();if(host.isEmpty()||!LANZOU_HOST.matcher(host).matches()||value.isEmpty())return;for(String key:verificationCookieKeys(host))USER_VERIFICATION_COOKIES.put(key,value);}catch(Exception ignored){}}
     private static String userVerificationCookie(String rawUrl){try{URL url=new URL(rawUrl);return mergeCookieHeaders(mergeCookieHeaders(verificationCookieForHost(url.getHost()),webViewCookieForUrl(rawUrl)),solvedAcwCookieForHost(url.getHost()));}catch(Exception ignored){return"";}}
     private static final ConcurrentHashMap<String,String> SOLVED_ACW_COOKIES=new ConcurrentHashMap<>();
@@ -128,21 +180,19 @@ final class LanzouCore {
     private static String webViewCookieForUrl(String rawUrl){try{String target=rawUrl==null?"":rawUrl.trim();if(target.isEmpty())return"";URL url=new URL(target);String host=completeLanzouHostAlias(url.getHost());if(host.isEmpty()||!LANZOU_HOST.matcher(host).matches())return"";android.webkit.CookieManager manager=android.webkit.CookieManager.getInstance();String cookie=manager.getCookie(target);if(cookie==null||cookie.trim().isEmpty())return"";return cookie.trim();}catch(Throwable ignored){return"";}}
     private static String mergeCookieHeaders(String first,String second){LinkedHashMap<String,String> values=cookieValues(first);values.putAll(cookieValues(second));return cookieHeader(values);}
 
-                private static List<String> routeOrigins(String referenceUrl,String learnedOrigin){LinkedHashSet<String> values=new LinkedHashSet<>();String preferred=validatedRouteOrigin(configuredPreferredBaseOrigin);if(!preferred.isEmpty())values.add(preferred);String learned=validatedRouteOrigin(learnedOrigin);if(!learned.isEmpty())values.add(learned);try{DirectLink target=parseFolderTarget(referenceUrl);String original=validatedRouteOrigin(target.rootUrl);if(!original.isEmpty())values.add(original);}catch(Exception ignored){}if(configuredBaseOriginTimeoutFailover)for(String origin:LANZOU_BASE_ORIGINS){String normalized=validatedRouteOrigin(origin);if(!normalized.isEmpty())values.add(normalized);}return new ArrayList<>(values);}
-    /** 标准线路 www.lanzoux.com 优先；行为受限的 lanzouw 家族固定排到最后。 */
-    private static int originPriority(String origin){String host="";try{host=new URL(origin==null?"":origin.trim()).getHost();}catch(Exception ignored){}host=host==null?"":host.toLowerCase(Locale.ROOT);if(host.isEmpty())return 3;if(host.endsWith("lanzoux.com"))return 0;if(host.contains("lanzouw"))return 2;return 1;}
-    private static boolean demotedOrigin(String origin){return originPriority(origin)>=2;}
-            private static List<String> randomizedRouteOrigins(String referenceUrl,String learnedOrigin){List<String> ordered=routeOrigins(referenceUrl,learnedOrigin);if(ordered.size()<2)return ordered;LinkedHashSet<String> result=new LinkedHashSet<>();String preferred=validatedRouteOrigin(configuredPreferredBaseOrigin);if(!preferred.isEmpty()&&ordered.contains(preferred)&&!demotedOrigin(preferred))result.add(preferred);String learned=validatedRouteOrigin(learnedOrigin);if(!learned.isEmpty()&&ordered.contains(learned)&&!demotedOrigin(learned))result.add(learned);List<String> fallback=new ArrayList<>();for(String origin:ordered)if(!result.contains(origin))fallback.add(origin);Collections.shuffle(fallback);fallback.sort(Comparator.comparingInt((String origin)->challengedOrigin(origin)?1:0).thenComparingInt(LanzouCore::originPriority));result.addAll(fallback);return new ArrayList<>(result);}
+                private static List<String> routeOrigins(String referenceUrl,String learnedOrigin){LinkedHashSet<String> values=new LinkedHashSet<>();String preferred=validatedRouteOrigin(configuredPreferredBaseOrigin);if(!preferred.isEmpty())values.add(preferred);String learned=validatedRouteOrigin(learnedOrigin);if(!learned.isEmpty())values.add(learned);String originalSite="";try{DirectLink target=parseFolderTarget(referenceUrl);String original=validatedRouteOrigin(target.rootUrl);if(!original.isEmpty()){values.add(original);try{originalSite=lanzouSiteCookieKey(new URL(original).getHost());}catch(Exception ignored){}}}catch(Exception ignored){}if("lanzouw.com".equals(originalSite)){values.add("https://www.lanzouw.com");values.add("https://wwc.lanzouw.com");}if(configuredBaseOriginTimeoutFailover)for(String origin:LANZOU_BASE_ORIGINS){String normalized=validatedRouteOrigin(origin);if(!normalized.isEmpty())values.add(normalized);}return new ArrayList<>(values);}
+    /** Normal parsing is generic and performance-aware: explicit preference, learned route and the source original stay ahead when healthy; the remaining route pool is randomized. */
+    private static List<String> randomizedRouteOrigins(String referenceUrl,String learnedOrigin){List<String> ordered=routeOrigins(referenceUrl,learnedOrigin);if(ordered.size()<2)return ordered;LinkedHashSet<String> result=new LinkedHashSet<>();String preferred=validatedRouteOrigin(configuredPreferredBaseOrigin),learned=validatedRouteOrigin(learnedOrigin),original="",originalSite="";try{DirectLink target=parseFolderTarget(referenceUrl);original=validatedRouteOrigin(target.rootUrl);originalSite=lanzouSiteCookieKey(new URL(target.rootUrl).getHost());}catch(Exception ignored){}if(!preferred.isEmpty()&&ordered.contains(preferred))result.add(preferred);if(!learned.isEmpty()&&ordered.contains(learned)&&!challengedOrigin(learned))result.add(learned);if(!original.isEmpty()&&ordered.contains(original)&&!challengedOrigin(original))result.add(original);if(!originalSite.isEmpty())for(String origin:ordered){if(result.contains(origin)||challengedOrigin(origin))continue;try{String site=lanzouSiteCookieKey(new URL(origin).getHost());if(originalSite.equals(site))result.add(origin);}catch(Exception ignored){}}List<String> healthy=new ArrayList<>(),challenged=new ArrayList<>();for(String origin:ordered){if(result.contains(origin))continue;if(challengedOrigin(origin))challenged.add(origin);else healthy.add(origin);}Collections.shuffle(healthy);Collections.shuffle(challenged);result.addAll(healthy);result.addAll(challenged);return new ArrayList<>(result);}
 
   private static String routeTarget(String origin,String referenceUrl)throws Exception{DirectLink target=parseFolderTarget(referenceUrl);String routed=baseOriginTarget(origin,target.rootUrl);return target.folderId.isEmpty()?routed:virtualFolderUrl(routed,target.folderId,target.title,target.description);}
         private static List<RouteCandidate> learnedDirectRoutes(String referenceUrl,SourceProfile profile){if(profile==null)return Collections.emptyList();LinkedHashMap<String,Byte> learned=profile.directRoutes();if(learned.isEmpty())return Collections.emptyList();List<Map.Entry<String,Byte>> entries=new ArrayList<>(learned.entrySet());Collections.reverse(entries);List<RouteCandidate> out=new ArrayList<>(entries.size());for(Map.Entry<String,Byte> entry:entries){String origin=validatedRouteOrigin(entry.getKey());byte ua=entry.getValue()==null?UA_UNKNOWN:entry.getValue();if(origin.isEmpty()||ua==UA_UNKNOWN)continue;try{out.add(new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,UA_SCOPE_DIRECT));}catch(Exception ignored){}}return out;}
-    private static List<RouteCandidate> routeCandidates(String referenceUrl,int scope,SourceProfile profile){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);byte learnedUa=profile==null?UA_UNKNOWN:profile.learnedUa(scope);List<String> origins=randomizedRouteOrigins(referenceUrl,learnedOrigin);if(scope==UA_SCOPE_DIRECT)for(RouteCandidate route:learnedDirectRoutes(referenceUrl,profile))values.putIfAbsent(route.key(),route);else if(!learnedOrigin.isEmpty()&&learnedUa!=UA_UNKNOWN)try{RouteCandidate route=new RouteCandidate(routeTarget(learnedOrigin,referenceUrl),learnedOrigin,learnedUa,scope);values.put(route.key(),route);}catch(Exception ignored){}byte[] uas=learnedFirstUaCandidates(scope,learnedUa);if(uas.length>0&&!origins.isEmpty())for(int round=0;round<origins.size();round++)for(int slot=0;slot<uas.length;slot++){byte ua=uas[slot];String origin=origins.get((round+slot)%origins.size());try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}return new ArrayList<>(values.values());}
+        private static List<RouteCandidate> routeCandidates(String referenceUrl,int scope,SourceProfile profile){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);byte learnedUa=profile==null?UA_UNKNOWN:profile.learnedUa(scope);List<String> origins=randomizedRouteOrigins(referenceUrl,learnedOrigin);if(scope==UA_SCOPE_DIRECT)for(RouteCandidate route:learnedDirectRoutes(referenceUrl,profile))values.putIfAbsent(route.key(),route);else if(!learnedOrigin.isEmpty()&&learnedUa!=UA_UNKNOWN)try{RouteCandidate route=new RouteCandidate(routeTarget(learnedOrigin,referenceUrl),learnedOrigin,learnedUa,scope);values.put(route.key(),route);}catch(Exception ignored){}byte[] uas=learnedFirstUaCandidates(scope,learnedUa);if(uas.length>0&&!origins.isEmpty()){int primaryUaCount=Math.max(1,Math.min(uas.length,(int)Math.ceil(Math.sqrt((double)uas.length))));for(String origin:origins)for(int slot=0;slot<primaryUaCount;slot++){byte ua=uas[slot];try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}for(String origin:origins)for(int slot=primaryUaCount;slot<uas.length;slot++){byte ua=uas[slot];try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}}return new ArrayList<>(values.values());}
 
   private static List<RouteCandidate> routeCandidatesForUa(String referenceUrl,int scope,SourceProfile profile,byte ua){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);for(String origin:randomizedRouteOrigins(referenceUrl,learnedOrigin))try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}return new ArrayList<>(values.values());}
     private static RouteCandidate learnedRoute(String referenceUrl,int scope,SourceProfile profile){if(profile==null)return null;String origin=profile.learnedOrigin(scope);byte ua=profile.learnedUa(scope);if(origin.isEmpty()||ua==UA_UNKNOWN)return null;try{return new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);}catch(Exception ignored){return null;}}
     private static List<RouteCandidate> routesAfter(List<RouteCandidate> routes,RouteCandidate used){if(used==null)return routes;List<RouteCandidate> out=new ArrayList<>(routes.size());for(RouteCandidate route:routes)if(!route.key().equals(used.key()))out.add(route);return out;}
     private static List<RouteCandidate> capabilityFallbackRoutesForUa(String referenceUrl,int scope,byte ua,RouteCandidate used){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();for(String normalized:randomizedRouteOrigins(referenceUrl,"")){if(normalized.isEmpty())continue;try{RouteCandidate route=new RouteCandidate(routeTarget(normalized,referenceUrl),normalized,ua,scope);if(used==null||!route.key().equals(used.key()))values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}return new ArrayList<>(values.values());}
-    private static RouteCandidate directFastRoute(List<RouteCandidate> routes,RouteCandidate learned){if(learned==null||routes==null||routes.isEmpty())return null;Long order=DIRECT_ROUTE_PREFERENCE.get();if(order==null||order==0L){for(RouteCandidate route:routes)if(route.key().equals(learned.key()))return route;return learned;}return routes.get((int)Math.floorMod(order,(long)routes.size()));}
+    private static RouteCandidate directFastRoute(List<RouteCandidate> routes,RouteCandidate learned,SourceProfile profile){if(learned==null||routes==null||routes.isEmpty())return null;List<RouteCandidate> verified=new ArrayList<>();LinkedHashMap<String,Byte> good=profile==null?new LinkedHashMap<>():profile.directRoutes();for(RouteCandidate route:routes){Byte ua=good.get(route.origin);if(ua!=null&&ua.byteValue()==route.ua)verified.add(route);}if(verified.isEmpty())for(RouteCandidate route:routes)if(route.key().equals(learned.key())){verified.add(route);break;}if(verified.isEmpty())verified.add(learned);Long order=DIRECT_ROUTE_PREFERENCE.get();if(order==null||order==0L)return verified.get(0);return verified.get((int)Math.floorMod(order,(long)verified.size()));}
 
         private static long routeAttemptDeadline(long outerDeadline){long now=System.nanoTime(),perRoute=now+TimeUnit.MILLISECONDS.toNanos(METADATA_BROWSE_TIMEOUT_MS);if(outerDeadline==NO_DEADLINE||outerDeadline<=now)return perRoute;return Math.min(outerDeadline,perRoute);}
     /** Search keeps per-source latency flat: bound the origin/UA fan-out instead of replaying the whole pool per source. */
@@ -151,7 +201,7 @@ final class LanzouCore {
     private static int searchRouteChallengeLimit(){int processors=Math.max(1,Runtime.getRuntime().availableProcessors());return Math.max(1,Math.min(3,processors/4));}
     private static long searchRouteTimeoutMillis(){int workers=Math.max(1,adaptiveNetworkWorkers(Integer.MAX_VALUE));return Math.max(1200L,Math.min(METADATA_BROWSE_TIMEOUT_MS,600L+workers*20L));}
     private static long searchRouteDeadline(long outerDeadline){long now=System.nanoTime(),perRoute=now+TimeUnit.MILLISECONDS.toNanos(searchRouteTimeoutMillis());if(outerDeadline==NO_DEADLINE||outerDeadline<=now)return perRoute;return Math.min(outerDeadline,perRoute);}
-  private static long directLearnedRouteDeadline(long outerDeadline){long now=System.nanoTime(),fast=now+TimeUnit.MILLISECONDS.toNanos(450L);if(outerDeadline==NO_DEADLINE||outerDeadline<=now)return fast;return Math.min(outerDeadline,fast);}
+  private static long directLearnedRouteDeadline(long outerDeadline){int workers=Math.max(1,adaptiveNetworkWorkers(Integer.MAX_VALUE));long timeout=Math.max(900L,Math.min(1600L,450L+workers*10L)),now=System.nanoTime(),fast=now+TimeUnit.MILLISECONDS.toNanos(timeout);if(outerDeadline==NO_DEADLINE||outerDeadline<=now)return fast;return Math.min(outerDeadline,fast);}
   private static final int RULE_LIMIT=512*1024;
   private static final Pattern ICON_DATE=Pattern.compile("(?:^|/)(\\d{4})/(\\d{2})/(\\d{2})(?:/|$)");
   private static final Pattern INVALID_FILE_NAME=Pattern.compile("[\\\\/:*?\"<>|]");
@@ -318,11 +368,11 @@ final class LanzouCore {
       if(interrupted)throw new InterruptedException();synchronized(resultLock){return new ArrayList<>(out);}
     }
         private boolean stopped(SourceSearchState state){return cancelled||closed.get()||!state.active||isSearchCancelled(progress);}
-            private int activeLimitLocked(){return Math.max(1,adaptiveSourceWorkers(options.concurrency,total));}
+            private int activeLimitLocked(){return Math.max(1,adaptiveSearchActiveWorkers(options.concurrency,total));}
         private int httpLimitLocked(){return adaptiveNetworkWorkers(Math.max(1,activeLimitLocked()+matchedCompositeLeafCount));}
                         private int activeCeilingLocked(){int activeLimit=activeLimitLocked();return activeLimit;}
         private int readyLimitLocked(){return Math.max(1,Math.min(activeLimitLocked(),httpLimitLocked()));}
-                private void refillActiveLocked(){if(paused)return;String current="";boolean changed=false;int activeCeiling=activeCeilingLocked(),readyLimit=readyLimitLocked(),runnable=runningHttp+apiReady.size()+directoryReady.size();while(!cancelled&&active<activeCeiling&&runnable<readyLimit&&!waitingGroups.isEmpty()){String key=waitingGroups.removeFirst();if(activeGroups.contains(key)||remaining.getOrDefault(key,0)<=0)continue;List<SourceSearchState> members=groups.get(key);if(members==null||members.isEmpty())continue;activeGroups.add(key);active++;changed=true;current=members.get(0).source.title;for(SourceSearchState state:members){if(state.terminal)continue;state.active=true;emitLocalLocked(state);if(state.folder==null&&!state.dirDone)startNextFolderLocked(state);queueApiLocked(state);queueDirectoryLocked(state);finishSourceLocked(state,false);}scheduleRotationLocked(key);runnable=runningHttp+apiReady.size()+directoryReady.size();}if(changed)publishActivityLocked(current);}
+                                private void refillActiveLocked(){if(paused)return;String current="";boolean changed=false;int activeCeiling=activeCeilingLocked();while(!cancelled&&active<activeCeiling&&!waitingGroups.isEmpty()){String key=waitingGroups.removeFirst();if(activeGroups.contains(key)||remaining.getOrDefault(key,0)<=0)continue;List<SourceSearchState> members=groups.get(key);if(members==null||members.isEmpty())continue;activeGroups.add(key);active++;changed=true;current=members.get(0).source.title;for(SourceSearchState state:members){if(state.terminal)continue;state.active=true;emitLocalLocked(state);if(state.folder==null&&!state.dirDone)startNextFolderLocked(state);queueApiLocked(state);queueDirectoryLocked(state);finishSourceLocked(state,false);}scheduleRotationLocked(key);}if(changed)publishActivityLocked(current);}
     private void emitLocalLocked(SourceSearchState state){if(state.localEmitted)return;state.localEmitted=true;List<Models.Item> batch=new ArrayList<>();synchronized(state.merged){for(Models.Item item:state.local){item.source=state.displaySource;if(matches(item,state.foldedNeedle,options.fuzzyMatching)){Models.Item previous=state.merged.putIfAbsent(item.url,item);if(previous==null)batch.add(item);else mergeLiveItemMetadata(previous,item);}}}publishBatch(state,batch);}
         private void startNextFolderLocked(SourceSearchState state){if(state.folder!=null||state.dirDone)return;if(state.folders.isEmpty()){state.dirDone=true;publishWorkProgressLocked(state);finishSourceLocked(state,false);return;}state.folder=state.folders.removeFirst();state.directorySession=null;SourceProfile profile=sourceProfile(state.folder.url);state.directoryUa=firstCapableUaCandidate(UA_SCOPE_DIRECTORY_SEARCH,profile.directoryUa,profile.directorySeen,profile.directoryAvailable);state.page=1;state.folderApiPage=0;state.firstApiFolderCount=0;state.replayed=false;state.pageFingerprints.clear();state.dirReady=true;}
     private void queueApiLocked(SourceSearchState state){if(state.active&&!state.terminal&&!state.apiDone&&!state.apiQueued&&!state.apiInFlight){state.apiQueued=true;apiReady.addLast(state);}}
@@ -372,17 +422,17 @@ final class LanzouCore {
   DirectLink resolveDirect(String shareUrl)throws Exception{return resolveDirect(shareUrl,"");}
   DirectLink resolveDirectBalanced(String shareUrl,String password,long routePreference)throws Exception{Long previous=DIRECT_ROUTE_PREFERENCE.get();DIRECT_ROUTE_PREFERENCE.set(routePreference);try{return resolveDirect(shareUrl,password);}finally{if(previous==null)DIRECT_ROUTE_PREFERENCE.remove();else DIRECT_ROUTE_PREFERENCE.set(previous);}}
   DirectLink resolveDirect(String shareUrl,String password)throws Exception{
-                        String pwd=password==null?"":password.trim();if(pwd.length()>64||containsControl(pwd))throw new DirectPasswordException("密码格式无效");long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DIRECT_RESOLVE_TIMEOUT_MS);SourceProfile profile=directRouteProfile(shareUrl);List<RouteCandidate> routes=routeCandidates(shareUrl,UA_SCOPE_DIRECT,profile);if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");Set<String> attempted=ConcurrentHashMap.newKeySet();RouteCandidate learned=learnedRoute(shareUrl,UA_SCOPE_DIRECT,profile),fast=directFastRoute(routes,learned);
+                        String pwd=password==null?"":password.trim();if(pwd.length()>64||containsControl(pwd))throw new DirectPasswordException("密码格式无效");long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DIRECT_RESOLVE_TIMEOUT_MS);SourceProfile profile=directRouteProfile(shareUrl);List<RouteCandidate> routes=routeCandidates(shareUrl,UA_SCOPE_DIRECT,profile);if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");Set<String> attempted=ConcurrentHashMap.newKeySet();RouteCandidate learned=learnedRoute(shareUrl,UA_SCOPE_DIRECT,profile),fast=directFastRoute(routes,learned,profile);
 
 
-        if(fast!=null)try{DirectLink value=resolveDirectRoute(shareUrl,pwd,fast,directLearnedRouteDeadline(deadline),attempted);profile.observeRoute(UA_SCOPE_DIRECT,fast.origin,fast.ua);observeRouteSuccess();return value;}catch(Exception error){if(error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error))throw error;observeRouteFailure(error);routes=routesAfter(routes,fast);if(routes.isEmpty())throw error;}
-                RouteOutcome<DirectLink> outcome=raceRoutes(routes,route->resolveDirectRoute(shareUrl,pwd,route,routeAttemptDeadline(deadline),attempted),value->true,error->error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error));profile.observeRoute(UA_SCOPE_DIRECT,outcome.route.origin,outcome.route.ua);return outcome.value;
+        if(fast!=null)try{DirectLink value=resolveDirectRoute(shareUrl,pwd,fast,directLearnedRouteDeadline(deadline),attempted);profile.observeRoute(UA_SCOPE_DIRECT,fast.origin,fast.ua);observeRouteSuccess();return value;}catch(Exception error){if(error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error))throw error;if(routePressureError(error))observeRouteFailure(error);routes=routesAfter(routes,fast);if(routes.isEmpty())throw error;}
+                RouteOutcome<DirectLink> outcome=raceRoutes(routes,route->resolveDirectRoute(shareUrl,pwd,route,directLearnedRouteDeadline(deadline),attempted),value->true,error->error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error));profile.observeRoute(UA_SCOPE_DIRECT,outcome.route.origin,outcome.route.ua);return outcome.value;
     
     
   }
 
   private DirectLink resolveDirectRoute(String logicalShareUrl,String password,RouteCandidate route,long deadline,Set<String> attempted)throws Exception{
-    directRemainingMillis(deadline);long now=System.currentTimeMillis();DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now,route.ua&0xff);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,route.ua,deadline);try{DirectLink direct=resolveDirectWithSession(logicalShareUrl,route.url,password,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;}catch(Exception error){DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());throw error;}
+    directRemainingMillis(deadline);long now=System.currentTimeMillis();DirectCookiePool.Lease lease=directCookiePool.acquire(attempted,now,route.ua&0xff);attempted.add(lease.id);NetSession session=new NetSession(lease.jar,route.ua,deadline);try{DirectLink direct=resolveDirectWithSession(logicalShareUrl,route.url,password,session);directCookiePool.finish(lease,session.snapshot(),true,false,0,System.currentTimeMillis());return direct;}catch(Exception error){DirectRetryException retry=directRetry(error);directCookiePool.finish(lease,session.snapshot(),false,retry!=null&&retry.rateLimited,retry==null?0:retry.retryAfterMs,System.currentTimeMillis());if(userVerificationRequired(error)!=null||routePressureError(error))markChallengedOrigin(route.origin);throw error;}
   }
     static long directRetryDelay(Throwable error,int failures){if(error==null||failures>=3||error instanceof DirectPasswordException||terminalDirectFailure(error))return 0;DirectRetryException retry=directRetry(error);if(retry!=null)return retry.rateLimited?Math.max(600L,Math.min(3000L,retry.retryAfterMs)):Math.max(180L,Math.min(900L,retry.retryAfterMs));for(Throwable value=error;value!=null;value=value.getCause())if(value instanceof SocketTimeoutException||value instanceof ConnectException||value instanceof SocketException||value instanceof UnknownHostException)return failures==1?180L:420L;String message=String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);return message.contains("timeout")||message.contains("超时")||message.contains("reset")||message.contains("网络")?failures==1?180L:420L:0;}
   private static int directRemainingMillis(long deadline)throws SocketTimeoutException{long nanos=deadline-System.nanoTime();if(nanos<=0)throw new SocketTimeoutException("直链解析超时");return(int)Math.min(Integer.MAX_VALUE,Math.max(1L,TimeUnit.NANOSECONDS.toMillis(nanos)));}
@@ -401,40 +451,39 @@ final class LanzouCore {
         String transfer=directTransferHref(share.html);        DirectLink page=share;
         if(!transfer.isEmpty())page=session.getGuarded(new URL(new URL(share.url),transfer).toString(),share.url);
 
-        String base=cap(page.html,"vkjxld\\s*=\\s*['\"]([^'\"]+)['\"]");
-        String token=cap(page.html,"hyggid\\s*=\\s*['\"]([^'\"]+)['\"]");
-        if(!base.isEmpty()&&!token.isEmpty()){
-          // vkjxld + hyggid is only a bootstrap page.  It deliberately waits before
-          // allowing ajax.php to exchange file/sign for the actual CDN URL.
-          String[] candidates={base+token+"&lanosso2",base+token};
+        List<String> bootstrapBases=directJsStringValues(page.html,"vkjxld"),bootstrapTokens=directJsStringValues(page.html,"hyggid");
+        if(!bootstrapBases.isEmpty()&&!bootstrapTokens.isEmpty()){
+          LinkedHashSet<String> candidates=new LinkedHashSet<>();
+          for(int baseIndex=bootstrapBases.size()-1;baseIndex>=0;baseIndex--){String base=bootstrapBases.get(baseIndex);for(String token:bootstrapTokens){candidates.add(base+token+"&lanosso2");candidates.add(base+token);}}
+          Exception bootstrapError=null;
           for(String bootstrap:candidates){
-            DirectLink verify=session.getBootstrap(bootstrap,page.url);
-                        if(verify.redirected&&verify.url!=null&&verify.url.startsWith("http"))return direct(verify.url,fileTitle);
-            String immediate=directBootstrapHref(verify.html,verify.url);if(!immediate.isEmpty())return direct(immediate,fileTitle);
-
-            String file=cap(verify.html,"['\"]file['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");
-            String sign=cap(verify.html,"['\"]sign['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");
-            if(file.isEmpty()||sign.isEmpty())continue;
-            String ajax=cap(verify.html,"url\\s*:\\s*['\"]([^'\"]*ajax\\.php[^'\"]*)['\"]");
-            if(ajax.isEmpty())ajax="ajax.php";
-            Map<String,String> form=new LinkedHashMap<>();
-            form.put("file",file);form.put("el","2");form.put("sign",sign);
-            String endpoint=new URL(new URL(verify.url),ajax).toString();
-            boolean pending=false;
-            for(int exchange=0;exchange<3;exchange++){
-              if(exchange>0)session.sleep(DIRECT_RETRY_WAIT_MS);
-              JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectPasswordResult(data);
-              String direct=data.optString("url").trim();
-              String directLower=direct.toLowerCase(Locale.ROOT);
-              if(direct.startsWith("?")||directLower.contains("signerror")||direct.contains("验证码错误")){pending=true;continue;}
-              if(data.optInt("zt")==1){
-                if(direct.startsWith("http"))return direct(direct,fileTitle);
+            try{
+              DirectLink verify=session.getBootstrap(bootstrap,page.url);
+              if(verify.redirected&&verify.url!=null&&verify.url.startsWith("http"))return direct(verify.url,fileTitle);
+              String immediate=directBootstrapHref(verify.html,verify.url);if(!immediate.isEmpty())return direct(immediate,fileTitle);
+              String file=cap(verify.html,"['\"]file['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");
+              String sign=cap(verify.html,"['\"]sign['\"]\\s*:\\s*['\"]([^'\"]+)['\"]");
+              if(file.isEmpty()||sign.isEmpty())continue;
+              String ajax=cap(verify.html,"url\\s*:\\s*['\"]([^'\"]*ajax\\.php[^'\"]*)['\"]");
+              if(ajax.isEmpty())ajax="ajax.php";
+              Map<String,String> form=new LinkedHashMap<>();
+              form.put("file",file);form.put("el","2");form.put("sign",sign);
+              String endpoint=new URL(new URL(verify.url),ajax).toString();
+              boolean pending=false;
+              for(int exchange=0;exchange<3;exchange++){
+                if(exchange>0)session.sleep(DIRECT_RETRY_WAIT_MS);
+                JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectPasswordResult(data);
+                String direct=data.optString("url").trim();
+                String directLower=direct.toLowerCase(Locale.ROOT);
+                if(direct.startsWith("?")||directLower.contains("signerror")||direct.contains("验证码错误")){pending=true;continue;}
+                if(data.optInt("zt")==1&&direct.startsWith("http"))return direct(direct,fileTitle);
+                if(!directExchangePending(data))throw new IOException(firstNonEmpty(data.optString("inf"),direct,"蓝奏验证失败"));
+                pending=true;
               }
-              if(!directExchangePending(data))throw new IOException(firstNonEmpty(data.optString("inf"),direct,"蓝奏验证失败"));
-              pending=true;
-            }
-            if(pending)continue;
+              if(pending)continue;
+            }catch(InterruptedException interrupted){throw interrupted;}catch(Exception error){bootstrapError=error;directRemainingMillis(session.deadline);}
           }
+          if(bootstrapError!=null)throw bootstrapError;
           throw new DirectRetryException("蓝奏验证未返回真实直链",3000,false);
         }
 
@@ -465,7 +514,8 @@ final class LanzouCore {
   }
 
 
-    private static String directTransferHref(String html){String transfer=cap(html,"(?is)<a(?=[^>]*id=[\"']downurl[\"'])(?=[^>]*href=[\"']([^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a(?=[^>]*href=[\"']([^\"']+)[\"'])(?=[^>]*id=[\"']downurl[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a[^>]+href=[\"']([^\"']*/tp/[^\"']+)");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe(?=[^>]*class=[\"'][^\"']*n_downlink[^\"']*[\"'])(?=[^>]*src=[\"']([^\"']*/?fn[?][^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe[^>]+src=[\"']([^\"']*/?fn[?][^\"']+)[\"']");return transfer;}
+        private static String directTransferHref(String html){String transfer=cap(html,"(?is)<a(?=[^>]*id=[\"']downurl[\"'])(?=[^>]*href=[\"']([^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a(?=[^>]*href=[\"']([^\"']+)[\"'])(?=[^>]*id=[\"']downurl[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<a[^>]+href=[\"']([^\"']*/tp/[^\"']+)");if(transfer.isEmpty())transfer=cap(html,"(?is)(?:[A-Za-z_$][A-Za-z0-9_$]*|document\\.getElementById\\([^)]*\\))\\.href\\s*=\\s*[\"']([^\"']*/tp/[^\"']+)[\"']");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe(?=[^>]*class=[\"'][^\"']*n_downlink[^\"']*[\"'])(?=[^>]*src=[\"']([^\"']*/?fn[?][^\"']+)[\"'])[^>]*>");if(transfer.isEmpty())transfer=cap(html,"(?is)<iframe[^>]+src=[\"']([^\"']*/?fn[?][^\"']+)[\"']");return transfer;}
+    private static List<String> directJsStringValues(String html,String name){LinkedHashSet<String> values=new LinkedHashSet<>();String source=html==null?"":html;Matcher matcher=parsePattern("(?is)(?:var|let|const)?\\s*"+Pattern.quote(name)+"\\s*=\\s*[\"']([^\"']+)[\"']").matcher(source);while(matcher.find()){String value=matcher.group(1).trim();if(!value.isEmpty())values.add(value);}return new ArrayList<>(values);}
   private static String directBootstrapHref(String html,String pageUrl){String raw=cap(html,"(?is)<a(?=[^>]*id=[\"']ding[\"'])(?=[^>]*href=[\"']([^\"']+)[\"'])[^>]*>");if(raw.isEmpty())raw=cap(html,"(?is)window\\.location\\.href\\s*=\\s*[\"'](https?://[^\"']+)[\"']");if(raw.isEmpty())return"";try{URL url=pageUrl==null||pageUrl.isEmpty()?new URL(raw):new URL(new URL(pageUrl),raw);String protocol=url.getProtocol();return protocol.equalsIgnoreCase("http")||protocol.equalsIgnoreCase("https")?url.toString():"";}catch(Exception ignored){return"";}}
 
   private static boolean directShareNeedsLanzouxMirror(String html){String value=html==null?"":html.toLowerCase(Locale.ROOT);if(value.contains("acw_sc__v2")||value.contains("aliyun_waf_")||value.contains("captchav2"))return true;return directTransferHref(html).isEmpty()&&value.contains("<html")&&!value.contains("ajaxm.php")&&!value.contains("downprocess");}
@@ -551,9 +601,9 @@ final class LanzouCore {
     private void applyTimeouts(HttpURLConnection connection)throws SocketTimeoutException{if(deadline==NO_DEADLINE){connection.setConnectTimeout(15000);connection.setReadTimeout(30000);return;}int remaining=directRemainingMillis(deadline);int connect=Math.max(1,Math.min(4000,remaining/3));int read=Math.max(1,Math.min(8000,remaining-connect));connection.setConnectTimeout(connect);connection.setReadTimeout(read);}
     private String readBody(HttpURLConnection connection,int status)throws Exception{InputStream raw=status<400?connection.getInputStream():connection.getErrorStream();if(raw==null)return"";try(InputStream input=decodedResponseStream(connection,raw)){ByteArrayOutputStream output=new ByteArrayOutputStream();byte[] buffer=new byte[8192];while(true){if(deadline!=NO_DEADLINE)connection.setReadTimeout(Math.max(1,Math.min(2000,directRemainingMillis(deadline))));int count=input.read(buffer);if(count<0)break;if(count==0)continue;if(output.size()+count>2*1024*1024)throw new IOException("蓝奏响应过大");output.write(buffer,0,count);}return output.toString("UTF-8");}}
     private LinkedHashMap<String,String> bucket(String host){LinkedHashMap<String,String> values=jar.get(host);if(values==null){values=new LinkedHashMap<>();jar.put(host,values);}return values;}
-    private void capture(HttpURLConnection c){mergeSetCookies(bucket(c.getURL().getHost()),c.getHeaderFields());}
+        private void capture(HttpURLConnection c){LinkedHashMap<String,String> values=bucket(c.getURL().getHost());mergeSetCookies(values,c.getHeaderFields());rememberSolvedAcwCookies(c.getURL().toString(),cookieHeader(values));}
     private void put(String host,String name,String value){bucket(host).put(name,value);}
-        private String cookies(String host){Map<String,String> values=jar.get(host);String local=values==null?"":cookieHeader(values);String verified=verificationCookieForHost(host);return mergeCookieHeaders(local,verified);}
+                private String cookies(String host){Map<String,String> values=jar.get(host);String local=values==null?"":cookieHeader(values);String verified=verificationCookieForHost(host),solved=solvedAcwCookieForHost(host);return mergeCookieHeaders(mergeCookieHeaders(local,verified),solved);}
 
   }
 
@@ -915,7 +965,7 @@ final class LanzouCore {
   
 
   static int adaptiveRequestedWorkers(int requested,int taskCount){if(taskCount<=0)return 0;int demand=requested<=0?taskCount:Math.min(Math.max(1,requested),taskCount);return Math.max(1,Math.min(demand,adaptiveNetworkWorkers(demand)));}
-                        static int adaptiveSourceWorkers(int requested,int taskCount){if(taskCount<=0)return 0;int demand=requested<=0?taskCount:Math.min(Math.max(1,requested),taskCount);return Math.max(1,Math.min(demand,adaptiveNetworkWorkers(demand)));}
+                            static int adaptiveSearchActiveWorkers(int requested,int taskCount){if(taskCount<=0)return 0;int demand=requested<=0?taskCount:Math.min(Math.max(1,requested),taskCount);Runtime runtime=Runtime.getRuntime();int processors=Math.max(1,runtime.availableProcessors());long maxBytes=Math.max(1L,runtime.maxMemory()),usedBytes=Math.max(0L,runtime.totalMemory()-runtime.freeMemory()),headroomBytes=Math.max(1L,maxBytes-usedBytes),maxMiB=Math.max(1L,maxBytes/(1024L*1024L));double heapRatio=Math.min(1d,(double)headroomBytes/(double)maxBytes),healthFactor=Math.sqrt(0.75d+0.25d*heapRatio);long logicalUnitBytes=Math.max(1L,NETWORK_WORKER_STACK_BYTES/4L),memoryBudget=Math.max(1L,maxBytes/logicalUnitBytes),cpuBudget=Math.max(1L,(long)Math.ceil(processors*(processors+Math.sqrt((double)maxMiB))));long capacity=Math.max(1L,(long)Math.floor(Math.min(memoryBudget,cpuBudget)*healthFactor));return Math.max(1,Math.min(demand,(int)Math.min((long)Integer.MAX_VALUE,capacity)));}  static int adaptiveSourceWorkers(int requested,int taskCount){if(taskCount<=0)return 0;int demand=requested<=0?taskCount:Math.min(Math.max(1,requested),taskCount);return Math.max(1,Math.min(demand,adaptiveNetworkWorkers(demand)));}
     private static Exception preferredRouteError(List<Exception> errors){if(allShareCancelled(errors))return new ShareCancelledException();for(Exception error:errors)if(error instanceof UserVerificationRequiredException)return error;for(Exception error:errors)if(error instanceof DirectPasswordException)return error;for(int i=errors.size()-1;i>=0;i--)if(!(errors.get(i) instanceof ShareCancelledException))return errors.get(i);return new IOException("蓝奏线路暂不可用");}
 
       private static int adaptiveRouteWorkers(List<RouteCandidate> routes){if(routes==null||routes.isEmpty())return 0;Set<String> origins=new HashSet<>();Set<Byte> uas=new HashSet<>();for(RouteCandidate route:routes){origins.add(route.origin);uas.add(route.ua);}int independent=Math.max(1,Math.min(routes.size(),Math.min(origins.size(),uas.size())));return Math.max(1,Math.min(independent,adaptiveSourceWorkers(0,independent)));}
@@ -946,7 +996,7 @@ final class LanzouCore {
       while(next<routes.size()&&running<limit){RouteCandidate route=routes.get(next++);futures.add(completed.submit(()->attemptRoute(route,attempt,tracker)));running++;}
       while(running>0){
         RouteOutcome<T> outcome=completed.take().get();running--;
-        if(outcome.error!=null){errors.add(outcome.error);observeRouteFailure(outcome.error);if(terminal!=null&&terminal.terminal(outcome.error))throw outcome.error;}
+        if(outcome.error!=null){errors.add(outcome.error);if(routePressureError(outcome.error))observeRouteFailure(outcome.error);if(terminal!=null&&terminal.terminal(outcome.error))throw outcome.error;}
         else if(outcome.value!=null){if(acceptance==null||acceptance.accept(outcome.value)){observeRouteSuccess();return outcome;}if(fallback==null)fallback=outcome;}
         if(next<routes.size()){RouteCandidate route=routes.get(next++);futures.add(completed.submit(()->attemptRoute(route,attempt,tracker)));running++;}
       }
@@ -1679,6 +1729,7 @@ final class LanzouCore {
   private static DirectLink cachedBrowserPage(String url,String userAgent){DirectLink cached=BROWSER_PAGE_CACHE.get(browserCacheKey(url,userAgent));return cached!=null&&System.currentTimeMillis()-cached.createdAt<SESSION_TTL_MS&&browserUseful(cached)?copyPage(cached):null;}
   private static DirectLink renderedPageIfUseful(DirectLink nativePage,String requestUrl,String requestCookie,long deadline,String userAgent)throws Exception{
     if(browserUseful(nativePage))return nativePage;
+    if(!configuredWebViewFallbackEnabled)return nativePage;
     String url=requestUrl==null||requestUrl.trim().isEmpty()?nativePage==null?"":nativePage.url:requestUrl.trim();
     String[] candidates=browserFallbackUserAgents(userAgent);
     for(String candidate:candidates){DirectLink cached=cachedBrowserPage(url,candidate);if(cached!=null)return cached;}

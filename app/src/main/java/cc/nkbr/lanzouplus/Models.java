@@ -111,7 +111,7 @@ final class Models {
   }
   interface Progress {
     void onProgress(int done,int total,int found,String current);
-    /** Logical sources currently scheduled; independent from the bounded HTTP worker count. */
+        /** Actual in-flight HTTP work; source prefetch/queue depth is intentionally not reported as concurrency. */
     default void onActivity(int active,int total,String current) {}
     /** Completed API/directory work units; used for smooth progress without redefining source completion. */
     default void onWorkProgress(int doneUnits,int totalUnits) {}
@@ -130,6 +130,8 @@ final class Models {
     default boolean awaitIfPaused(){return !isCancelled();}
     default void onFailure(String current) {}
     default void onFailure(String sourceId,String current,String reason) { onFailure(current); }
+        /** Full directory-page contents observed during foreground search; callers should persist them asynchronously. */
+    default void onIndexBatch(List<Item> items) {}
     /** A full directory scan for this logical source completed and may advance the persisted index region. */
     default void onIndexSource(String sourceId,String current) {}
   }

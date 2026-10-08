@@ -10,7 +10,7 @@ import org.json.*;
 final class UpdateClient {
   static final String ASSET_NAME="LanzouPlus.apk";
   private static final String GITHUB_LATEST="https://api.github.com/repos/nekobyran/lanzouplus/releases/latest";
-  private static final String SITE_LATEST="https://lanzouplus.nkbr.cc/latest.json";
+    private static final String SITE_LATEST="https://lanzouplus.nkbr.cc/api/release";
   private static final int JSON_LIMIT=256*1024;
   private static final String[] GITHUB_MIRROR_PREFIXES={"https://gh.llkk.cc/","https://gh-proxy.com/","https://ghfast.top/"};
   private static final Set<String> GITHUB_MIRROR_HOSTS=new HashSet<>(Arrays.asList("gh.llkk.cc","gh-proxy.com","ghfast.top"));
@@ -28,7 +28,7 @@ final class UpdateClient {
     String fallbackUrl(){return downloadUrls.length>1?downloadUrls[1]:"";}
     String fallbackUrl(String current){
       if(current==null)current="";
-      for(String candidate:downloadUrls)if(!candidate.equals(current))return candidate;
+            for(int i=0;i<downloadUrls.length-1;i++)if(downloadUrls[i].equals(current))return downloadUrls[i+1];
       return "";
     }
   }
@@ -37,14 +37,33 @@ final class UpdateClient {
     long[] current=parseVersion(currentVersion);
     boolean preferMirror=preferMirrorForLocale();
     String[] endpoints=preferMirror?new String[]{SITE_LATEST,GITHUB_LATEST}:new String[]{GITHUB_LATEST,SITE_LATEST};
-    IOException first=null;UpdateInfo found=null;
+        IOException first=null;UpdateInfo found=null;boolean checked=false;
     for(String endpoint:endpoints)try{
-      UpdateInfo info=parse(fetch(endpoint),current,SITE_LATEST.equals(endpoint),preferMirror,ASSET_NAME);
-      if(info!=null&&(found==null||compare(parseVersion(info.version),parseVersion(found.version))>0))found=info;
+      JSONObject data=fetch(endpoint);
+      UpdateInfo info=SITE_LATEST.equals(endpoint)?parseSiteRelease(data,current,preferMirror):parse(data,current,false,preferMirror,ASSET_NAME);
+      checked=true;
+      if(info!=null&&(found==null||compare(parseVersion(info.version),parseVersion(found.version))>0||(info.version.equals(found.version)&&found.body.isEmpty()&&!info.body.isEmpty())))found=info;
     }catch(IOException error){if(first==null)first=error;}
     if(found!=null)return found;
-    if(first!=null)throw first;
+    if(!checked&&first!=null)throw first;
     return null;
+  }
+
+    static UpdateInfo parseSiteRelease(JSONObject data,long[] current,boolean preferMirror)throws IOException{
+    if(!data.optBoolean("ok"))throw new IOException("官网更新接口不可用");
+    String tag=data.optString("tag","").trim();
+    long[] latest=parseVersion(tag);
+    if(compare(latest,current)<=0)return null;
+    JSONObject asset=data.optJSONObject("asset");
+    if(asset==null||!ASSET_NAME.equals(asset.optString("name")))throw new IOException("官网更新信息缺少安装包");
+    long size=asset.optLong("size",-1);
+    if(size<=0)throw new IOException("官网更新安装包大小无效");
+    String github=asset.optString("githubUrl","").trim();
+    requireGithubAsset(github,tag,ASSET_NAME);
+    String mirror="synchronized".equals(data.optString("mirrorStatus"))?asset.optString("mirrorUrl","").trim():"";
+    if(mirror.isEmpty())mirror=githubMirrorAsset(github);
+    requireMirrorAsset(mirror,github,ASSET_NAME);
+    return new UpdateInfo(normalizeVersion(tag),data.optString("releaseNotes","").trim(),github,mirror,size,preferMirror,ASSET_NAME);
   }
 
   static UpdateInfo parse(JSONObject release,long[] current,boolean fromSite,boolean preferMirror,String assetName)throws IOException{
@@ -118,15 +137,17 @@ final class UpdateClient {
   static String githubMirrorAsset(String github){
     String value=github==null?"":github.trim();
     if(value.isEmpty())return "";
-    int index=Math.floorMod(value.hashCode(),GITHUB_MIRROR_PREFIXES.length);
-    return GITHUB_MIRROR_PREFIXES[index]+value;
+        return GITHUB_MIRROR_PREFIXES[0]+value;
   }
 
-  private static String[] orderedDownloadUrls(String github,String mirror,boolean preferMirror){
-    ArrayList<String> urls=new ArrayList<>();
+    private static String[] orderedDownloadUrls(String github,String mirror,boolean preferMirror){
+    LinkedHashSet<String> urls=new LinkedHashSet<>();
+    String asset=github==null?"":github.trim();
     if(preferMirror&&!isBlank(mirror))urls.add(mirror.trim());
-    if(!isBlank(github)&&!urls.contains(github.trim()))urls.add(github.trim());
-    if(!preferMirror&&!isBlank(mirror)&&!urls.contains(mirror.trim()))urls.add(mirror.trim());
+    if(preferMirror&&!asset.isEmpty())for(String prefix:GITHUB_MIRROR_PREFIXES)urls.add(prefix+asset);
+    if(!asset.isEmpty())urls.add(asset);
+    if(!preferMirror&&!isBlank(mirror))urls.add(mirror.trim());
+    if(!preferMirror&&!asset.isEmpty())for(String prefix:GITHUB_MIRROR_PREFIXES)urls.add(prefix+asset);
     return urls.toArray(new String[0]);
   }
   private static boolean isBlank(String value){return value==null||value.trim().isEmpty();}

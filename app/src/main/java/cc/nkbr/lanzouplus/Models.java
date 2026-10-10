@@ -106,7 +106,10 @@ final class Models {
     SearchOptions normalized(){
       long sourceSlice=sourceSwitchDelayMillis==0?0L:Math.max(1000L,Math.min(60000L,sourceSwitchDelayMillis));
       int mask=normalizeModeMask(modeMask);
-      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,Math.min(1000,maxPages))).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching);
+      // maxPages is a caller-supplied, explicit bound. It is never clamped to an
+      // arbitrary ceiling: 0 means "until the last page" and any positive value
+      // is honored exactly as given.
+      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,maxPages)).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching);
     }
   }
   interface Progress {

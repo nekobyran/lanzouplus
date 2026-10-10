@@ -9,6 +9,7 @@ import org.json.*;
 /** Minimal, blocking release client for LanzouPlus. Call check off the UI thread. */
 final class UpdateClient {
   static final String ASSET_NAME="LanzouPlus.apk";
+
   private static final String GITHUB_LATEST="https://api.github.com/repos/nekobyran/lanzouplus/releases/latest";
     private static final String SITE_LATEST="https://lanzouplus.nkbr.cc/api/release";
   private static final int JSON_LIMIT=256*1024;
@@ -28,42 +29,73 @@ final class UpdateClient {
     String fallbackUrl(){return downloadUrls.length>1?downloadUrls[1]:"";}
     String fallbackUrl(String current){
       if(current==null)current="";
-            for(int i=0;i<downloadUrls.length-1;i++)if(downloadUrls[i].equals(current))return downloadUrls[i+1];
+      for(int i=0;i<downloadUrls.length-1;i++)if(downloadUrls[i].equals(current))return downloadUrls[i+1];
       return "";
     }
   }
 
   static UpdateInfo check(String currentVersion)throws IOException{
+    return checkProduct(currentVersion,SITE_LATEST,ASSET_NAME);
+  }
+
+  /**
+   * Shared two-source product check. The official {@code /api/release} endpoint and the GitHub
+   * release are queried concurrently with the existing bounded request timeouts, so one slow or
+   * broken source can never hold back a healthy one. Only valid, parsed versions take part in the
+   * newer-version comparison, and a single-source failure never turns an up-to-date result into an
+   * error. Callers already run this off the UI thread.
+   */
+  static UpdateInfo checkProduct(String currentVersion,String siteLatest,String assetName)throws IOException{
     long[] current=parseVersion(currentVersion);
     boolean preferMirror=preferMirrorForLocale();
-    String[] endpoints=preferMirror?new String[]{SITE_LATEST,GITHUB_LATEST}:new String[]{GITHUB_LATEST,SITE_LATEST};
-        IOException first=null;UpdateInfo found=null;boolean checked=false;
-    for(String endpoint:endpoints)try{
-      JSONObject data=fetch(endpoint);
-      UpdateInfo info=SITE_LATEST.equals(endpoint)?parseSiteRelease(data,current,preferMirror):parse(data,current,false,preferMirror,ASSET_NAME);
-      checked=true;
-      if(info!=null&&(found==null||compare(parseVersion(info.version),parseVersion(found.version))>0||(info.version.equals(found.version)&&found.body.isEmpty()&&!info.body.isEmpty())))found=info;
-    }catch(IOException error){if(first==null)first=error;}
+    String[] endpoints=preferMirror?new String[]{siteLatest,GITHUB_LATEST}:new String[]{GITHUB_LATEST,siteLatest};
+    JSONObject[] data=new JSONObject[endpoints.length];
+    IOException[] errors=new IOException[endpoints.length];
+    Thread[] workers=new Thread[endpoints.length];
+    for(int i=0;i<workers.length;i++){
+      final int index=i;final String endpoint=endpoints[i];
+      workers[i]=new Thread(()->{
+        try{data[index]=fetch(endpoint);}
+        catch(IOException error){errors[index]=error;}
+        catch(RuntimeException error){errors[index]=new IOException("更新请求失败",error);}
+      },"lanzouplus-update-"+index);
+      workers[i].setDaemon(true);
+      workers[i].start();
+    }
+    for(Thread worker:workers){
+      boolean interrupted=false;
+      while(worker.isAlive())try{worker.join();}catch(InterruptedException error){interrupted=true;}
+      if(interrupted)Thread.currentThread().interrupt();
+    }
+    IOException first=null;UpdateInfo found=null;boolean checked=false;
+    for(int i=0;i<endpoints.length;i++){
+      if(data[i]==null){if(errors[i]!=null&&first==null)first=errors[i];continue;}
+      try{
+        UpdateInfo info=siteLatest.equals(endpoints[i])?parseSiteRelease(data[i],current,preferMirror,assetName):parse(data[i],current,false,preferMirror,assetName);
+        checked=true;
+        if(info!=null&&(found==null||compare(parseVersion(info.version),parseVersion(found.version))>0||(info.version.equals(found.version)&&found.body.isEmpty()&&!info.body.isEmpty())))found=info;
+      }catch(IOException error){if(first==null)first=error;}
+    }
     if(found!=null)return found;
     if(!checked&&first!=null)throw first;
     return null;
   }
 
-    static UpdateInfo parseSiteRelease(JSONObject data,long[] current,boolean preferMirror)throws IOException{
+    static UpdateInfo parseSiteRelease(JSONObject data,long[] current,boolean preferMirror,String assetName)throws IOException{
     if(!data.optBoolean("ok"))throw new IOException("官网更新接口不可用");
     String tag=data.optString("tag","").trim();
     long[] latest=parseVersion(tag);
     if(compare(latest,current)<=0)return null;
     JSONObject asset=data.optJSONObject("asset");
-    if(asset==null||!ASSET_NAME.equals(asset.optString("name")))throw new IOException("官网更新信息缺少安装包");
+    if(asset==null||!assetName.equals(asset.optString("name")))throw new IOException("官网更新信息缺少安装包");
     long size=asset.optLong("size",-1);
     if(size<=0)throw new IOException("官网更新安装包大小无效");
     String github=asset.optString("githubUrl","").trim();
-    requireGithubAsset(github,tag,ASSET_NAME);
-    String mirror="synchronized".equals(data.optString("mirrorStatus"))?asset.optString("mirrorUrl","").trim():"";
+    requireGithubAsset(github,tag,assetName);
+    String mirror=("synchronized".equals(data.optString("mirrorStatus"))||"proxy".equals(data.optString("mirrorStatus")))?asset.optString("mirrorUrl","").trim():"";
     if(mirror.isEmpty())mirror=githubMirrorAsset(github);
-    requireMirrorAsset(mirror,github,ASSET_NAME);
-    return new UpdateInfo(normalizeVersion(tag),data.optString("releaseNotes","").trim(),github,mirror,size,preferMirror,ASSET_NAME);
+    requireMirrorAsset(mirror,github,assetName);
+    return new UpdateInfo(normalizeVersion(tag),data.optString("releaseNotes","").trim(),github,mirror,size,preferMirror,assetName);
   }
 
   static UpdateInfo parse(JSONObject release,long[] current,boolean fromSite,boolean preferMirror,String assetName)throws IOException{
@@ -137,7 +169,7 @@ final class UpdateClient {
   static String githubMirrorAsset(String github){
     String value=github==null?"":github.trim();
     if(value.isEmpty())return "";
-        return GITHUB_MIRROR_PREFIXES[0]+value;
+    return GITHUB_MIRROR_PREFIXES[0]+value;
   }
 
     private static String[] orderedDownloadUrls(String github,String mirror,boolean preferMirror){
@@ -165,11 +197,14 @@ final class UpdateClient {
       if(!"https".equalsIgnoreCase(url.getProtocol())||url.getUserInfo()!=null||!defaultHttpsPort(url)||!url.getPath().endsWith('/'+assetName)){
         throw new IOException("镜像安装包地址不受信任");
       }
-      if(host.equals("lanzouplus.nkbr.cc"))return;
+      if(host.equals(officialMirrorHost(assetName)))return;
       if(GITHUB_MIRROR_HOSTS.contains(host)&&!isBlank(github)&&value.contains(github))return;
       throw new IOException("镜像安装包地址不受信任");
     }catch(IOException error){throw error;}catch(Exception error){throw new IOException("镜像安装包地址无效",error);}
   }
+
+  /** The product's own official mirror host only; one product never accepts the other's mirror. */
+  private static String officialMirrorHost(String assetName){return "lanzouplus.nkbr.cc";}
 
   static boolean isAllowedDownloadUrl(URL url){
     if(url==null||!"https".equalsIgnoreCase(url.getProtocol())||url.getUserInfo()!=null||!defaultHttpsPort(url))return false;

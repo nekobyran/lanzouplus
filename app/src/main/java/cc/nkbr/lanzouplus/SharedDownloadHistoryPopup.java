@@ -44,10 +44,6 @@ final class SharedDownloadHistoryPopup {
   static boolean show(Activity host) {
     if (host == null || host.isFinishing()) return false;
     List<DownloadHistoryCenter.Row> initial = DownloadHistoryCenter.rows(host);
-    if (initial.isEmpty()) {
-      Toast.makeText(host, "暂无下载记录", Toast.LENGTH_SHORT).show();
-      return true;
-    }
     int accent = themeColor(host, android.R.attr.colorAccent, 0xff6750a4);
     int text = themeColor(host, android.R.attr.textColorPrimary, Color.DKGRAY);
     int surface = themeColor(host, android.R.attr.colorBackground, Color.WHITE);
@@ -102,6 +98,8 @@ final class SharedDownloadHistoryPopup {
         .setNegativeButton("关闭", null)
         .create();
 
+    dialog.setOwnerActivity(host);
+    HistoryPopupNavigation.attach(host,dialog,panel,HistoryPopupNavigation.DOWNLOADS,accent,text,HistoryPopupNavigation.browserOpener(host));
     Session session = new Session(host, dialog, list, summary, selectAll,
         pauseResume, cancel, retry, deleteRecords, deleteFiles, accent, text, surface, muted, divider);
     session.reload(true);

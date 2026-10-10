@@ -49,10 +49,6 @@ final class SharedBrowserPopup {
     SharedPreferences prefs = host.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     String key = favoritesMode ? FAVORITES : HISTORY;
     List<Entry> entries = read(prefs.getString(key, "[]"));
-    if (entries.isEmpty()) {
-      Toast.makeText(host, favoritesMode ? "暂无网页收藏" : "暂无浏览历史", Toast.LENGTH_SHORT).show();
-      return;
-    }
     int accent = themeColor(host, android.R.attr.colorAccent, 0xff6750a4);
     int text = themeColor(host, android.R.attr.textColorPrimary, Color.DKGRAY);
     int surface = themeColor(host, android.R.attr.colorBackground, Color.WHITE);
@@ -108,6 +104,8 @@ final class SharedBrowserPopup {
         .setNegativeButton("关闭", null)
         .create();
 
+    dialog.setOwnerActivity(host);
+    HistoryPopupNavigation.attach(host,dialog,panel,favoritesMode?HistoryPopupNavigation.FAVORITES:HistoryPopupNavigation.HISTORY,accent,text,openUrl);
     Session session = new Session(host, dialog, list, summary, selectAll, open, star, delete,
         favoritesMode, key, accent, text, muted, openUrl);
     session.reload();
@@ -187,7 +185,7 @@ final class SharedBrowserPopup {
   }
 
   private static void notifyHost(Activity host) {
-    if (host instanceof LanzouWebActivity) ((LanzouWebActivity) host).loadState();
+    if (host instanceof LanzouWebActivity) { ((LanzouWebActivity) host).loadState(); ((LanzouWebActivity) host).updateFavoriteState(); }
   }
 
   /** Mutable presentation state for one popup instance; entries stay in the shared store. */

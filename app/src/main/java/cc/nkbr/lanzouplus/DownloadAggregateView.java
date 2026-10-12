@@ -709,7 +709,7 @@ final class DownloadAggregateView {
     private final LinearLayout stateStrip, typeStrip, list, selectionBar;
     private final LinkedHashSet<String> selected = new LinkedHashSet<>();
     private Item item;
-    private boolean selectionMode;
+    private boolean selectionMode,selectionBarRevealed;
     private String stateFilter = "全部", typeFilter = "全部";
     private java.util.function.Consumer<Item> openBatch;
 

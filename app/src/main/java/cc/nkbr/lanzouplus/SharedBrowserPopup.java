@@ -66,11 +66,12 @@ final class SharedBrowserPopup {
     summary.setMaxLines(1);
     TextView selectAll = SharedPopupSurface.label(host, "多选", 13, theme.accent);
     selectAll.setGravity(Gravity.CENTER);
+    selectAll.setSingleLine(true);
     selectAll.setClickable(true);
     selectAll.setFocusable(true);
     selectAll.setMinWidth(dp(host, 64));
     header.addView(summary, new LinearLayout.LayoutParams(0, dp(host, 44), 1));
-    header.addView(selectAll, new LinearLayout.LayoutParams(dp(host, 76), dp(host, 48)));
+    header.addView(selectAll,new LinearLayout.LayoutParams(Math.max(dp(host,76),(int)Math.ceil(selectAll.getPaint().measureText("退出多选"))+dp(host,12)),dp(host,48)));
     panel.addView(header, new LinearLayout.LayoutParams(-1, dp(host, 48)));
 
     ScrollView scroll = new ScrollView(host);
@@ -104,7 +105,7 @@ final class SharedBrowserPopup {
 
     AlertDialog dialog = new AlertDialog.Builder(host)
         .setTitle("浏览历史")
-        .setView(panel)
+        .setView(SharedPopupSurface.dialogScroll(host,panel,500))
         .setNegativeButton("关闭", null)
         .create();
 
@@ -180,7 +181,7 @@ final class SharedBrowserPopup {
     final Consumer<String> openUrl;
     final List<Entry> entries = new ArrayList<>();
     final LinkedHashSet<String> selected = new LinkedHashSet<>();
-    boolean selectionMode;
+    boolean selectionMode,selectionBarRevealed;
 
     Session(Activity host, AlertDialog dialog, LinearLayout list, TextView summary, TextView selectAll,
         ImageButton open, ImageButton star, ImageButton path, ImageButton delete, LinearLayout actionBar,
@@ -275,6 +276,7 @@ final class SharedBrowserPopup {
     void sync() {
       actionParams.height = selectionMode ? dp(host, 56) : 0;
       actionBar.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
+      if(selectionMode&&!selectionBarRevealed){selectionBarRevealed=true;actionBar.post(()->actionBar.requestRectangleOnScreen(new android.graphics.Rect(0,0,actionBar.getWidth(),actionBar.getHeight()),true));}else if(!selectionMode)selectionBarRevealed=false;
       boolean single = selected.size() == 1, any = !selected.isEmpty();
       SharedPopupSurface.styleButton(open, theme.accent, theme.muted, single);
       SharedPopupSurface.styleButton(star, theme.accent, theme.muted, any);

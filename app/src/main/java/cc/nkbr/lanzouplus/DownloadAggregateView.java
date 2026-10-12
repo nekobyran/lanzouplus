@@ -940,6 +940,7 @@ final class DownloadAggregateView {
       params.height = selectionMode ? rows * dp(BUTTON_HEIGHT_DP) : 0;
       selectionBar.setLayoutParams(params);
       selectionBar.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
+      if(selectionMode&&!selectionBarRevealed){selectionBarRevealed=true;selectionBar.post(()->selectionBar.requestRectangleOnScreen(new android.graphics.Rect(0,0,selectionBar.getWidth(),selectionBar.getHeight()),true));}else if(!selectionMode)selectionBarRevealed=false;
     }
 
     private View recordRow(final Record record,final Item aggregate) {

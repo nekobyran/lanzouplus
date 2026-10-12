@@ -36,6 +36,8 @@ public class PopupRuntime183Test {
     context.getSharedPreferences("user-sources-v1",0).edit().putString("sources",new JSONObject().put("version",2).put("sources",new JSONArray().put(source)).toString()).commit();
     context.getSharedPreferences("source_categories",0).edit().putString("items",new JSONArray().put(new JSONObject().put("name","工具").put("ids",new JSONArray().put("local:composite183"))).toString()).commit();
     context.getSharedPreferences("web-browser-v2",0).edit().clear().putString("history","[{\"t\":\"测试网页\",\"u\":\"https://example.invalid/history183\",\"a\":183}]").commit();
+    context.getSharedPreferences("MainActivity",0).edit().putBoolean("accepted",true).commit();
+    context.getSharedPreferences("LegacyPopup183RuntimeActivity",0).edit().putBoolean("accepted",true).commit();
     context.getSharedPreferences("search_settings-v1",0).edit().putBoolean("auto_expand",false).commit();
   }
   void seedDownloads(MainActivity main){
@@ -54,6 +56,7 @@ public class PopupRuntime183Test {
     while(node!=null&&!(hold?node.isLongClickable():node.isClickable()))node=node.getParent();
     assertNotNull("Interactive parent: "+value,node);assertTrue(node.performAction(hold?AccessibilityNodeInfo.ACTION_LONG_CLICK:AccessibilityNodeInfo.ACTION_CLICK));idle();
   }
+  void visible(String value,boolean description){AccessibilityNodeInfo node=required(value,description);Rect rect=new Rect();node.getBoundsInScreen(rect);Rect viewport=bounds();assertTrue("Control is on the visible Android window: "+value,node.isVisibleToUser());assertTrue("Control bounds fit the window: "+value,viewport.contains(rect));}
   Rect bounds(){Rect bounds=new Rect();root().getBoundsInScreen(bounds);return bounds;}
   void screenshot(String name)throws Exception{
     idle();output.mkdirs();Bitmap screen=ui.takeScreenshot();assertNotNull(screen);
@@ -76,11 +79,11 @@ public class PopupRuntime183Test {
       click("进入 工具",true,false);click("进入 自建合集",true,false);required("软件",false);click("进入 软件",true,false);required("当前路径：工具 › 自建合集 › 软件",false);screenshot("favourite-folder");click("返回上一级",true,false);dismiss();
       assertFalse(SharedBrowserPopup.isFavorite(context,"https://example.invalid/current183"));
       scenario.onActivity(main->main.showBatchDownloadDetails("batch183"));required("保存中",false);required("安装包",false);stable();screenshot("main-batch");
-      click("示例软件0.apk",false,true);required("分享所选原链接",true);screenshot("main-batch-selection");click("关闭",false,false);
+      click("示例软件0.apk",false,true);visible("分享所选原链接",true);screenshot("main-batch-selection");click("关闭",false,false);
       scenario.onActivity(main->SharedDownloadHistoryPopup.show(main));required("测试批量183",false);stable();screenshot("download-history");int window=root().getWindowId();
       click("测试批量183",false,false);assertEquals("Batch details use the same Android window",window,root().getWindowId());required("返回下载历史列表",true);required("下载完成",false);screenshot("download-history-batch");
-      click("示例软件0.apk",false,true);required("分享所选原链接",true);screenshot("download-history-selection");click("返回下载历史列表",true,false);assertEquals(window,root().getWindowId());required("测试批量183",false);click("关闭",false,false);
-      scenario.onActivity(main->SharedBrowserPopup.show(main,false,url->{}));required("测试网页",false);stable();screenshot("browsing-history");click("测试网页",false,true);required("浏览历史多选操作",true);screenshot("browsing-history-selection");click("关闭",false,false);
+      click("示例软件0.apk",false,true);visible("分享所选原链接",true);screenshot("download-history-selection");click("返回下载历史列表",true,false);assertEquals(window,root().getWindowId());required("测试批量183",false);click("关闭",false,false);
+      scenario.onActivity(main->SharedBrowserPopup.show(main,false,url->{}));required("测试网页",false);stable();screenshot("browsing-history");click("测试网页",false,true);visible("将所选网页加入路径",true);screenshot("browsing-history-selection");click("关闭",false,false);
     }
     seedStores();
     Intent reference=new Intent(context,LegacyPopup183RuntimeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

@@ -174,6 +174,18 @@ final class SharedPopupSurface {
     return Math.max(1, Math.min(dp(host, 560), viewport - dp(host, 28)));
   }
 
+  /** Scroll the complete custom panel when font scaling makes it taller than the viewport. */
+  static android.widget.ScrollView dialogScroll(Activity host,View body,int maxDp){
+    android.widget.ScrollView scroll=new android.widget.ScrollView(host){
+      @Override protected void onMeasure(int widthSpec,int heightSpec){
+        int room=host.getResources().getDisplayMetrics().heightPixels-dp(host,176*host.getResources().getConfiguration().fontScale);
+        int limit=Math.max(dp(host,48),Math.min(dp(host,maxDp),room));if(View.MeasureSpec.getMode(heightSpec)!=View.MeasureSpec.UNSPECIFIED)limit=Math.min(limit,View.MeasureSpec.getSize(heightSpec));
+        super.onMeasure(widthSpec,View.MeasureSpec.makeMeasureSpec(limit,View.MeasureSpec.AT_MOST));
+      }
+    };
+    scroll.setFillViewport(false);scroll.setVerticalScrollBarEnabled(true);scroll.addView(body,new android.widget.ScrollView.LayoutParams(-1,-2));return scroll;
+  }
+
   static String moment(long at) {
     if (at <= 0) return "时间未知";
     try {

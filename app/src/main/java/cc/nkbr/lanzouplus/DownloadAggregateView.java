@@ -739,7 +739,7 @@ final class DownloadAggregateView {
       for (final BatchButton button : batchHost.batchButtons) {
         ImageButton action = SharedPopupSurface.actionButton(host, button.icon, button.description, theme.accent);
         SharedPopupSurface.styleButton(action, theme.accent, theme.muted, button.enabled.test(records()));
-        action.setPadding(dp(12), dp(12), dp(12), dp(12));
+        action.setPadding(dp(10),dp(10),dp(10),dp(10));
         action.setOnClickListener(v -> {
           button.action.run(item, records());
           render();

@@ -8,6 +8,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -56,7 +57,7 @@ final class SourceDestinationPopup {
 
     void addNodes(Models.Source composite, String nodeId, List<String[]> links) throws Exception;
 
-    Models.Source addSource(String url, String password) throws Exception;
+    Models.Source addSource(String url, String password, String title) throws Exception;
 
     void addCategoryMembers(String category, Set<String> sourceIds);
 
@@ -164,12 +165,13 @@ final class SourceDestinationPopup {
         .setPositiveButton("添加到所选路径", null)
         .create();
 
+    dialog.setOwnerActivity(host);
     final Button[] submit = {null};
     final Runnable[] update = {null}, render = {null};
     update[0] = () -> {
       summary.setText("已选 " + selected.size() + " 个路径");
       summary.setContentDescription("提交前摘要，已选 " + selected.size() + " 个路径");
-      if (submit[0] != null) submit[0].setEnabled(!selected.isEmpty());
+      if (submit[0] != null) submit[0].setEnabled(!selected.isEmpty() && (!sources.isEmpty() || !items.isEmpty()));
     };
     render[0] = () -> {
       choices.removeAllViews();
@@ -229,7 +231,9 @@ final class SourceDestinationPopup {
       createFolderDialog(host, catalog, theme, here, render[0]);
     });
 
-    dialog.setOnShowListener(ignored -> {
+    dialog.setOnDismissListener(ignored -> catalog.release());
+    // Prepare destinations and the submit callback before the first frame.
+    SharedPopupSurface.styleDialog(host, dialog, theme, () -> {
       submit[0] = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
       submit[0].setOnClickListener(v -> {
         if (selected.isEmpty()) return;
@@ -240,8 +244,6 @@ final class SourceDestinationPopup {
       });
       render[0].run();
     });
-    dialog.setOnDismissListener(ignored -> catalog.release());
-    SharedPopupSurface.styleDialog(host, dialog, theme, null);
     dialog.show();
     return dialog;
   }
@@ -256,6 +258,34 @@ final class SourceDestinationPopup {
     AlertDialog dialog = show(host, catalog, sources, items);
     if (dialog == null) catalog.release();
     return dialog;
+  }
+
+  /**
+   * One web page as a picker item. A favourite is a non-Lanzou web source, so the item is submitted
+   * through the same picker as any other source: a chosen source category stores it as
+   * {@link Models#SOURCE_WEB} in the source list through {@link Catalog#addSource}, and a chosen
+   * self-built directory stores it as a member of that path. The Web page, the favourites popup and
+   * the external favourite action all build the item here, so one definition owns its meaning.
+   */
+  static Models.Item webFavoriteItem(String url, String title) {
+    String value = url == null ? "" : url.trim();
+    Models.Item item = new Models.Item();
+    item.title = title == null || title.trim().isEmpty() ? value : title.trim();
+    item.url = item.shareUrl = value;
+    item.description = "收藏链接";
+    item.source = "收藏";
+    return item;
+  }
+
+  /**
+   * Shows the shared path picker for one web page on the calling Activity, so favouriting a page
+   * really adds it to the list sources and to an optional path. The picker never starts another
+   * Activity, which keeps a favourite taken on the Web page on that Web page.
+   */
+  static AlertDialog showWebFavorite(Activity host, String url, String title) {
+    String value = url == null ? "" : url.trim();
+    if (value.isEmpty()) return null;
+    return show(host, Collections.emptyList(), Collections.singletonList(webFavoriteItem(value, title)));
   }
 
   /** True when every chosen source is already a member of the destination category. */
@@ -281,6 +311,7 @@ final class SourceDestinationPopup {
       row.addView(checked, new LinearLayout.LayoutParams(SharedPopupSurface.dp(host, 44), SharedPopupSurface.dp(host, 48)));
     } else {
       CheckBox pick = new CheckBox(host);
+      pick.setButtonTintList(android.content.res.ColorStateList.valueOf(theme.accent));
       pick.setChecked(selected.containsKey(destination.key()));
       pick.setContentDescription("选择路径 " + destination.path);
       pick.setOnCheckedChangeListener((button, value) -> {
@@ -314,11 +345,14 @@ final class SourceDestinationPopup {
   private static void createFolderDialog(Activity host, final Catalog catalog, SharedPopupSurface.Theme theme,
       final Destination parent, final Runnable onCreated) {
     EditText name = new EditText(host);
+    name.setSingleLine(true);
     name.setHint("文件夹名称");
+    name.setContentDescription("文件夹名称");
     name.setTextColor(theme.text);
     name.setHintTextColor(theme.muted);
-    name.setSingleLine(true);
+    name.setTextSize(14);
     name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+    name.setImeOptions(EditorInfo.IME_ACTION_NEXT | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
     LinearLayout panel = new LinearLayout(host);
     panel.setPadding(SharedPopupSurface.dp(host, 22), SharedPopupSurface.dp(host, 8), SharedPopupSurface.dp(host, 22), 0);
     panel.addView(name, new LinearLayout.LayoutParams(-1, SharedPopupSurface.dp(host, 56)));
@@ -328,7 +362,7 @@ final class SourceDestinationPopup {
         .setNegativeButton("取消", null)
         .setPositiveButton("创建", null)
         .create();
-    prompt.setOnShowListener(ignored -> prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+    SharedPopupSurface.styleDialog(host, prompt, theme, () -> prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
       String value = name.getText().toString().trim();
       if (value.isEmpty()) {
         name.setError("请输入文件夹名称");
@@ -347,7 +381,6 @@ final class SourceDestinationPopup {
         name.setError(friendly(error));
       });
     }));
-    SharedPopupSurface.styleDialog(host, prompt, theme, null);
     prompt.show();
   }
 
@@ -378,7 +411,7 @@ final class SourceDestinationPopup {
           sourceIds.add(LanzouCore.sourceId(knownSource));
         } else if (categoryTarget && !source.url.isEmpty()) {
           try {
-            Models.Source stored = catalog.addSource(source.url, source.password);
+            Models.Source stored = catalog.addSource(source.url, source.password, source.title);
             sourceIds.add(LanzouCore.sourceId(stored));
             knownById.put(LanzouCore.sourceId(stored), stored);
             knownByUrl.put(stored.url, stored);
@@ -407,7 +440,7 @@ final class SourceDestinationPopup {
           continue;
         }
         try {
-          Models.Source stored = catalog.addSource(url, item.password);
+          Models.Source stored = catalog.addSource(url, item.password, item.title);
           sourceIds.add(LanzouCore.sourceId(stored));
           knownByUrl.put(stored.url, stored);
         } catch (Exception error) {
@@ -639,7 +672,7 @@ final class SourceDestinationPopup {
       List<Models.SourceMember> out = new ArrayList<>();
       if (composite == null) return out;
       for (Models.SourceMember member : composite.members) {
-        if (member.kind != Models.MEMBER_FOLDER || !member.title.isEmpty() || !member.id.equals(nodeId)) continue;
+        if (member.kind != Models.MEMBER_FOLDER || member.title.isEmpty() || !member.parentId.equals(nodeId)) continue;
         out.add(member);
       }
       return out;
@@ -653,8 +686,8 @@ final class SourceDestinationPopup {
       for (String[] link : links) core.addCompositeNode(LanzouCore.sourceId(composite), nodeId, link[0], link[1]);
     }
 
-    @Override public Models.Source addSource(String url, String password) throws Exception {
-      return core.addUserSource(url, password);
+    @Override public Models.Source addSource(String url, String password, String title) throws Exception {
+      Models.Source source=core.addUserSource(url,password);return source.kind==Models.SOURCE_WEB&&!title.isEmpty()?core.updateUserSourceMetadata(LanzouCore.sourceId(source),title,source.avatarUrl,source.description,false):source;
     }
 
     @Override public void addCategoryMembers(String category, Set<String> sourceIds) {
@@ -666,6 +699,7 @@ final class SourceDestinationPopup {
 
     @Override public void applied(final String summary, final boolean failed) {
       host.runOnUiThread(() -> {
+        if (host instanceof LanzouWebActivity) ((LanzouWebActivity) host).updateFavoriteState();
         MainActivity owner = DownloadHistoryCenter.liveOwner();
         if (owner != null) {
           owner.loadSourceCategories();

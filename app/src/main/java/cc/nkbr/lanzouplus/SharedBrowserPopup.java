@@ -24,25 +24,36 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * One shared browsing-history / web-favorites surface for every host Activity.
+ * Shared browsing history and the existing path picker for every host Activity.
  *
  * <p>The popup owns only presentation; entries live in the shared {@code web-browser-v2} store that
  * {@link LanzouWebActivity} and {@link MainActivity} both read. Opening an entry always uses the
  * caller-supplied callback, so a favorite tapped from the Web page is loaded by that same Web page
- * instead of leaving it. The multi-select strip follows {@link SharedPopupSurface}, so every shared
+ * instead of leaving it. Favourites are stored in the source catalog through the path picker. The multi-select strip follows {@link SharedPopupSurface}, so every shared
  * popup is styled from one place.</p>
  */
 final class SharedBrowserPopup {
-  private static final String PREFS = "web-browser-v2", HISTORY = "history", FAVORITES = "favorites";
+  private static final String PREFS = "web-browser-v2", HISTORY = "history";
   private static final int MAX_ENTRIES = 120;
 
   private SharedBrowserPopup() {}
 
   static void show(Activity host, boolean favoritesMode, Consumer<String> openUrl) {
     if (host == null || host.isFinishing()) return;
+    if (favoritesMode) {
+      if (host instanceof LanzouWebActivity) {
+        LanzouWebActivity web = (LanzouWebActivity) host;
+        SourceDestinationPopup.showWebFavorite(host, web.currentUrl, web.currentTitle);
+      } else if (host instanceof MainActivity && ((MainActivity) host).activeSource != null) {
+        ((MainActivity) host).showCurrentSourceDestinationPicker(((MainActivity) host).activeSource);
+      } else {
+        SourceDestinationPopup.show(host, Collections.emptyList(), Collections.emptyList());
+      }
+      return;
+    }
     SharedPopupSurface.Theme theme = new SharedPopupSurface.Theme(host);
     SharedPreferences prefs = host.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    String key = favoritesMode ? FAVORITES : HISTORY;
+    String key = HISTORY;
     List<Entry> entries = read(prefs.getString(key, "[]"));
 
     LinearLayout panel = new LinearLayout(host);
@@ -77,13 +88,13 @@ final class SharedBrowserPopup {
     strip.setStroke(dp(host, 1), theme.divider);
     actionBar.setBackground(strip);
     actionBar.setClipToOutline(true);
-    actionBar.setContentDescription(favoritesMode ? "网页收藏多选操作" : "浏览历史多选操作");
+    actionBar.setContentDescription("浏览历史多选操作");
     ImageButton open = SharedPopupSurface.actionButton(host, R.drawable.ic_open_with, "打开所选网页", theme.accent);
-    ImageButton star = SharedPopupSurface.actionButton(host, favoritesMode ? R.drawable.ic_star_filled : R.drawable.ic_star,
-        favoritesMode ? "将所选网页移出收藏" : "将所选网页加入收藏", theme.accent);
+    ImageButton star = SharedPopupSurface.actionButton(host, R.drawable.ic_star,
+        "将所选网页加入收藏", theme.accent);
     ImageButton path = SharedPopupSurface.actionButton(host, R.drawable.ic_folder, "将所选网页加入路径", theme.accent);
     ImageButton delete = SharedPopupSurface.actionButton(host, R.drawable.ic_delete_record,
-        favoritesMode ? "删除所选网页收藏" : "删除所选浏览历史", theme.accent);
+        "删除所选浏览历史", theme.accent);
     for (ImageButton button : new ImageButton[]{open, star, path, delete}) {
       actionBar.addView(button, new LinearLayout.LayoutParams(0, dp(host, 48), 1));
     }
@@ -92,17 +103,17 @@ final class SharedBrowserPopup {
     panel.addView(actionBar, actionParams);
 
     AlertDialog dialog = new AlertDialog.Builder(host)
-        .setTitle(favoritesMode ? "网页收藏" : "浏览历史")
+        .setTitle("浏览历史")
         .setView(panel)
         .setNegativeButton("关闭", null)
         .create();
 
     dialog.setOwnerActivity(host);
     HistoryPopupNavigation.attach(host, dialog, panel,
-        favoritesMode ? HistoryPopupNavigation.FAVORITES : HistoryPopupNavigation.HISTORY,
+        HistoryPopupNavigation.HISTORY,
         theme.accent, theme.text, openUrl);
     Session session = new Session(host, dialog, list, summary, selectAll, open, star, path, delete,
-        actionBar, actionParams, favoritesMode, key, theme, openUrl);
+        actionBar, actionParams, key, theme, openUrl);
     session.reload();
 
     selectAll.setOnClickListener(v -> {
@@ -126,30 +137,24 @@ final class SharedBrowserPopup {
     dialog.show();
   }
 
-  /** Adds or removes one web favorite without leaving the current Activity. */
-  static boolean setFavorite(Context context, String url, String title, boolean favorite) {
-    if (context == null || url == null || url.trim().isEmpty()) return false;
-    String value = url.trim();
-    SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    List<Entry> saved = read(prefs.getString(FAVORITES, "[]"));
-    boolean changed = false;
-    if (favorite) {
-      saved.removeIf(entry -> entry.url.equals(value));
-      saved.add(0, new Entry(title == null || title.trim().isEmpty() ? value : title.trim(), value, System.currentTimeMillis()));
-      while (saved.size() > MAX_ENTRIES) saved.remove(saved.size() - 1);
-      changed = true;
-    } else {
-      changed = saved.removeIf(entry -> entry.url.equals(value));
-    }
-    if (changed) prefs.edit().putString(FAVORITES, write(saved)).apply();
-    return changed;
-  }
-
+  /** A saved source or collection member is the authoritative favourite. */
   static boolean isFavorite(Context context, String url) {
     if (context == null || url == null || url.trim().isEmpty()) return false;
     String value = url.trim();
-    for (Entry entry : read(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(FAVORITES, "[]"))) {
-      if (entry.url.equals(value)) return true;
+    try {
+      JSONObject stored = new JSONObject(context.getSharedPreferences("user-sources-v1", Context.MODE_PRIVATE)
+          .getString("sources", "{\"sources\":[]}"));
+      JSONArray sources = stored.optJSONArray("sources");
+      if (sources == null) return false;
+      for (int i = 0; i < sources.length(); i++) {
+        JSONObject source = sources.getJSONObject(i);
+        if (value.equals(source.optString("url"))) return true;
+        JSONArray members = source.optJSONArray("members");
+        if (members == null) continue;
+        for (int j = 0; j < members.length(); j++) if (value.equals(members.getJSONObject(j).optString("url"))) return true;
+      }
+    } catch (org.json.JSONException error) {
+      return false;
     }
     return false;
   }
@@ -170,7 +175,6 @@ final class SharedBrowserPopup {
     final ImageButton open, star, path, delete;
     final LinearLayout actionBar;
     final LinearLayout.LayoutParams actionParams;
-    final boolean favoritesMode;
     final String key;
     final SharedPopupSurface.Theme theme;
     final Consumer<String> openUrl;
@@ -180,7 +184,7 @@ final class SharedBrowserPopup {
 
     Session(Activity host, AlertDialog dialog, LinearLayout list, TextView summary, TextView selectAll,
         ImageButton open, ImageButton star, ImageButton path, ImageButton delete, LinearLayout actionBar,
-        LinearLayout.LayoutParams actionParams, boolean favoritesMode, String key, SharedPopupSurface.Theme theme,
+        LinearLayout.LayoutParams actionParams, String key, SharedPopupSurface.Theme theme,
         Consumer<String> openUrl) {
       this.host = host;
       this.dialog = dialog;
@@ -193,7 +197,6 @@ final class SharedBrowserPopup {
       this.delete = delete;
       this.actionBar = actionBar;
       this.actionParams = actionParams;
-      this.favoritesMode = favoritesMode;
       this.key = key;
       this.theme = theme;
       this.openUrl = openUrl;
@@ -202,7 +205,7 @@ final class SharedBrowserPopup {
     void reload() {
       entries.clear();
       entries.addAll(read(host.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(key, "[]")));
-      dialog.setTitle((favoritesMode ? "网页收藏" : "浏览历史") + " · " + entries.size());
+      dialog.setTitle(("浏览历史") + " · " + entries.size());
       render();
     }
 
@@ -213,7 +216,7 @@ final class SharedBrowserPopup {
       selected.retainAll(alive);
       for (Entry entry : entries) list.addView(buildRow(entry), new LinearLayout.LayoutParams(-1, -2));
       if (entries.isEmpty()) {
-        TextView empty = SharedPopupSurface.label(host, favoritesMode ? "暂无网页收藏" : "暂无浏览历史", 13, theme.muted);
+        TextView empty = SharedPopupSurface.label(host, "暂无浏览历史", 13, theme.muted);
         empty.setGravity(Gravity.CENTER);
         list.addView(empty, new LinearLayout.LayoutParams(-1, dp(host, 80)));
       }
@@ -277,8 +280,8 @@ final class SharedBrowserPopup {
       SharedPopupSurface.styleButton(star, theme.accent, theme.muted, any);
       SharedPopupSurface.styleButton(path, theme.accent, theme.muted, any);
       SharedPopupSurface.styleButton(delete, theme.accent, theme.muted, any);
-      star.setImageResource(favoritesMode ? R.drawable.ic_star_filled : R.drawable.ic_star);
-      star.setContentDescription(favoritesMode ? "将所选网页移出收藏" : "将所选网页加入收藏");
+      star.setImageResource(R.drawable.ic_star);
+      star.setContentDescription("将所选网页加入收藏");
       summary.setText(selectionMode ? "已选 " + selected.size() + " / " + entries.size()
           : "共 " + entries.size() + " 项");
       selectAll.setText(selectionMode ? "退出多选" : "全选");
@@ -305,37 +308,14 @@ final class SharedBrowserPopup {
       List<Models.Item> items = new ArrayList<>();
       for (Entry entry : entries) {
         if (!selected.contains(entry.url)) continue;
-        Models.Item item = new Models.Item();
-        item.title = entry.title;
-        item.url = entry.url;
-        item.shareUrl = entry.url;
-        item.description = "非蓝奏云网页收藏";
-        item.source = "网页收藏";
-        items.add(item);
+        items.add(SourceDestinationPopup.webFavoriteItem(entry.url, entry.title));
       }
       if (items.isEmpty()) return;
       SourceDestinationPopup.show(host, Collections.emptyList(), items);
     }
 
     void toggleFavoriteSelected() {
-      if (selected.isEmpty()) return;
-      SharedPreferences prefs = host.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-      List<Entry> saved = read(prefs.getString(FAVORITES, "[]"));
-      if (favoritesMode) {
-        saved.removeIf(entry -> selected.contains(entry.url));
-      } else {
-        for (Entry entry : entries) {
-          if (!selected.contains(entry.url)) continue;
-          saved.removeIf(existing -> existing.url.equals(entry.url));
-          saved.add(0, entry);
-        }
-        while (saved.size() > MAX_ENTRIES) saved.remove(saved.size() - 1);
-      }
-      prefs.edit().putString(FAVORITES, write(saved)).apply();
-      Toast.makeText(host, favoritesMode ? "已移出网页收藏" : "已加入网页收藏", Toast.LENGTH_SHORT).show();
-      selected.clear();
-      if (favoritesMode) reload();
-      else sync();
+      addSelectedToPath();
     }
 
     void deleteSelected() {

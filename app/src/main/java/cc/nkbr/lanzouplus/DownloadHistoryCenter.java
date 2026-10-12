@@ -174,7 +174,7 @@ final class DownloadHistoryCenter {
     return out;
   }
 
-  private static Row liveRow(MainActivity.DownloadEntry entry) {
+  static Row liveRow(MainActivity.DownloadEntry entry) {
     synchronized (entry) {
       boolean premium = MainActivity.isPremiumSaveEntry(entry);
       return new Row(entry, premium, entry.entryType, entry.name, entry.state, entry.error, entry.uriString,

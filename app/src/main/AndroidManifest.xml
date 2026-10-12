@@ -1,5 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
- <queries><package android:name="moe.shizuku.privileged.api"/></queries>
+ <queries>
+  <package android:name="moe.shizuku.privileged.api"/>
+  <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.APP_FILES"/></intent>
+  <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="content" android:mimeType="*/*"/></intent>
+  <intent><action android:name="android.intent.action.SEND"/><data android:mimeType="*/*"/></intent>
+  <intent><action android:name="android.intent.action.SEND_MULTIPLE"/><data android:mimeType="*/*"/></intent>
+ </queries>
  <uses-permission android:name="android.permission.INTERNET"/>
  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>

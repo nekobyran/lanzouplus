@@ -47,6 +47,10 @@ final class DownloadAggregateView {
     String batchTitle();
 
     String name();
+    String localUri();
+    String shareUrl();
+    String password();
+    String parentUri();
 
     /** Metrics text for this record, such as the history metrics block or "下载中 · 42%". */
     String metricsText();
@@ -112,6 +116,10 @@ final class DownloadAggregateView {
       @Override public String batchId() { return row.batchId; }
       @Override public String batchTitle() { return row.batchTitle; }
       @Override public String name() { return row.name; }
+      @Override public String localUri() { return row.uriString; }
+      @Override public String shareUrl() { return row.shareUrl; }
+      @Override public String password() { return row.password; }
+      @Override public String parentUri() { return row.parentUriString; }
       @Override public String metricsText() { return DownloadHistoryCenter.metrics(row); }
       @Override public boolean completed() { return row.completed(); }
       @Override public boolean active() { return row.active(); }
@@ -152,13 +160,11 @@ final class DownloadAggregateView {
       @Override public String batchId() { return entry.batchId; }
       @Override public String batchTitle() { return entry.batchTitle; }
       @Override public String name() { return entry.name; }
-      @Override public String metricsText() {
-        StringBuilder out = new StringBuilder(entry.state);
-        if (entry.percent > 0 && !completed()) out.append(" · ").append(entry.percent).append('%');
-        out.append('\n').append(DownloadHistoryCenter.formatSize(entry.downloadedBytes));
-        out.append(entry.totalBytes > 0 ? " / " + DownloadHistoryCenter.formatSize(entry.totalBytes) : " / 大小未知");
-        return out.toString();
-      }
+      @Override public String localUri() { return entry.uriString; }
+      @Override public String shareUrl() { return entry.shareUrl; }
+      @Override public String password() { return entry.password; }
+      @Override public String parentUri() { return entry.parentUriString; }
+      @Override public String metricsText() { return DownloadHistoryCenter.metrics(DownloadHistoryCenter.liveRow(entry)); }
       @Override public boolean completed() {
         return MainActivity.DOWNLOAD_COMPLETED.equals(entry.state) || MainActivity.SAVE_COMPLETED.equals(entry.state);
       }
@@ -674,7 +680,7 @@ final class DownloadAggregateView {
   }
 
   /**
-   * One batch detail page: the summary line, the state and type filter strips, the batch-wide quick
+   * One batch detail page: the state and type filter strips, the batch-wide quick
    * actions, one row per record and the multi-select bar. The download page shows it inside its
    * dialog and the download-history popup pushes it onto the in-dialog page stack, so filters,
    * selection and rows behave identically for live and persisted records.
@@ -686,20 +692,26 @@ final class DownloadAggregateView {
     return new BatchPage(host, theme, item, batchHost);
   }
 
+  static BatchPage historyPage(Activity host, SharedPopupSurface.Theme theme, List<Record> records,
+      BatchHost batchHost, java.util.function.Consumer<Item> openBatch) {
+    BatchPage page=new BatchPage(host,theme,new Item("history",records),batchHost);
+    page.openBatch=openBatch;page.render();return page;
+  }
+
   static final class BatchPage {
-    private static final int BUTTONS_PER_ROW = 6, BUTTON_HEIGHT_DP = 48;
+    private static final int BUTTONS_PER_ROW = 6, BUTTON_HEIGHT_DP = 44;
     private static final String EXIT_DESCRIPTION = "退出批量下载内部多选";
 
     final LinearLayout root;
     private final Activity host;
     private final SharedPopupSurface.Theme theme;
     private final BatchHost batchHost;
-    private final TextView summary;
     private final LinearLayout stateStrip, typeStrip, list, selectionBar;
     private final LinkedHashSet<String> selected = new LinkedHashSet<>();
     private Item item;
     private boolean selectionMode;
     private String stateFilter = "全部", typeFilter = "全部";
+    private java.util.function.Consumer<Item> openBatch;
 
     BatchPage(Activity host, SharedPopupSurface.Theme theme, Item item, BatchHost batchHost) {
       this.host = host;
@@ -711,35 +723,30 @@ final class DownloadAggregateView {
       root.setOrientation(LinearLayout.VERTICAL);
       root.setPadding(dp(14), dp(6), dp(14), dp(8));
 
-      summary = SharedPopupSurface.label(host, "", 11, theme.muted);
-      summary.setMaxLines(2);
-      summary.setMinHeight(dp(34));
-      root.addView(summary, new LinearLayout.LayoutParams(-1, -2));
-
       stateStrip = new LinearLayout(host);
       HorizontalScrollView stateScroll = new HorizontalScrollView(host);
       stateScroll.setHorizontalScrollBarEnabled(false);
-      stateScroll.addView(stateStrip, new HorizontalScrollView.LayoutParams(-2, dp(48)));
-      root.addView(stateScroll, new LinearLayout.LayoutParams(-1, dp(48)));
+      stateScroll.addView(stateStrip, new HorizontalScrollView.LayoutParams(-2, dp(38)));
+      root.addView(stateScroll, new LinearLayout.LayoutParams(-1, dp(38)));
 
       LinearLayout extensionRow = new LinearLayout(host);
       extensionRow.setGravity(Gravity.CENTER_VERTICAL);
       typeStrip = new LinearLayout(host);
       HorizontalScrollView typeScroll = new HorizontalScrollView(host);
       typeScroll.setHorizontalScrollBarEnabled(false);
-      typeScroll.addView(typeStrip, new HorizontalScrollView.LayoutParams(-2, dp(48)));
-      extensionRow.addView(typeScroll, new LinearLayout.LayoutParams(0, dp(48), 1));
+      typeScroll.addView(typeStrip, new HorizontalScrollView.LayoutParams(-2, dp(38)));
+      extensionRow.addView(typeScroll, new LinearLayout.LayoutParams(0, dp(38), 1));
       for (final BatchButton button : batchHost.batchButtons) {
         ImageButton action = SharedPopupSurface.actionButton(host, button.icon, button.description, theme.accent);
         SharedPopupSurface.styleButton(action, theme.accent, theme.muted, button.enabled.test(records()));
-        action.setPadding(dp(14), dp(14), dp(14), dp(14));
+        action.setPadding(dp(12), dp(12), dp(12), dp(12));
         action.setOnClickListener(v -> {
           button.action.run(item, records());
           render();
         });
-        extensionRow.addView(action, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        extensionRow.addView(action, new LinearLayout.LayoutParams(dp(38), dp(38)));
       }
-      root.addView(extensionRow, new LinearLayout.LayoutParams(-1, dp(48)));
+      root.addView(extensionRow, new LinearLayout.LayoutParams(-1, dp(38)));
 
       list = new LinearLayout(host);
       list.setOrientation(LinearLayout.VERTICAL);
@@ -853,8 +860,6 @@ final class DownloadAggregateView {
     }
 
     void render() {
-      summary.setText(metrics(item).replace("\n", " · ") + " · " + percent(item) + "%"
-          + (indeterminate(item) ? " · 解析中" : ""));
       renderStateStrip();
       renderTypeStrip();
       renderSelection();
@@ -872,7 +877,7 @@ final class DownloadAggregateView {
         boolean active = label.equals(stateFilter);
         View tab = underlineTab(label, active);
         tab.setOnClickListener(v -> selectState(label));
-        stateStrip.addView(tab, new LinearLayout.LayoutParams(-2, dp(48)));
+        stateStrip.addView(tab, new LinearLayout.LayoutParams(-2, dp(38)));
       }
     }
 
@@ -882,17 +887,24 @@ final class DownloadAggregateView {
         boolean active = label.equals(typeFilter);
         TextView tab = roundedTab(label, active);
         tab.setOnClickListener(v -> selectType(label));
-        typeStrip.addView(tab, new LinearLayout.LayoutParams(-2, dp(48)));
+        typeStrip.addView(tab, new LinearLayout.LayoutParams(-2, dp(34)));
       }
     }
 
     private void renderList() {
       list.removeAllViews();
       List<Record> shown = visible();
+      if(openBatch!=null){
+        for(Item aggregate:group(shown)){
+          View row=recordRow(aggregate.records.get(0),aggregate);
+          row.setMinimumHeight(dp(66));list.addView(row,new LinearLayout.LayoutParams(-1,-2));
+        }
+      }else{
       for (Record record : shown) {
-        View row = recordRow(record);
+        View row = recordRow(record,null);
         row.setMinimumHeight(dp(66));
         list.addView(row, new LinearLayout.LayoutParams(-1, -2));
+      }
       }
       if (shown.isEmpty()) {
         TextView empty = SharedPopupSurface.label(host, "没有匹配的批量下载项目", 12, theme.muted);
@@ -914,7 +926,7 @@ final class DownloadAggregateView {
           final BatchButton button = buttons.get(start + slot);
           ImageButton view = SharedPopupSurface.actionButton(host, button.icon, button.description, theme.accent);
           SharedPopupSurface.styleButton(view, theme.accent, theme.muted, button.enabled.test(chosen));
-          view.setPadding(dp(14), dp(14), dp(14), dp(14));
+          view.setPadding(dp(12), dp(12), dp(12), dp(12));
           view.setOnClickListener(v -> {
             button.action.run(item, chosen());
             renderSelection();
@@ -930,10 +942,9 @@ final class DownloadAggregateView {
       selectionBar.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
     }
 
-    private View recordRow(final Record record) {
+    private View recordRow(final Record record,final Item aggregate) {
       LinearLayout row = new LinearLayout(host);
       row.setGravity(Gravity.CENTER_VERTICAL);
-      row.setPadding(dp(4), 0, dp(4), 0);
 
       CheckBox check = new CheckBox(host);
       check.setClickable(false);
@@ -941,6 +952,7 @@ final class DownloadAggregateView {
       check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
       check.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
       check.setChecked(selected.contains(record.key()));
+      check.setButtonTintList(android.content.res.ColorStateList.valueOf(theme.accent));
       row.addView(check, new LinearLayout.LayoutParams(dp(40), dp(44)));
 
       View icon = batchHost.icons == null ? null : batchHost.icons.icon(record);
@@ -949,12 +961,12 @@ final class DownloadAggregateView {
 
       LinearLayout words = new LinearLayout(host);
       words.setOrientation(LinearLayout.VERTICAL);
-      words.setPadding(dp(10), 0, dp(4), 0);
-      TextView title = SharedPopupSurface.label(host, record.name(), 13, theme.text);
+      words.setPadding(dp(10), 0, 0, 0);
+      TextView title = SharedPopupSurface.label(host, aggregate==null?record.name():aggregate.title(), 13, theme.text);
       title.setSingleLine(true);
       title.setEllipsize(android.text.TextUtils.TruncateAt.END);
       title.setMinHeight(dp(24));
-      TextView status = SharedPopupSurface.label(host, recordMetrics(record).replace('\n', ' '), 10, theme.muted);
+      TextView status = SharedPopupSurface.label(host, (aggregate==null?recordMetrics(record):metrics(aggregate)).replace('\n', ' '), 10, theme.muted);
       status.setMaxLines(2);
       status.setEllipsize(android.text.TextUtils.TruncateAt.END);
       status.setMinHeight(dp(34));
@@ -970,22 +982,31 @@ final class DownloadAggregateView {
           + (selected.contains(record.key()) ? "，已选择" : "") + "，轻点执行操作，长按进入多选");
       row.setOnClickListener(v -> {
         if (selectionMode) {
+          if(aggregate!=null){toggleAggregate(aggregate);return;}
           if (!selected.remove(record.key())) selected.add(record.key());
           if (selected.isEmpty()) selectionMode = false;
           renderSelection();
           return;
         }
+        if(aggregate!=null&&aggregate.batched()){openBatch.accept(aggregate);return;}
         int action = record.primaryAction();
         if (action != DownloadHistoryCenter.ACTION_NONE) record.perform(host, action);
       });
       row.setOnLongClickListener(v -> {
         if (!selectionMode) {
+          if(aggregate!=null){selectionMode=true;for(Record child:aggregate.records)selected.add(child.key());renderSelection();return true;}
           select(record);
           return true;
         }
         return false;
       });
       return row;
+    }
+
+    private void toggleAggregate(Item aggregate){
+      boolean all=true;for(Record child:aggregate.records)all&=selected.contains(child.key());
+      for(Record child:aggregate.records){if(all)selected.remove(child.key());else selected.add(child.key());}
+      if(selected.isEmpty())selectionMode=false;renderSelection();
     }
 
     private View fallbackIcon(Record record) {
@@ -1065,7 +1086,7 @@ final class DownloadAggregateView {
 
     /** One type strip tab: rounded chip, filled with the accent while picked. */
     private TextView roundedTab(String label, boolean selected) {
-      TextView filter = SharedPopupSurface.label(host, label, 12, selected ? theme.surface : theme.muted);
+      TextView filter = SharedPopupSurface.label(host, label, 12, selected ? theme.background : theme.muted);
       filter.setGravity(Gravity.CENTER);
       filter.setPadding(dp(14), 0, dp(14), 0);
       filter.setBackground(SharedPopupSurface.ripple(theme.accent,
@@ -1083,7 +1104,7 @@ final class DownloadAggregateView {
         TextView filter = (TextView) strip.getChildAt(i);
         boolean active = filter == target;
         filter.setSelected(active);
-        filter.setTextColor(active ? theme.surface : theme.muted);
+        filter.setTextColor(active ? theme.background : theme.muted);
         filter.setBackground(SharedPopupSurface.ripple(theme.accent,
             SharedPopupSurface.solid(active ? theme.accent : theme.surface, dp(16))));
         filter.setContentDescription(filter.getText() + (active ? "，已选择" : ""));

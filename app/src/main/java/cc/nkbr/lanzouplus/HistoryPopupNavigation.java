@@ -34,7 +34,7 @@ final class HistoryPopupNavigation {
   static void attach(Activity host, AlertDialog dialog, LinearLayout panel, int current,
       int accent, int text, Consumer<String> openUrl) {
     LinearLayout tabs=new LinearLayout(host);
-    String[] labels={"下载历史","浏览历史","网页收藏"};
+    String[] labels={"下载历史","浏览历史","收藏"};
     for(int index=0;index<labels.length;index++) {
       final int destination=index;
       TextView tab=new TextView(host);

@@ -246,9 +246,9 @@ final class SharedBrowserPopup {
       url.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
       TextView moment = SharedPopupSurface.label(host, SharedPopupSurface.moment(entry.at), 10, theme.muted);
       moment.setSingleLine(true);
-      words.addView(title, new LinearLayout.LayoutParams(-1, dp(host, 24)));
-      words.addView(url, new LinearLayout.LayoutParams(-1, dp(host, 20)));
-      words.addView(moment, new LinearLayout.LayoutParams(-1, dp(host, 18)));
+      title.setMinHeight(dp(host,24));words.addView(title,new LinearLayout.LayoutParams(-1,-2));
+      url.setMinHeight(dp(host,20));words.addView(url,new LinearLayout.LayoutParams(-1,-2));
+      moment.setMinHeight(dp(host,18));words.addView(moment,new LinearLayout.LayoutParams(-1,-2));
       row.addView(words, new LinearLayout.LayoutParams(0, dp(host, 62), 1));
       row.setBackground(SharedPopupSurface.ripple(theme.accent, new ColorDrawable(Color.TRANSPARENT)));
       row.setClickable(true);

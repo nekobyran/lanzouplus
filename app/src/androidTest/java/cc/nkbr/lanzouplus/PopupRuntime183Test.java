@@ -88,5 +88,26 @@ public class PopupRuntime183Test {
       scenario.onActivity(main->{main.ui.removeCallbacksAndMessages(null);main.loadSourceCategories();seedDownloads(main);main.showSourceDestinationPicker(Collections.emptyList(),Collections.singletonList(SourceDestinationPopup.webFavoriteItem("https://example.invalid/reference183","当前网页")));});
       required("当前路径：分类",false);screenshot("legacy181-path");dismiss();scenario.onActivity(main->main.showBatchDownloadDetails("batch183"));required("保存中",false);screenshot("legacy181-batch");click("示例软件0.apk",false,true);required("分享所选原链接",true);screenshot("legacy181-batch-selection");click("关闭",false,false);
     }
+    if(variant.equals("portrait-light"))realWebViewResumesWithoutCookie();
+  }
+  void realWebViewResumesWithoutCookie()throws Exception{
+    final java.util.concurrent.atomic.AtomicInteger retries=new java.util.concurrent.atomic.AtomicInteger();
+    final java.util.concurrent.atomic.AtomicBoolean closed=new java.util.concurrent.atomic.AtomicBoolean();
+    final String origin="https://verify183.lanzoum.com/b0test183";
+    try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)){
+      scenario.onActivity(main->{
+        main.ui.removeCallbacksAndMessages(null);main.verificationLaunching=true;main.verificationTargetUrl=origin;main.pendingVerificationRetries.add(retries::incrementAndGet);
+        android.webkit.WebView web=new android.webkit.WebView(main);web.getSettings().setJavaScriptEnabled(true);main.verificationWebView=web;
+        web.setWebViewClient(new android.webkit.WebViewClient(){@Override public void onPageFinished(android.webkit.WebView view,String url){main.scheduleLanzouVerificationCheck();}});
+        android.app.Dialog dialog=new android.app.Dialog(main);main.verificationDialog=dialog;dialog.setContentView(web);dialog.show();dialog.getWindow().setLayout(main.dp(340),main.dp(360));
+        web.loadDataWithBaseURL(origin,"<html><body><div id='nc_1_n1z' style='width:280px;height:80px'>合成验证页面，测试前台等待</div></body></html>","text/html","UTF-8",origin);
+        main.scheduleLanzouVerificationCheck();
+      });
+      idle();assertEquals(0,retries.get());screenshot("synthetic-verification-waiting");
+      scenario.onActivity(main->{assertTrue(main.verificationLaunching);main.verificationWebView.evaluateJavascript("document.getElementById('nc_1_n1z').style.display='none';document.body.insertAdjacentHTML('beforeend','<div>目录已加载</div><script>filemoreajax.php?file=183</script>');",null);});
+      long deadline=SystemClock.uptimeMillis()+6000;while(retries.get()==0&&SystemClock.uptimeMillis()<deadline)SystemClock.sleep(100);
+      assertEquals("A real WebView page without cookies resumes exactly once",1,retries.get());
+      scenario.onActivity(main->closed.set(!main.verificationLaunching&&main.verificationDialog==null&&main.verificationWebView==null));assertTrue("Successful verification closes and releases the actual window",closed.get());screenshot("synthetic-verification-closed");
+    }
   }
 }

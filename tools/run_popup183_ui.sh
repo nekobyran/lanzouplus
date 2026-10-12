@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p ui-evidence
+trap 'adb pull /sdcard/Android/data/cc.nkbr.lanzouplus/files/popup183 ui-evidence/ || true; adb logcat -d -s AndroidRuntime > ui-evidence/android-runtime.txt || true' EXIT
 adb install -r app/build/outputs/apk/empty/debug/app-empty-debug.apk
 adb install -r app/build/outputs/apk/androidTest/empty/debug/app-empty-debug-androidTest.apk
+adb shell appops set cc.nkbr.lanzouplus MANAGE_EXTERNAL_STORAGE allow
+adb shell dumpsys deviceidle whitelist +cc.nkbr.lanzouplus
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 0
 adb shell wm density 320

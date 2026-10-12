@@ -250,7 +250,8 @@ final class SharedBrowserPopup {
       title.setMinHeight(dp(host,24));words.addView(title,new LinearLayout.LayoutParams(-1,-2));
       url.setMinHeight(dp(host,20));words.addView(url,new LinearLayout.LayoutParams(-1,-2));
       moment.setMinHeight(dp(host,18));words.addView(moment,new LinearLayout.LayoutParams(-1,-2));
-      row.addView(words, new LinearLayout.LayoutParams(0, dp(host, 62), 1));
+      words.setMinimumHeight(dp(host,62));
+      row.addView(words,new LinearLayout.LayoutParams(0,-2,1));
       row.setBackground(SharedPopupSurface.ripple(theme.accent, new ColorDrawable(Color.TRANSPARENT)));
       row.setClickable(true);
       row.setFocusable(true);

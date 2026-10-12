@@ -59,9 +59,9 @@ final class SharedBatchActions {
     ((ClipboardManager)host.getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("下载原链接",links(records)));notice(host,"已复制所选原链接");
   }
   private static void shareFiles(Activity host,List<DownloadAggregateView.Record> records){
-    ArrayList<Uri> uris=new ArrayList<>();for(DownloadAggregateView.Record r:records)if(r.completed()&&!r.localUri().isEmpty())uris.add(fileUri(host,r.localUri()));
+    ArrayList<Uri> uris=new ArrayList<>();boolean allApk=true;for(DownloadAggregateView.Record r:records)if(r.completed()&&!r.localUri().isEmpty()){uris.add(fileUri(host,r.localUri()));allApk&=r.name().toLowerCase(java.util.Locale.ROOT).endsWith(".apk");}
     if(uris.isEmpty()){notice(host,"所选项目没有本地文件");return;}
-    Intent intent=new Intent(uris.size()==1?Intent.ACTION_SEND:Intent.ACTION_SEND_MULTIPLE).setType("*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    Intent intent=new Intent(uris.size()==1?Intent.ACTION_SEND:Intent.ACTION_SEND_MULTIPLE).setType(allApk?"application/vnd.android.package-archive":"application/octet-stream").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
     if(uris.size()==1)intent.putExtra(Intent.EXTRA_STREAM,uris.get(0));else intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM,uris);
     ClipData clip=ClipData.newRawUri("下载文件",uris.get(0));for(int i=1;i<uris.size();i++)clip.addItem(new ClipData.Item(uris.get(i)));intent.setClipData(clip);chooseApp(host,intent,"分享所选本地文件");
   }

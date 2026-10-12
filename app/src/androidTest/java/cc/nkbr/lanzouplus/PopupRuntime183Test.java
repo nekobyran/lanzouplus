@@ -38,7 +38,7 @@ public class PopupRuntime183Test {
     context.getSharedPreferences("web-browser-v2",0).edit().clear().putString("history","[{\"t\":\"测试网页\",\"u\":\"https://example.invalid/history183\",\"a\":183}]").commit();
     context.getSharedPreferences("MainActivity",0).edit().putBoolean("accepted",true).commit();
     context.getSharedPreferences("LegacyPopup183RuntimeActivity",0).edit().putBoolean("accepted",true).commit();
-    context.getSharedPreferences("search_settings-v1",0).edit().putBoolean("auto_expand",false).commit();
+    context.getSharedPreferences("search_settings-v1",0).edit().putBoolean("auto_expand",false).putString("lanzou_base_origin","https://verify183.lanzoum.com").putBoolean("lanzou_base_origin_verified",true).putBoolean("lanzou_base_origin_explicit",true).commit();
   }
   void seedDownloads(MainActivity main){
     main.downloadEntries.clear();

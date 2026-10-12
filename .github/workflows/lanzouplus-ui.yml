@@ -38,8 +38,8 @@ jobs:
         if: always()
         run: |
           mkdir -p ui-evidence
-          adb pull /sdcard/Android/data/cc.nkbr.lanzouplus/files/popup183 ui-evidence/ || true
-          adb logcat -d -s AndroidRuntime > ui-evidence/android-runtime.txt || true
+          timeout 10s adb pull /sdcard/Android/data/cc.nkbr.lanzouplus/files/popup183 ui-evidence/ || true
+          timeout 10s adb logcat -d -s AndroidRuntime > ui-evidence/android-runtime.txt || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

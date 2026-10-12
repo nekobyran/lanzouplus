@@ -926,7 +926,7 @@ final class DownloadAggregateView {
           final BatchButton button = buttons.get(start + slot);
           ImageButton view = SharedPopupSurface.actionButton(host, button.icon, button.description, theme.accent);
           SharedPopupSurface.styleButton(view, theme.accent, theme.muted, button.enabled.test(chosen));
-          view.setPadding(dp(12), dp(12), dp(12), dp(12));
+          view.setPadding(dp(10),dp(10),dp(10),dp(10));
           view.setOnClickListener(v -> {
             button.action.run(item, chosen());
             renderSelection();
@@ -967,7 +967,7 @@ final class DownloadAggregateView {
       title.setSingleLine(true);
       title.setEllipsize(android.text.TextUtils.TruncateAt.END);
       title.setMinHeight(dp(24));
-      TextView status = SharedPopupSurface.label(host, (aggregate==null?recordMetrics(record):metrics(aggregate)).replace('\n', ' '), 10, theme.muted);
+      TextView status = SharedPopupSurface.label(host, (aggregate==null?recordMetrics(record):metrics(aggregate)).replace("\n"," · "),10,theme.muted);
       status.setMaxLines(2);
       status.setEllipsize(android.text.TextUtils.TruncateAt.END);
       status.setMinHeight(dp(34));

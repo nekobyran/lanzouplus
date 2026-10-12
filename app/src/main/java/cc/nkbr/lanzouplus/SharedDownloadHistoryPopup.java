@@ -22,7 +22,7 @@ final class SharedDownloadHistoryPopup {
     FrameLayout area=new FrameLayout(host);
     int height=Math.max(SharedPopupSurface.dp(host,140),Math.min(SharedPopupSurface.dp(host,480),host.getResources().getDisplayMetrics().heightPixels-SharedPopupSurface.dp(host,230)));
     panel.addView(area,new LinearLayout.LayoutParams(-1,height));
-    AlertDialog dialog=new AlertDialog.Builder(host).setTitle("下载历史").setView(panel).setNegativeButton("关闭",null).create();dialog.setOwnerActivity(host);
+    AlertDialog dialog=new AlertDialog.Builder(host).setTitle("下载历史").setView(SharedPopupSurface.dialogScroll(host,panel,720)).setNegativeButton("关闭",null).create();dialog.setOwnerActivity(host);
     HistoryPopupNavigation.attach(host,dialog,panel,HistoryPopupNavigation.DOWNLOADS,theme.accent,theme.text,HistoryPopupNavigation.browserOpener(host));
     Session session=new Session(host,dialog,theme,area);session.start();SharedPopupSurface.styleDialog(host,dialog,theme,null);
     dialog.setOnDismissListener(d->session.stop());dialog.show();session.schedule();return true;

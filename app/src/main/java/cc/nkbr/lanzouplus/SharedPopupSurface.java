@@ -105,7 +105,7 @@ final class SharedPopupSurface {
     button.setImageResource(icon);
     button.setColorFilter(tint);
     button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-    button.setPadding(dp(host, 12), dp(host, 12), dp(host, 12), dp(host, 12));
+    button.setPadding(dp(host,10),dp(host,10),dp(host,10),dp(host,10));
     button.setBackgroundColor(Color.TRANSPARENT);
     button.setContentDescription(description);
     button.setMinimumWidth(0);
@@ -178,7 +178,7 @@ final class SharedPopupSurface {
   static android.widget.ScrollView dialogScroll(Activity host,View body,int maxDp){
     android.widget.ScrollView scroll=new android.widget.ScrollView(host){
       @Override protected void onMeasure(int widthSpec,int heightSpec){
-        int room=host.getResources().getDisplayMetrics().heightPixels-dp(host,176*host.getResources().getConfiguration().fontScale);
+        int room=host.getResources().getDisplayMetrics().heightPixels-dp(host,120);
         int limit=Math.max(dp(host,48),Math.min(dp(host,maxDp),room));if(View.MeasureSpec.getMode(heightSpec)!=View.MeasureSpec.UNSPECIFIED)limit=Math.min(limit,View.MeasureSpec.getSize(heightSpec));
         super.onMeasure(widthSpec,View.MeasureSpec.makeMeasureSpec(limit,View.MeasureSpec.AT_MOST));
       }

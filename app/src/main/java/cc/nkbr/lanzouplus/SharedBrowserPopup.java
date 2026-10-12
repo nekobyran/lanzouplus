@@ -74,13 +74,11 @@ final class SharedBrowserPopup {
     header.addView(selectAll,new LinearLayout.LayoutParams(Math.max(dp(host,76),(int)Math.ceil(selectAll.getPaint().measureText("退出多选"))+dp(host,12)),dp(host,48)));
     panel.addView(header, new LinearLayout.LayoutParams(-1, dp(host, 48)));
 
-    ScrollView scroll = new ScrollView(host);
-    scroll.setClipToPadding(false);
     LinearLayout list = new LinearLayout(host);
     list.setOrientation(LinearLayout.VERTICAL);
-    scroll.addView(list, new ScrollView.LayoutParams(-1, -2));
-    panel.addView(scroll, new LinearLayout.LayoutParams(-1,
-        Math.min(dp(host, 360), dp(host, 96) + Math.min(Math.max(entries.size(), 1), 5) * dp(host, 66))));
+    ScrollView scroll=SharedPopupSurface.dialogScroll(host,list,360);
+    scroll.setClipToPadding(false);
+    panel.addView(scroll,new LinearLayout.LayoutParams(-1,-2));
 
     LinearLayout actionBar = new LinearLayout(host);
     actionBar.setGravity(Gravity.CENTER_VERTICAL);

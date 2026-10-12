@@ -7,7 +7,8 @@ final class Models {
   static final byte MEMBER_UNKNOWN=0,MEMBER_FILE=1,MEMBER_DIRECTORY=2,MEMBER_FOLDER=3,MEMBER_REMOTE_FOLDER=4;
   static final class Item {
     String title="", url="", shareUrl="", size="", time="", iconUrl="", source="", password="", description="", folderId="", sourceId="", error="";
-    boolean folder, sourceEntry;
+    /** True only when this row was served by a persisted/live directory index lookup. */
+    boolean folder, sourceEntry, indexHit;
   }
   static final class Folder {
     String title="", publisher="", avatarUrl="", description="", saveUrl="", url="", password="", folderId="";
@@ -28,6 +29,8 @@ final class Models {
   }
   static final class Source {
     String id="", nodeId="", title="", url="", password="", error="", publisher="", avatarUrl="", description="", originPath="", originUrl="";
+    /** Catalog id of the source a child directory was discovered under; empty for root sources. */
+    String parentId="";
     byte kind=SOURCE_OFFICIAL;
     boolean searchable, overlay, metadataOverride, childDirectory;
     final List<SourceMember> members=new ArrayList<>();

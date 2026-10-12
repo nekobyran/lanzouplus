@@ -48,22 +48,25 @@ final class DownloadHistoryCenter {
   static final class Row {
     final MainActivity.DownloadEntry entry;
     final boolean live, premium;
-    final String entryType, name, state, error, uriString, mimeType, sourceSizeText, batchTitle;
+    final String entryType, name, state, error, uriString, mimeType, sourceSizeText, batchTitle, batchId;
     final String shareUrl, password, directUrl, parentUriString;
     final long downloadedBytes, totalBytes, createdAt, completedAt, resolvedAt;
     final int percent;
+    /** True while this record is explicitly waiting for an interactive verification challenge. */
+    final boolean awaitingVerification;
 
     Row(MainActivity.DownloadEntry entry, boolean premium, String entryType, String name, String state, String error,
         String uriString, String mimeType, String sourceSizeText, String batchTitle,
         long downloadedBytes, long totalBytes, long createdAt, long completedAt, int percent) {
       this(entry, premium, entryType, name, state, error, uriString, mimeType, sourceSizeText, batchTitle,
-          downloadedBytes, totalBytes, createdAt, completedAt, percent, "", "", "", "", 0L);
+          downloadedBytes, totalBytes, createdAt, completedAt, percent, "", "", "", "", 0L, "", false);
     }
 
     Row(MainActivity.DownloadEntry entry, boolean premium, String entryType, String name, String state, String error,
         String uriString, String mimeType, String sourceSizeText, String batchTitle,
         long downloadedBytes, long totalBytes, long createdAt, long completedAt, int percent,
-        String shareUrl, String password, String directUrl, String parentUriString, long resolvedAt) {
+        String shareUrl, String password, String directUrl, String parentUriString, long resolvedAt,
+        String batchId, boolean awaitingVerification) {
       this.entry = entry;
       this.live = entry != null;
       this.premium = premium;
@@ -75,6 +78,8 @@ final class DownloadHistoryCenter {
       this.mimeType = mimeType == null ? "" : mimeType;
       this.sourceSizeText = sourceSizeText == null ? "" : sourceSizeText;
       this.batchTitle = batchTitle == null ? "" : batchTitle;
+      this.batchId = batchId == null ? "" : batchId;
+      this.awaitingVerification = awaitingVerification;
       this.downloadedBytes = Math.max(0, downloadedBytes);
       this.totalBytes = Math.max(0, totalBytes);
       this.createdAt = createdAt;
@@ -108,6 +113,7 @@ final class DownloadHistoryCenter {
         if (active()) return ACTION_PAUSE;
         return ACTION_NONE;
       }
+      if (awaitingVerification) return !live && retryableRecord() ? ACTION_RETRY : ACTION_NONE;
       if (active()) return ACTION_PAUSE;
       if (paused()) return live || resumableRecord() ? ACTION_RESUME : retryableRecord() ? ACTION_RETRY : ACTION_NONE;
       if (completed()) return ACTION_OPEN;
@@ -125,8 +131,10 @@ final class DownloadHistoryCenter {
     }
 
     boolean canRetry() {
-      return !premium && (live ? MainActivity.DOWNLOAD_FAILED.equals(state)
-          : !active() && (failed() || paused() || cancelled()) && retryableRecord());
+      if (premium) return false;
+      if (awaitingVerification) return !live && !active() && retryableRecord();
+      return live ? MainActivity.DOWNLOAD_FAILED.equals(state)
+          : !active() && (failed() || paused() || cancelled()) && retryableRecord();
     }
     boolean canDeleteFile() { return !premium && !uriString.isEmpty(); }
     boolean canResume() { return !premium && paused() && (live || resumableRecord()); }
@@ -134,6 +142,8 @@ final class DownloadHistoryCenter {
       int action = primaryAction();
       return (live || resumableRecord() || active()) && (action == ACTION_PAUSE || action == ACTION_RESUME);
     }
+    /** True when this record belongs to a multi-item batch download, so hosts can aggregate it. */
+    boolean batched() { return !batchId.isEmpty(); }
   }
 
   static MainActivity liveOwner() {
@@ -170,7 +180,7 @@ final class DownloadHistoryCenter {
       return new Row(entry, premium, entry.entryType, entry.name, entry.state, entry.error, entry.uriString,
           entry.mimeType, entry.sourceSizeText, entry.batchTitle, entry.downloadedBytes, entry.totalBytes,
           entry.createdAt, entry.completedAt, entry.percent, entry.shareUrl, entry.password, entry.directUrl,
-          entry.parentUriString, entry.resolvedAt);
+          entry.parentUriString, entry.resolvedAt, entry.batchId, false);
     }
   }
 
@@ -201,7 +211,9 @@ final class DownloadHistoryCenter {
         item.optString("mime", ""), item.optString("sourceSize", ""), item.optString("batchTitle", ""),
         done, total, item.optLong("created", 0), item.optLong("completed", 0), percent,
         item.optString("share", ""), item.optString("password", ""), item.optString("direct", ""),
-        item.optString("parent", ""), item.optLong("resolvedAt", item.optLong("resolved", 0)));
+        item.optString("parent", ""), item.optLong("resolvedAt", item.optLong("resolved", 0)),
+        item.optString("batchId", ""),
+        PersistedDownloadDriver.VERIFY_PENDING.equals(item.optString(PersistedDownloadDriver.VERIFY_KEY, "")));
   }
 
   /** Persisted-record identity shared by the driver, the popup and the snapshot writer. */
@@ -230,6 +242,7 @@ final class DownloadHistoryCenter {
   /** Human readable display state, honest about records that lost their live task. */
   static String displayState(Row row) {
     if (row == null) return "";
+    if (row.awaitingVerification) return "待完成滑动验证";
     if (row.active() && !row.live) return MainActivity.DOWNLOAD_RUNNING;
     if (!row.live && !row.premium && row.failed() && !row.error.isEmpty()) return "已中断";
     if (!row.live && row.premium && row.paused()) return "保存已暂停";
@@ -248,6 +261,9 @@ final class DownloadHistoryCenter {
       if (row.completed()) return "保存完成 · " + progress + "\n完成 " + moment(row.completedAt);
       if (row.cancelled()) return "保存已取消 · " + progress;
       return "保存失败 · " + progress + (row.error.isEmpty() ? "" : " · " + row.error);
+    }
+    if (row.awaitingVerification) {
+      return "下载待验证 · " + size + "\n" + firstNonEmpty(row.error, "需要滑动验证，完成验证后点击继续");
     }
     if (row.active()) {
       if (MainActivity.DOWNLOAD_RESOLVING.equals(row.state)) return "解析中 · " + total + "\n创建 " + moment(row.createdAt);
@@ -369,6 +385,17 @@ final class DownloadHistoryCenter {
     return updatePersisted(context, row, state, error, -1, -1, true);
   }
 
+  /**
+   * Persisted-only write for a record whose transfer stopped on an interactive verification
+   * challenge. The record stays a retryable failure and additionally carries the explicit
+   * pending-verification marker, so hosts render "waiting for verification" (with a retry action)
+   * instead of an unexplained failure that looks like a dead end.
+   */
+  static boolean markPersistedVerification(Context context, Row row) {
+    return updatePersisted(context, row, MainActivity.DOWNLOAD_FAILED,
+        "需要滑动验证：请打开应用完成验证后继续", -1, -1, true, true);
+  }
+
   static boolean updatePersistedProgress(Context context, Row row, long downloadedBytes, long totalBytes) {
     return updatePersisted(context, row, MainActivity.DOWNLOAD_RUNNING, "", downloadedBytes, totalBytes, false);
   }
@@ -397,7 +424,12 @@ final class DownloadHistoryCenter {
   }
 
   private static boolean updatePersisted(Context context, Row row, String state, String error,
-      long downloadedBytes, long totalBytes, boolean writeState) { synchronized (STATE_LOCK) {
+      long downloadedBytes, long totalBytes, boolean writeState) {
+    return updatePersisted(context, row, state, error, downloadedBytes, totalBytes, writeState, false);
+  }
+
+  private static boolean updatePersisted(Context context, Row row, String state, String error,
+      long downloadedBytes, long totalBytes, boolean writeState, boolean verification) { synchronized (STATE_LOCK) {
     if (context == null || row == null) return false;
     try {
       JSONArray source = new JSONArray(prefs(context).getString(KEY, "[]"));
@@ -407,6 +439,9 @@ final class DownloadHistoryCenter {
         if (writeState) {
           item.put("state", state == null ? "" : state);
           item.put("error", error == null ? "" : error);
+          // The pending-verification marker only survives while the record is still waiting for it.
+          if (verification) item.put(PersistedDownloadDriver.VERIFY_KEY, PersistedDownloadDriver.VERIFY_PENDING);
+          else item.remove(PersistedDownloadDriver.VERIFY_KEY);
           if (MainActivity.DOWNLOAD_COMPLETED.equals(state)) item.put("completed", System.currentTimeMillis());
         }
         if (downloadedBytes >= 0) item.put("doneBytes", downloadedBytes);

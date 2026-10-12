@@ -4,19 +4,11 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
-import android.text.format.DateUtils;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.Window;
-import android.view.WindowManager;
 import android.widget.CheckBox;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -24,6 +16,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Consumer;
@@ -35,8 +28,9 @@ import org.json.JSONObject;
  *
  * <p>The popup owns only presentation; entries live in the shared {@code web-browser-v2} store that
  * {@link LanzouWebActivity} and {@link MainActivity} both read. Opening an entry always uses the
- * caller-supplied callback, so a favorite tapped from the Web page is loaded by that same Web
- * page instead of leaving it.</p>
+ * caller-supplied callback, so a favorite tapped from the Web page is loaded by that same Web page
+ * instead of leaving it. The multi-select strip follows {@link SharedPopupSurface}, so every shared
+ * popup is styled from one place.</p>
  */
 final class SharedBrowserPopup {
   private static final String PREFS = "web-browser-v2", HISTORY = "history", FAVORITES = "favorites";
@@ -46,14 +40,10 @@ final class SharedBrowserPopup {
 
   static void show(Activity host, boolean favoritesMode, Consumer<String> openUrl) {
     if (host == null || host.isFinishing()) return;
+    SharedPopupSurface.Theme theme = new SharedPopupSurface.Theme(host);
     SharedPreferences prefs = host.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     String key = favoritesMode ? FAVORITES : HISTORY;
     List<Entry> entries = read(prefs.getString(key, "[]"));
-    int accent = themeColor(host, android.R.attr.colorAccent, 0xff6750a4);
-    int text = themeColor(host, android.R.attr.textColorPrimary, Color.DKGRAY);
-    int surface = themeColor(host, android.R.attr.colorBackground, Color.WHITE);
-    int divider = Color.argb(60, Color.red(text), Color.green(text), Color.blue(text));
-    int muted = Color.argb(190, Color.red(text), Color.green(text), Color.blue(text));
 
     LinearLayout panel = new LinearLayout(host);
     panel.setOrientation(LinearLayout.VERTICAL);
@@ -61,9 +51,9 @@ final class SharedBrowserPopup {
 
     LinearLayout header = new LinearLayout(host);
     header.setGravity(Gravity.CENTER_VERTICAL);
-    TextView summary = label(host, "", 12, accent);
+    TextView summary = SharedPopupSurface.label(host, "", 12, theme.accent);
     summary.setMaxLines(1);
-    TextView selectAll = label(host, "多选", 13, accent);
+    TextView selectAll = SharedPopupSurface.label(host, "多选", 13, theme.accent);
     selectAll.setGravity(Gravity.CENTER);
     selectAll.setClickable(true);
     selectAll.setFocusable(true);
@@ -83,20 +73,23 @@ final class SharedBrowserPopup {
     LinearLayout actionBar = new LinearLayout(host);
     actionBar.setGravity(Gravity.CENTER_VERTICAL);
     actionBar.setPadding(dp(host, 6), 0, dp(host, 6), 0);
-    GradientDrawable strip = solid(surface, dp(host, 16));
-    strip.setStroke(dp(host, 1), divider);
+    GradientDrawable strip = SharedPopupSurface.solid(theme.surface, dp(host, 16));
+    strip.setStroke(dp(host, 1), theme.divider);
     actionBar.setBackground(strip);
     actionBar.setClipToOutline(true);
     actionBar.setContentDescription(favoritesMode ? "网页收藏多选操作" : "浏览历史多选操作");
-    ImageButton open = actionButton(host, R.drawable.ic_open_with, "打开所选网页", accent);
-    ImageButton star = actionButton(host, favoritesMode ? R.drawable.ic_star_filled : R.drawable.ic_star,
-        favoritesMode ? "将所选网页移出收藏" : "将所选网页加入收藏", accent);
-    ImageButton delete = actionButton(host, R.drawable.ic_delete_record,
-        favoritesMode ? "删除所选网页收藏" : "删除所选浏览历史", accent);
-    for (ImageButton button : new ImageButton[]{open, star, delete}) {
+    ImageButton open = SharedPopupSurface.actionButton(host, R.drawable.ic_open_with, "打开所选网页", theme.accent);
+    ImageButton star = SharedPopupSurface.actionButton(host, favoritesMode ? R.drawable.ic_star_filled : R.drawable.ic_star,
+        favoritesMode ? "将所选网页移出收藏" : "将所选网页加入收藏", theme.accent);
+    ImageButton path = SharedPopupSurface.actionButton(host, R.drawable.ic_folder, "将所选网页加入路径", theme.accent);
+    ImageButton delete = SharedPopupSurface.actionButton(host, R.drawable.ic_delete_record,
+        favoritesMode ? "删除所选网页收藏" : "删除所选浏览历史", theme.accent);
+    for (ImageButton button : new ImageButton[]{open, star, path, delete}) {
       actionBar.addView(button, new LinearLayout.LayoutParams(0, dp(host, 48), 1));
     }
-    panel.addView(actionBar, new LinearLayout.LayoutParams(-1, dp(host, 56)));
+    LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, 0);
+    actionBar.setVisibility(View.GONE);
+    panel.addView(actionBar, actionParams);
 
     AlertDialog dialog = new AlertDialog.Builder(host)
         .setTitle(favoritesMode ? "网页收藏" : "浏览历史")
@@ -105,9 +98,11 @@ final class SharedBrowserPopup {
         .create();
 
     dialog.setOwnerActivity(host);
-    HistoryPopupNavigation.attach(host,dialog,panel,favoritesMode?HistoryPopupNavigation.FAVORITES:HistoryPopupNavigation.HISTORY,accent,text,openUrl);
-    Session session = new Session(host, dialog, list, summary, selectAll, open, star, delete,
-        favoritesMode, key, accent, text, muted, openUrl);
+    HistoryPopupNavigation.attach(host, dialog, panel,
+        favoritesMode ? HistoryPopupNavigation.FAVORITES : HistoryPopupNavigation.HISTORY,
+        theme.accent, theme.text, openUrl);
+    Session session = new Session(host, dialog, list, summary, selectAll, open, star, path, delete,
+        actionBar, actionParams, favoritesMode, key, theme, openUrl);
     session.reload();
 
     selectAll.setOnClickListener(v -> {
@@ -123,35 +118,10 @@ final class SharedBrowserPopup {
     });
     open.setOnClickListener(v -> session.openSelected());
     star.setOnClickListener(v -> session.toggleFavoriteSelected());
+    path.setOnClickListener(v -> session.addSelectedToPath());
     delete.setOnClickListener(v -> session.deleteSelected());
 
-    dialog.setOnShowListener(ignored -> {
-      Window window = dialog.getWindow();
-      if (window != null) {
-        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        WindowManager.LayoutParams params = window.getAttributes();
-        params.gravity = Gravity.CENTER;
-        params.x = 0;
-        params.y = 0;
-        params.width = Math.max(dp(host, 280),
-            Math.min(dp(host, 560), host.getResources().getDisplayMetrics().widthPixels - dp(host, 28)));
-        params.height = WindowManager.LayoutParams.WRAP_CONTENT;
-        window.setAttributes(params);
-      }
-      View content = dialog.findViewById(android.R.id.content);
-      View surfaceView = content;
-      if (content instanceof ViewGroup && ((ViewGroup) content).getChildCount() > 0) {
-        surfaceView = ((ViewGroup) content).getChildAt(0);
-      }
-      if (surfaceView != null) {
-        surfaceView.setBackground(solid(surface, dp(host, 22)));
-        surfaceView.setClipToOutline(true);
-        surfaceView.setElevation(dp(host, 10));
-      }
-      android.widget.Button close = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-      if (close != null) close.setTextColor(muted);
-      session.render();
-    });
+    SharedPopupSurface.styleDialog(host, dialog, theme, () -> session.render());
     dialog.setOnDismissListener(ignored -> notifyHost(host));
     dialog.show();
   }
@@ -185,7 +155,10 @@ final class SharedBrowserPopup {
   }
 
   private static void notifyHost(Activity host) {
-    if (host instanceof LanzouWebActivity) { ((LanzouWebActivity) host).loadState(); ((LanzouWebActivity) host).updateFavoriteState(); }
+    if (host instanceof LanzouWebActivity) {
+      ((LanzouWebActivity) host).loadState();
+      ((LanzouWebActivity) host).updateFavoriteState();
+    }
   }
 
   /** Mutable presentation state for one popup instance; entries stay in the shared store. */
@@ -194,18 +167,21 @@ final class SharedBrowserPopup {
     final AlertDialog dialog;
     final LinearLayout list;
     final TextView summary, selectAll;
-    final ImageButton open, star, delete;
+    final ImageButton open, star, path, delete;
+    final LinearLayout actionBar;
+    final LinearLayout.LayoutParams actionParams;
     final boolean favoritesMode;
     final String key;
-    final int accent, text, muted;
+    final SharedPopupSurface.Theme theme;
     final Consumer<String> openUrl;
     final List<Entry> entries = new ArrayList<>();
     final LinkedHashSet<String> selected = new LinkedHashSet<>();
     boolean selectionMode;
 
     Session(Activity host, AlertDialog dialog, LinearLayout list, TextView summary, TextView selectAll,
-        ImageButton open, ImageButton star, ImageButton delete, boolean favoritesMode, String key,
-        int accent, int text, int muted, Consumer<String> openUrl) {
+        ImageButton open, ImageButton star, ImageButton path, ImageButton delete, LinearLayout actionBar,
+        LinearLayout.LayoutParams actionParams, boolean favoritesMode, String key, SharedPopupSurface.Theme theme,
+        Consumer<String> openUrl) {
       this.host = host;
       this.dialog = dialog;
       this.list = list;
@@ -213,12 +189,13 @@ final class SharedBrowserPopup {
       this.selectAll = selectAll;
       this.open = open;
       this.star = star;
+      this.path = path;
       this.delete = delete;
+      this.actionBar = actionBar;
+      this.actionParams = actionParams;
       this.favoritesMode = favoritesMode;
       this.key = key;
-      this.accent = accent;
-      this.text = text;
-      this.muted = muted;
+      this.theme = theme;
       this.openUrl = openUrl;
     }
 
@@ -236,7 +213,7 @@ final class SharedBrowserPopup {
       selected.retainAll(alive);
       for (Entry entry : entries) list.addView(buildRow(entry), new LinearLayout.LayoutParams(-1, -2));
       if (entries.isEmpty()) {
-        TextView empty = label(host, favoritesMode ? "暂无网页收藏" : "暂无浏览历史", 13, muted);
+        TextView empty = SharedPopupSurface.label(host, favoritesMode ? "暂无网页收藏" : "暂无浏览历史", 13, theme.muted);
         empty.setGravity(Gravity.CENTER);
         list.addView(empty, new LinearLayout.LayoutParams(-1, dp(host, 80)));
       }
@@ -258,25 +235,26 @@ final class SharedBrowserPopup {
       row.addView(check, new LinearLayout.LayoutParams(dp(host, 48), dp(host, 48)));
       LinearLayout words = new LinearLayout(host);
       words.setOrientation(LinearLayout.VERTICAL);
-      TextView title = label(host, entry.title, 14, text);
+      TextView title = SharedPopupSurface.label(host, entry.title, 14, theme.text);
       title.setSingleLine(true);
       title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-      TextView url = label(host, entry.url, 11, muted);
+      TextView url = SharedPopupSurface.label(host, entry.url, 11, theme.muted);
       url.setSingleLine(true);
       url.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-      TextView moment = label(host, moment(entry.at), 10, muted);
+      TextView moment = SharedPopupSurface.label(host, SharedPopupSurface.moment(entry.at), 10, theme.muted);
       moment.setSingleLine(true);
       words.addView(title, new LinearLayout.LayoutParams(-1, dp(host, 24)));
       words.addView(url, new LinearLayout.LayoutParams(-1, dp(host, 20)));
       words.addView(moment, new LinearLayout.LayoutParams(-1, dp(host, 18)));
       row.addView(words, new LinearLayout.LayoutParams(0, dp(host, 62), 1));
-      row.setBackground(ripple(accent, new ColorDrawable(Color.TRANSPARENT)));
+      row.setBackground(SharedPopupSurface.ripple(theme.accent, new ColorDrawable(Color.TRANSPARENT)));
       row.setClickable(true);
       row.setFocusable(true);
       row.setContentDescription(entry.title + "，" + entry.url + (checked ? "，已选择" : "") + "，轻点打开，长按多选");
       row.setOnClickListener(v -> {
         if (selectionMode) {
           if (!selected.remove(entry.url)) selected.add(entry.url);
+          if (selected.isEmpty()) selectionMode = false;
           render();
           return;
         }
@@ -292,10 +270,13 @@ final class SharedBrowserPopup {
     }
 
     void sync() {
+      actionParams.height = selectionMode ? dp(host, 56) : 0;
+      actionBar.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
       boolean single = selected.size() == 1, any = !selected.isEmpty();
-      styleButton(open, accent, muted, single);
-      styleButton(star, accent, muted, any);
-      styleButton(delete, accent, muted, any);
+      SharedPopupSurface.styleButton(open, theme.accent, theme.muted, single);
+      SharedPopupSurface.styleButton(star, theme.accent, theme.muted, any);
+      SharedPopupSurface.styleButton(path, theme.accent, theme.muted, any);
+      SharedPopupSurface.styleButton(delete, theme.accent, theme.muted, any);
       star.setImageResource(favoritesMode ? R.drawable.ic_star_filled : R.drawable.ic_star);
       star.setContentDescription(favoritesMode ? "将所选网页移出收藏" : "将所选网页加入收藏");
       summary.setText(selectionMode ? "已选 " + selected.size() + " / " + entries.size()
@@ -313,6 +294,27 @@ final class SharedBrowserPopup {
       if (url == null || url.isEmpty()) return;
       dialog.dismiss();
       if (openUrl != null) openUrl.accept(url);
+    }
+
+    /**
+     * Sends the chosen pages to the shared path picker in this Activity. The picker never starts
+     * another Activity, so a favorite picked on the Web page stays on the Web page.
+     */
+    void addSelectedToPath() {
+      if (selected.isEmpty()) return;
+      List<Models.Item> items = new ArrayList<>();
+      for (Entry entry : entries) {
+        if (!selected.contains(entry.url)) continue;
+        Models.Item item = new Models.Item();
+        item.title = entry.title;
+        item.url = entry.url;
+        item.shareUrl = entry.url;
+        item.description = "非蓝奏云网页收藏";
+        item.source = "网页收藏";
+        items.add(item);
+      }
+      if (items.isEmpty()) return;
+      SourceDestinationPopup.show(host, Collections.emptyList(), items);
     }
 
     void toggleFavoriteSelected() {
@@ -351,6 +353,7 @@ final class SharedBrowserPopup {
   private static final class Entry {
     final String title, url;
     final long at;
+
     Entry(String title, String url, long at) {
       this.title = title == null || title.trim().isEmpty() ? (url == null ? "" : url) : title;
       this.url = url == null ? "" : url;
@@ -385,68 +388,7 @@ final class SharedBrowserPopup {
     return output.toString();
   }
 
-  private static String moment(long at) {
-    if (at <= 0) return "时间未知";
-    try {
-      return DateUtils.getRelativeTimeSpanString(at, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString();
-    } catch (Exception ignored) {
-      return "时间未知";
-    }
-  }
-
-  private static void styleButton(ImageButton button, int tint, int muted, boolean enabled) {
-    button.setEnabled(enabled);
-    button.setAlpha(enabled ? 1f : .38f);
-    button.setColorFilter(enabled ? tint : muted);
-  }
-
-  private static ImageButton actionButton(Activity host, int icon, String description, int tint) {
-    ImageButton button = new ImageButton(host);
-    button.setImageResource(icon);
-    button.setColorFilter(tint);
-    button.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
-    button.setPadding(dp(host, 12), dp(host, 12), dp(host, 12), dp(host, 12));
-    button.setBackgroundColor(Color.TRANSPARENT);
-    button.setContentDescription(description);
-    button.setMinimumWidth(0);
-    button.setMinimumHeight(0);
-    return button;
-  }
-
-  private static Drawable ripple(int tint, Drawable content) {
-    return new RippleDrawable(ColorStateList.valueOf(Color.argb(36, Color.red(tint), Color.green(tint), Color.blue(tint))), content, null);
-  }
-
-  private static GradientDrawable solid(int color, int radius) {
-    GradientDrawable shape = new GradientDrawable();
-    shape.setColor(color);
-    shape.setCornerRadius(radius);
-    return shape;
-  }
-
-  private static TextView label(Activity host, String value, int size, int color) {
-    TextView text = new TextView(host);
-    text.setText(value);
-    text.setTextColor(color);
-    text.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
-    text.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-    return text;
-  }
-
-  private static int themeColor(Activity host, int attribute, int fallback) {
-    TypedValue result = new TypedValue();
-    if (!host.getTheme().resolveAttribute(attribute, result, true)) return fallback;
-    if (result.resourceId != 0) {
-      try {
-        return host.getResources().getColor(result.resourceId, host.getTheme());
-      } catch (android.content.res.Resources.NotFoundException ignored) {
-        return fallback;
-      }
-    }
-    return result.data;
-  }
-
-  private static int dp(Activity host, float value) {
-    return (int) (value * host.getResources().getDisplayMetrics().density + .5f);
+  private static int dp(Activity host, int value) {
+    return SharedPopupSurface.dp(host, value);
   }
 }

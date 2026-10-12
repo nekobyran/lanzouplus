@@ -71,11 +71,13 @@ final class AppScopedTransfer {
             }
 
             @Override public void verificationRequired(String url) {
-              // Interactive verification needs a foreground host; the driver refuses to fake one.
+              // Interactive verification needs a foreground host, so this job cannot continue. It is
+              // still published as an explicit, retryable pending-verification record instead of a
+              // silent failure: the shared popup can then tell the user what is missing.
               if (!isAttempt(key, attempt)) return;
               RESOLVING.remove(key);
               clearAttempt(key, attempt);
-              callbacks.fail("需要滑动验证，请在应用内继续该下载");
+              callbacks.verificationRequired(url);
             }
           });
       // A cache hit resolves synchronously and has already started the segment; only remember a

@@ -35,6 +35,14 @@ final class PersistedDownloadDriver {
   /** Persisted state written while a driver job is running; Main must not re-import it as failed. */
   static final String STATE_DRIVER_RUNNING = "driver-running";
 
+  /**
+   * Persisted marker written on a retryable failed record whose transfer stopped because an
+   * interactive verification challenge must be solved first. The record keeps its share link,
+   * partial progress and batch identity, so every host can render an explicit
+   * "waiting for verification" entry that stays actionable instead of an unexplained failure.
+   */
+  static final String VERIFY_KEY = "verify", VERIFY_PENDING = "pending";
+
   /** One persisted request, re-read from the snapshot so no stale Activity state is required. */
   static final class Request {
     final String name, entryType, shareUrl, password, directUrl, uriString, parentUriString,
@@ -98,6 +106,14 @@ final class PersistedDownloadDriver {
     void fail(String error);
     default void paused(long downloadedBytes, long totalBytes) {}
     default void cancelled(long downloadedBytes, long totalBytes) {}
+
+    /**
+     * The host must solve an interactive verification challenge before this transfer can go on.
+     * Never a silent failure: the driver turns it into an explicit, retryable pending state.
+     */
+    default void verificationRequired(String url) {
+      fail("需要滑动验证，请打开应用完成验证后继续该下载");
+    }
   }
 
   /** One live reservation; the generation makes callbacks from older jobs stale. */
@@ -237,29 +253,47 @@ final class PersistedDownloadDriver {
    * Keeps snapshot items still owned by an active driver job. {@link MainActivity} rewrites the
    * whole array from its in-memory entries; without this, a flush racing a live driver job would
    * clobber the driver's progress and freshly resolved direct URL.
+   *
+   * <p>Records that stopped on an interactive verification challenge carry their marker the same
+   * way: {@link MainActivity}'s in-memory entries have no field for it, so a rewrite would drop the
+   * explicit "waiting for verification" state and leave the entry looking like an ordinary failure.
+   * The marker is only re-applied while the rewritten entry is still failed, so a retry that
+   * completed, was cancelled or is running keeps the state its owner published.</p>
    */
   static String preserveActiveItems(String persisted, String written) {
     Map<String, Job> active;
     synchronized (LOCK) {
-      if (ACTIVE.isEmpty()) return written;
       active = new LinkedHashMap<>(ACTIVE);
     }
     try {
       JSONArray writtenItems = new JSONArray(written == null ? "[]" : written);
       JSONArray persistedItems = new JSONArray(persisted == null ? "[]" : persisted);
-      Map<String, JSONObject> owned = new LinkedHashMap<>();
+      Map<String, JSONObject> previous = new LinkedHashMap<>();
+      boolean anyPending = false;
       for (int i = 0; i < persistedItems.length(); i++) {
         JSONObject item = persistedItems.optJSONObject(i);
         if (item == null) continue;
-        String key = itemKey(item);
-        if (active.containsKey(key)) owned.put(key, item);
+        previous.put(itemKey(item), item);
+        anyPending |= VERIFY_PENDING.equals(item.optString(VERIFY_KEY, ""));
       }
+      if (active.isEmpty() && !anyPending) return written;
       JSONArray out = new JSONArray();
       for (int i = 0; i < writtenItems.length(); i++) {
         JSONObject item = writtenItems.optJSONObject(i);
         if (item == null) continue;
-        JSONObject replacement = owned.get(itemKey(item));
-        out.put(replacement == null ? item : replacement);
+        String key = itemKey(item);
+        JSONObject owner = active.containsKey(key) ? previous.get(key) : null;
+        if (owner != null) {
+          out.put(owner);
+          continue;
+        }
+        JSONObject stopped = previous.get(key);
+        if (stopped != null && VERIFY_PENDING.equals(stopped.optString(VERIFY_KEY, ""))
+            && !item.has(VERIFY_KEY)
+            && MainActivity.DOWNLOAD_FAILED.equals(item.optString("state", ""))) {
+          item.put(VERIFY_KEY, VERIFY_PENDING);
+        }
+        out.put(item);
       }
       return out.toString();
     } catch (Exception ignored) {
@@ -327,6 +361,11 @@ final class PersistedDownloadDriver {
         if (!isCurrent(job)) return;
         settle(job, MainActivity.DOWNLOAD_CANCELLED, "已取消", -1, -1);
       }
+
+      @Override public void verificationRequired(String url) {
+        if (!isCurrent(job)) return;
+        settleVerification(job);
+      }
     };
   }
 
@@ -342,6 +381,22 @@ final class PersistedDownloadDriver {
     } finally {
       release(job);
     }
+    }
+  }
+
+  /**
+   * Publishes "waiting for the host to solve a verification challenge" and drops the reservation
+   * exactly once, so the next attempt is never blocked by a job that already gave up: the record
+   * stays retryable and carries the reason it is not moving.
+   */
+  private static void settleVerification(Job job) {
+    synchronized (LOCK) {
+      if (!isCurrent(job)) return;
+      try {
+        DownloadHistoryCenter.markPersistedVerification(job.context, job.row);
+      } finally {
+        release(job);
+      }
     }
   }
 

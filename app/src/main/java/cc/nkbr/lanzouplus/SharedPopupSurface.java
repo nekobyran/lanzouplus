@@ -168,6 +168,8 @@ final class SharedPopupSurface {
       if (close != null) close.setTextColor(theme.muted);
       android.widget.Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
       if (positive != null) positive.setTextColor(theme.accent);
+      android.widget.Button neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+      if (neutral != null) neutral.setTextColor(theme.accent);
       if (after != null) after.run();
     }
   }

@@ -84,12 +84,18 @@ public class PopupRuntime183Test {
       click("测试批量183",false,false);assertEquals("Batch details use the same Android window",window,root().getWindowId());required("返回下载历史列表",true);required("下载完成",false);screenshot("download-history-batch");
       click("示例软件0.apk",false,true);visible("分享所选原链接",true);screenshot("download-history-selection");click("返回下载历史列表",true,false);assertEquals(window,root().getWindowId());required("测试批量183",false);click("关闭",false,false);
       scenario.onActivity(main->SharedBrowserPopup.show(main,false,url->{}));required("测试网页",false);stable();screenshot("browsing-history");click("测试网页",false,true);visible("将所选网页加入路径",true);screenshot("browsing-history-selection");click("关闭",false,false);
+      scenario.onActivity(main->main.showSoftwareDetailsDialog(false));required("隐私政策",false);stable();screenshot("general-about");click("关闭",false,false);
     }
     seedStores();
     Intent reference=new Intent(context,LegacyPopup183RuntimeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try(ActivityScenario<LegacyPopup183RuntimeActivity> scenario=ActivityScenario.launch(reference)){
       scenario.onActivity(main->{main.ui.removeCallbacksAndMessages(null);main.loadSourceCategories();seedDownloads(main);main.showSourceDestinationPicker(Collections.emptyList(),Collections.singletonList(SourceDestinationPopup.webFavoriteItem("https://example.invalid/reference183","当前网页")));});
       required("当前路径：分类",false);screenshot("legacy181-path");dismiss();scenario.onActivity(main->main.showBatchDownloadDetails("batch183"));required("保存中",false);screenshot("legacy181-batch");click("示例软件0.apk",false,true);required("分享所选原链接",true);screenshot("legacy181-batch-selection");click("关闭",false,false);
+    }
+    Intent webIntent=new Intent(context,LanzouWebActivity.class).putExtra("url","https://example.invalid/popup185").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    try(ActivityScenario<LanzouWebActivity> scenario=ActivityScenario.launch(webIntent)){
+      scenario.onActivity(web->web.showRounded(new android.app.AlertDialog.Builder(web).setTitle("Web 普通弹窗").setMessage("验证统一圆角窗口").setNegativeButton("关闭",null).create()));
+      required("Web 普通弹窗",false);stable();screenshot("web-general");click("关闭",false,false);
     }
     if(variant.equals("portrait-light"))realWebViewResumesWithoutCookie();
   }

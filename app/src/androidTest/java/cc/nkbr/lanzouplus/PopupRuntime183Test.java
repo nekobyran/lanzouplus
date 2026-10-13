@@ -94,7 +94,11 @@ public class PopupRuntime183Test {
     }
     Intent webIntent=new Intent(context,LanzouWebActivity.class).putExtra("url","https://example.invalid/popup185").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try(ActivityScenario<LanzouWebActivity> scenario=ActivityScenario.launch(webIntent)){
-      scenario.onActivity(web->web.showRounded(new android.app.AlertDialog.Builder(web).setTitle("Web 普通弹窗").setMessage("验证统一圆角窗口").setNegativeButton("关闭",null).create()));
+      scenario.onActivity(web->{
+        web.web.stopLoading();web.web.setWebViewClient(new android.webkit.WebViewClient());web.web.setBackgroundColor(web.BG);
+        web.web.loadDataWithBaseURL("https://example.invalid/popup185","<html style='background:#"+Integer.toHexString(web.BG).substring(2)+"'><body></body></html>","text/html","UTF-8",null);
+        web.showRounded(new android.app.AlertDialog.Builder(web).setTitle("Web 普通弹窗").setMessage("验证统一圆角窗口").setNegativeButton("关闭",null).create());
+      });
       required("Web 普通弹窗",false);stable();screenshot("web-general");click("关闭",false,false);
     }
     if(variant.equals("portrait-light"))realWebViewResumesWithoutCookie();

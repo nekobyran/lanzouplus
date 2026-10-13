@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -13,6 +12,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.ImageButton;
@@ -133,7 +133,12 @@ final class SharedPopupSurface {
     final int radius = dp(host, 22);
     Window window = dialog.getWindow();
     if (window != null) {
-      window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+      // Material dialogs put the rounded background on the window itself. A shadow on an
+      // inner panel is cropped to the rectangular window and leaves dark blocks at its corners.
+      window.setBackgroundDrawable(solid(theme.surface, radius));
+      View decor = window.getDecorView();
+      decor.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+      decor.setClipToOutline(true);
       window.setWindowAnimations(0);
       WindowManager.LayoutParams params = window.getAttributes();
       params.gravity = Gravity.CENTER;
@@ -153,7 +158,7 @@ final class SharedPopupSurface {
       if (surfaceView != null) {
         surfaceView.setBackground(solid(theme.surface, radius));
         surfaceView.setClipToOutline(true);
-        surfaceView.setElevation(dp(host, 10));
+        surfaceView.setElevation(0);
       }
       int titleId = host.getResources().getIdentifier("alertTitle", "id", "android");
       TextView title = dialog.findViewById(titleId);

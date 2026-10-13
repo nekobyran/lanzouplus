@@ -1,10 +1,16 @@
 name: LanzouPlus Android popup UI
 on:
   workflow_dispatch:
+    inputs:
+      signed_version:
+        description: Published version for signed APK startup (empty runs popup UI)
+        required: false
+        default: ''
 permissions:
   contents: read
 jobs:
   popup-ui:
+    if: inputs.signed_version == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -45,4 +51,57 @@ jobs:
         with:
           name: popup183-android-ui
           path: ui-evidence
+          if-no-files-found: error
+  signed-startup:
+    if: inputs.signed_version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools build-tools;36.0.0
+      - name: Download the formal signed release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.signed_version }}
+        run: |
+          mkdir -p signed-apks signed-evidence
+          gh release download "v$VERSION" --repo nekobyran/lanzouplus --pattern '*.apk' --dir signed-apks
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb logcat -c
+            for apk in signed-apks/*.apk; do
+              name=$(basename "$apk" .apk)
+              "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "signed-evidence/$name-manifest.txt"
+              package=$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" "signed-evidence/$name-manifest.txt")
+              activity=$(sed -n "s/^launchable-activity: name='\([^']*\)'.*/\1/p" "signed-evidence/$name-manifest.txt")
+              test -n "$package"
+              test -n "$activity"
+              adb install "$apk"
+              adb shell am start -W -n "$package/$activity" > "signed-evidence/$name-start.txt"
+              sleep 5
+              adb shell pidof "$package" > "signed-evidence/$name-pid.txt"
+              adb exec-out screencap -p > "signed-evidence/$name-start.png"
+              grep -q 'Status: ok' "signed-evidence/$name-start.txt"
+              test -s "signed-evidence/$name-pid.txt"
+              adb shell am force-stop "$package"
+            done
+            adb logcat -d -s AndroidRuntime > signed-evidence/android-runtime.txt
+            if grep -q 'FATAL EXCEPTION' signed-evidence/android-runtime.txt; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-startup
+          path: signed-evidence
           if-no-files-found: error

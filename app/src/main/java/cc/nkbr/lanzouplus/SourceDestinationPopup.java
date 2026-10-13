@@ -103,6 +103,8 @@ final class SourceDestinationPopup {
           : "directory:" + LanzouCore.sourceId(composite) + ":" + nodeId;
     }
 
+    String treeKey() { return category + '\n' + key(); }
+
     String name() {
       return path.substring(path.lastIndexOf('›') + 1).trim();
     }
@@ -126,7 +128,8 @@ final class SourceDestinationPopup {
     final List<Models.Source> sources = new ArrayList<>(sourceInput == null ? Collections.emptyList() : sourceInput);
     final List<Models.Item> items = new ArrayList<>(itemInput == null ? Collections.emptyList() : itemInput);
     final LinkedHashMap<String, Destination> selected = new LinkedHashMap<>();
-    final ArrayList<Destination> stack = new ArrayList<>();
+    final LinkedHashSet<String> expanded = new LinkedHashSet<>();
+    final DestinationTree[] tree = {null};
     final Destination[] current = {null};
 
     LinearLayout panel = new LinearLayout(host);
@@ -173,58 +176,19 @@ final class SourceDestinationPopup {
       summary.setContentDescription("提交前摘要，已选 " + selected.size() + " 个路径");
       if (submit[0] != null) submit[0].setEnabled(!selected.isEmpty() && (!sources.isEmpty() || !items.isEmpty()));
     };
+    java.util.function.Consumer<Destination> focus = here -> {
+      current[0]=here;
+      path.setText("当前路径："+(here==null?"分类":here.path));
+      back.setEnabled(here!=null);
+      createFolder.setEnabled(here!=null&&!here.categoryOnly());
+    };
     render[0] = () -> {
       choices.removeAllViews();
-      Destination here = current[0];
-      path.setText("当前路径：" + (here == null ? "分类" : here.path));
-      back.setEnabled(here != null);
-      createFolder.setEnabled(here != null && !here.categoryOnly());
-      LinkedHashMap<String, Destination> level = new LinkedHashMap<>();
-      if (here == null) {
-        level.putIfAbsent("全部", new Destination("全部", null, "", "全部"));
-        for (Map.Entry<String, Set<String>> category : catalog.categories().entrySet()) {
-          Destination destination = new Destination(category.getKey(), category.getValue(), category.getKey());
-          level.putIfAbsent(category.getKey().toLowerCase(Locale.ROOT), destination);
-        }
-      } else if (here.categoryOnly()) {
-        Set<String> ids = here.category.equals("全部") ? null : catalog.categories().get(here.category);
-        for (Models.Source source : available) {
-          if (!MainActivity.compositeSource(source)) continue;
-          if (ids != null && !ids.contains(LanzouCore.sourceId(source))) continue;
-          String title = source.title.isEmpty() ? "自建目录" : source.title;
-          Destination destination = new Destination(here.category, source, "", here.category + " › " + title);
-          level.putIfAbsent(destination.key(), destination);
-        }
-      } else {
-        for (Models.SourceMember member : catalog.folders(here.composite, here.nodeId)) {
-          Destination destination = new Destination(here.category, here.composite, member.id, here.path + " › " + member.title);
-          level.putIfAbsent(destination.key(), destination);
-        }
-      }
-      final Runnable updateNow = update[0];
-      for (Destination destination : level.values()) {
-        Runnable enter = () -> {
-          stack.add(current[0]);
-          current[0] = destination;
-          render[0].run();
-        };
-        boolean alreadyAdded = containsAll(destination, sources);
-        choices.addView(destinationRow(host, theme, destination, selected, enter, updateNow, alreadyAdded),
-            new LinearLayout.LayoutParams(-1, SharedPopupSurface.dp(host, 50)));
-      }
-      if (level.isEmpty()) {
-        TextView empty = SharedPopupSurface.label(host, "此位置没有下级自建目录", 12, theme.muted);
-        empty.setGravity(Gravity.CENTER);
-        choices.addView(empty, new LinearLayout.LayoutParams(-1, SharedPopupSurface.dp(host, 72)));
-      }
-      scroll.scrollTo(0, 0);
-      updateNow.run();
+      tree[0]=new DestinationTree(host,theme,catalog,available,sources,selected,expanded,focus,update[0]);
+      tree[0].roots(choices);
+      focus.accept(current[0]);update[0].run();
     };
-    back.setOnClickListener(v -> {
-      if (current[0] == null) return;
-      current[0] = stack.isEmpty() ? null : stack.remove(stack.size() - 1);
-      render[0].run();
-    });
+    back.setOnClickListener(v -> {if(current[0]!=null)tree[0].collapse(current[0]);});
     createFolder.setOnClickListener(v -> {
       Destination here = current[0];
       if (here == null || here.categoryOnly()) return;
@@ -296,6 +260,82 @@ final class SourceDestinationPopup {
       if (!destination.membership.contains(LanzouCore.sourceId(source))) return false;
     }
     return true;
+  }
+
+  /** Mounted directory branches keep their ancestors clickable while descendants expand. */
+  private static final class DestinationTree {
+    final Activity host;final SharedPopupSurface.Theme theme;final Catalog catalog;
+    final List<Models.Source> available,adding;final Map<String,Destination> selected;
+    final Set<String> expanded;final java.util.function.Consumer<Destination> focus;final Runnable changed;
+    final Map<String,Branch> branches=new LinkedHashMap<>();
+    DestinationTree(Activity host,SharedPopupSurface.Theme theme,Catalog catalog,List<Models.Source> available,
+        List<Models.Source> adding,Map<String,Destination> selected,Set<String> expanded,
+        java.util.function.Consumer<Destination> focus,Runnable changed){
+      this.host=host;this.theme=theme;this.catalog=catalog;this.available=available;this.adding=adding;
+      this.selected=selected;this.expanded=expanded;this.focus=focus;this.changed=changed;
+    }
+    void roots(LinearLayout area){
+      add(area,new Destination("全部",null,"","全部"),null);
+      for(Map.Entry<String,Set<String>> category:catalog.categories().entrySet())
+        add(area,new Destination(category.getKey(),category.getValue(),category.getKey()),null);
+    }
+    void add(LinearLayout area,Destination destination,Destination parent){
+      Branch branch=new Branch(destination,parent);branches.put(destination.treeKey(),branch);
+      area.addView(branch.container,new LinearLayout.LayoutParams(-1,-2));
+      if(expanded.contains(destination.treeKey()))branch.setOpen(true,false);
+    }
+    void children(LinearLayout area,Destination here){
+      if(here.categoryOnly()){
+        Set<String> ids=here.category.equals("全部")?null:catalog.categories().get(here.category);
+        for(Models.Source source:available){
+          if(!MainActivity.compositeSource(source)||ids!=null&&!ids.contains(LanzouCore.sourceId(source)))continue;
+          String title=source.title.isEmpty()?"自建目录":source.title;
+          add(area,new Destination(here.category,source,"",here.path+" › "+title),here);
+        }
+      }else for(Models.SourceMember member:catalog.folders(here.composite,here.nodeId))
+        add(area,new Destination(here.category,here.composite,member.id,here.path+" › "+member.title),here);
+      if(area.getChildCount()==0){
+        TextView empty=SharedPopupSurface.label(host,"此位置没有下级自建目录",12,theme.muted);
+        empty.setGravity(Gravity.CENTER);area.addView(empty,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,44)));
+      }
+    }
+    void collapse(Destination destination){Branch branch=branches.get(destination.treeKey());if(branch!=null)branch.setOpen(false,true);}
+    final class Branch {
+      final Destination destination,parent;final LinearLayout container,children;final ImageButton arrow;
+      boolean open,loaded;android.animation.ValueAnimator animation;
+      Branch(Destination destination,Destination parent){
+        this.destination=destination;this.parent=parent;
+        container=new LinearLayout(host);container.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout row=(LinearLayout)destinationRow(host,theme,destination,selected,()->setOpen(!open,true),changed,containsAll(destination,adding));
+        arrow=(ImageButton)row.getChildAt(row.getChildCount()-1);
+        container.addView(row,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,50)));
+        children=new LinearLayout(host);children.setOrientation(LinearLayout.VERTICAL);
+        children.setPadding(SharedPopupSurface.dp(host,12),0,0,0);children.setVisibility(View.GONE);
+        container.addView(children,new LinearLayout.LayoutParams(-1,-2));
+      }
+      void setOpen(boolean value,boolean animate){
+        open=value;if(open)expanded.add(destination.treeKey());else expanded.remove(destination.treeKey());
+        if(animate)focus.accept(open?destination:parent);
+        if(open&&!loaded){loaded=true;DestinationTree.this.children(children,destination);}
+        if(animation!=null)animation.cancel();arrow.animate().cancel();
+        arrow.setContentDescription((open?"收起 ":"进入 ")+destination.name());
+        boolean motion=animate&&HistoryPopupNavigation.motionEnabled(host)&&container.getWidth()>0;
+        if(!motion){children.setVisibility(open?View.VISIBLE:View.GONE);children.setAlpha(1f);children.getLayoutParams().height=-2;arrow.setRotation(open?0f:-90f);return;}
+        int from=children.getVisibility()==View.GONE?0:children.getHeight();
+        children.setVisibility(View.VISIBLE);if(open&&from==0)children.setAlpha(0f);children.getLayoutParams().height=-2;
+        children.measure(View.MeasureSpec.makeMeasureSpec(container.getWidth(),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));
+        int target=open?children.getMeasuredHeight():0;children.getLayoutParams().height=from;
+        animation=android.animation.ValueAnimator.ofInt(from,target);animation.setDuration(180);
+        animation.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        animation.addUpdateListener(frame->{children.getLayoutParams().height=(Integer)frame.getAnimatedValue();children.requestLayout();});
+        animation.addListener(new android.animation.AnimatorListenerAdapter(){boolean cancelled;
+          @Override public void onAnimationCancel(android.animation.Animator animator){cancelled=true;}
+          @Override public void onAnimationEnd(android.animation.Animator animator){if(cancelled)return;children.getLayoutParams().height=-2;children.setVisibility(open?View.VISIBLE:View.GONE);children.setAlpha(1f);children.requestLayout();container.post(()->container.requestRectangleOnScreen(new android.graphics.Rect(0,0,container.getWidth(),SharedPopupSurface.dp(host,50)),true));}
+        });
+        children.animate().alpha(open?1f:0f).setDuration(180).start();
+        arrow.animate().rotation(open?0f:-90f).setDuration(180).start();animation.start();
+      }
+    }
   }
 
   private static View destinationRow(Activity host, SharedPopupSurface.Theme theme, final Destination destination,

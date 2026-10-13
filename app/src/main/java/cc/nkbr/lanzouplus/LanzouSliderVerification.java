@@ -41,23 +41,7 @@ final class LanzouSliderVerification implements AutoCloseable {
    * visibility facts (rendered box, computed style, visible ancestors), so a {@code display:none}
    * remnant of an already solved slider is not reported as a live challenge.
    */
-  private static final String PROBE_SCRIPT="(function(){function vis(el){if(!el)return false;"
-      +"var r;try{r=el.getBoundingClientRect();}catch(e){return false;}"
-      +"if(!r||!(r.width>0)||!(r.height>0))return false;var n=el,i=0;"
-      +"while(n&&n.nodeType===1&&i++<24){var s=window.getComputedStyle?window.getComputedStyle(n):null;"
-      +"if(s&&(s.display==='none'||s.visibility!=='visible'||parseFloat(s.opacity)<=0.01))return false;"
-      +"n=n.parentElement;}return true;}"
-      +"var d=document.documentElement;var h=d?d.outerHTML:'';"
-      +"var s=document.getElementById('aliyunCaptcha-sliding-slider');"
-      +"var t=document.getElementById('aliyunCaptcha-sliding-body');"
-      +"var sv=vis(s),tv=vis(t),active=sv||tv;"
-      +"var nodes=document.querySelectorAll('#nc_1_n1z,.nc_scale,#aliyunCaptcha-window,[id*=captcha][role=dialog],[id*=Captcha][role=dialog]');"
-      +"for(var j=0;j<nodes.length;j++)active=active||vis(nodes[j]);"
-      +"var words=document.body?document.body.innerText:'';active=active||words.indexOf('请完成以下操作，验证您是真人')>=0||words.indexOf('verify that you are a real person')>=0;"
-      +"var a=s?s.getBoundingClientRect():null,b=t?t.getBoundingClientRect():null;"
-      +"var ready=sv&&tv&&b.width>a.width;"
-      +"return {html:h,challenge:active,ready:ready,x:ready?a.left+a.width/2:0,"
-      +"y:ready?a.top+a.height/2:0,distance:ready?b.right-a.right:0,viewport:window.innerWidth};})()";
+  private static final String PROBE_SCRIPT="(function(){\nvar html='',active=false,geometry=null;\nfunction visible(el,win){if(!el)return false;var r=el.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;for(var n=el;n&&n.nodeType===1;n=n.parentElement){var st=win.getComputedStyle(n);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity)<=0.01)return false;}return true;}\nfunction scan(doc,win,ox,oy,sx,sy){\nhtml+='\\n'+(doc.documentElement?doc.documentElement.outerHTML:'');\nvar nodes=doc.querySelectorAll('#nc_1_n1z,.nc_scale,#aliyunCaptcha-window,[id*=captcha][role=dialog],[id*=Captcha][role=dialog]');\nfor(var i=0;i<nodes.length;i++)if(visible(nodes[i],win))active=true;\nvar pairs=[['#aliyunCaptcha-sliding-slider','#aliyunCaptcha-sliding-body'],['.nc_scale .btn_slide','.nc_scale'],['#nc_1_n1z','#nc_1__scale_text']];\nfor(var j=0;j<pairs.length;j++){var slider=doc.querySelector(pairs[j][0]),track=doc.querySelector(pairs[j][1]);if(!visible(slider,win)||!visible(track,win))continue;active=true;var a=slider.getBoundingClientRect(),b=track.getBoundingClientRect();if(!geometry&&b.width>a.width){geometry={x:ox+(a.left+a.width/2)*sx,y:oy+(a.top+a.height/2)*sy,distance:(b.right-a.right+2)*sx};}}\nvar words=doc.body?doc.body.innerText:'';active=active||words.indexOf('请完成以下操作，验证您是真人')>=0||words.indexOf('verify that you are a real person')>=0;\nvar frames=doc.querySelectorAll('iframe');for(var k=0;k<frames.length;k++){var f=frames[k];if(!visible(f,win))continue;try{var child=f.contentDocument;if(child){var r=f.getBoundingClientRect();scan(child,f.contentWindow,ox+(r.left+f.clientLeft)*sx,oy+(r.top+f.clientTop)*sy,sx*r.width/f.offsetWidth,sy*r.height/f.offsetHeight);}}catch(e){}}\n}\nscan(document,window,0,0,1,1);var vv=window.visualViewport;\nreturn {html:html,challenge:active,ready:!!geometry,x:geometry?geometry.x-(vv?vv.offsetLeft:0):0,y:geometry?geometry.y-(vv?vv.offsetTop:0):0,distance:geometry?geometry.distance:0,viewport:vv?vv.width:window.innerWidth};\n})()";
   /** Poll cadence: while the page is young, while it is settled, and after the drag retired. */
   private static final long ACTIVE_POLL_MS=120L,LOADING_POLL_MS=400L,IDLE_POLL_MS=1000L;
   private static final long ACTIVE_WINDOW_NANOS=TimeUnit.MILLISECONDS.toNanos(8000L);
@@ -65,6 +49,7 @@ final class LanzouSliderVerification implements AutoCloseable {
   private static final long PROBE_WATCHDOG_MS=2500L;
   /** Backoff for a probe whose evaluation threw, so a broken view cannot spin the poll. */
   private static final long FAILURE_BACKOFF_MS=250L;
+  private boolean dispatchingTouch;
   private final WebView web;
   private final Handler handler=new Handler(Looper.getMainLooper());
   private final long deadline;
@@ -91,6 +76,9 @@ final class LanzouSliderVerification implements AutoCloseable {
   }
 
   void start(){
+    // Verification images are functional inputs, including in the normally image-free renderer.
+    web.getSettings().setBlockNetworkImage(false);
+    web.getSettings().setLoadsImagesAutomatically(true);
     if(web.getWidth()==0||web.getHeight()==0){
       android.util.DisplayMetrics metrics=web.getResources().getDisplayMetrics();
       web.measure(View.MeasureSpec.makeMeasureSpec(metrics.widthPixels,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(metrics.heightPixels,View.MeasureSpec.EXACTLY));
@@ -100,7 +88,7 @@ final class LanzouSliderVerification implements AutoCloseable {
     // A real finger takes the slider over: it retires the synthetic drag (its pointer is cancelled
     // by the pending move frame, which keeps the observation running). Returning false leaves the
     // WebView's own touch handling untouched.
-    web.setOnTouchListener((view,event)->{userTouched=true;cancelPointer();return false;});
+    web.setOnTouchListener((view,event)->{if(!dispatchingTouch){userTouched=true;cancelPointer();}return false;});
     probe();
   }
 
@@ -180,8 +168,15 @@ final class LanzouSliderVerification implements AutoCloseable {
     duration=Math.min(remaining/2L,Math.max(450L,Math.round(cssDistance*3d)));
     WindowManager manager=(WindowManager)web.getContext().getSystemService(android.content.Context.WINDOW_SERVICE);
     frameDelay=Math.max(1L,Math.round(1000d/manager.getDefaultDisplay().getRefreshRate()));
-    attempted=pressed=true;downAt=SystemClock.uptimeMillis();web.requestFocus();
-    touch(MotionEvent.ACTION_DOWN,startX,startY);handler.postDelayed(this::move,frameDelay);
+    attempted=true;web.requestFocus();
+    web.postVisualStateCallback(SystemClock.uptimeMillis(),new WebView.VisualStateCallback(){
+      @Override public void onComplete(long requestId){web.postOnAnimation(()->{
+        if(closed)return;
+        if(userTouched||System.nanoTime()>=deadline){scheduleNext();return;}
+        pressed=true;downAt=SystemClock.uptimeMillis();
+        touch(MotionEvent.ACTION_DOWN,startX,startY);handler.postDelayed(LanzouSliderVerification.this::move,frameDelay);
+      });}
+    });
     return true;
   }
 
@@ -189,7 +184,7 @@ final class LanzouSliderVerification implements AutoCloseable {
     if(closed)return;
     if(!pressed){scheduleNext();return;}
     if(expired()){finish(false);return;}
-    if(userTouched||System.nanoTime()>=deadline){lift(startX,startY);scheduleNext();return;}
+    if(userTouched||System.nanoTime()>=deadline){cancelPointer();scheduleNext();return;}
     double progress=Math.min(1d,(double)(SystemClock.uptimeMillis()-downAt)/duration);
     float x=startX+distance*(float)(1d-Math.pow(1d-progress,3d));
     touch(MotionEvent.ACTION_MOVE,x,startY);
@@ -215,7 +210,8 @@ final class LanzouSliderVerification implements AutoCloseable {
     MotionEvent.PointerProperties pointer=new MotionEvent.PointerProperties();pointer.id=0;pointer.toolType=MotionEvent.TOOL_TYPE_FINGER;
     MotionEvent.PointerCoords point=new MotionEvent.PointerCoords();point.x=x;point.y=y;point.pressure=action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL?0f:1f;point.size=0.5f;
     MotionEvent event=MotionEvent.obtain(downAt,SystemClock.uptimeMillis(),action,1,new MotionEvent.PointerProperties[]{pointer},new MotionEvent.PointerCoords[]{point},0,0,1f,1f,0,0,InputDevice.SOURCE_TOUCHSCREEN,0);
-    try{web.onTouchEvent(event);}finally{event.recycle();}
+    dispatchingTouch=true;
+    try{web.dispatchTouchEvent(event);}finally{dispatchingTouch=false;event.recycle();}
   }
 
   /** Terminal outcome: a real share page verdict, or an expired bounded deadline. */

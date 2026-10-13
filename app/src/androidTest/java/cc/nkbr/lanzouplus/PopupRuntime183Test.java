@@ -27,7 +27,7 @@ public class PopupRuntime183Test {
   final Context context=instrumentation.getTargetContext();
   final UiAutomation ui=instrumentation.getUiAutomation();
   final String variant=InstrumentationRegistry.getArguments().getString("caseName","portrait-light");
-  final File output=new File(context.getExternalFilesDir(null),"popup183/"+variant);
+  final File output=new File(context.getExternalFilesDir(null),"popup186/"+variant);
 
   void seedStores()throws Exception{
     context.getSharedPreferences("user-sources-v1",0).edit().clear().commit();
@@ -36,8 +36,8 @@ public class PopupRuntime183Test {
     context.getSharedPreferences("user-sources-v1",0).edit().putString("sources",new JSONObject().put("version",2).put("sources",new JSONArray().put(source)).toString()).commit();
     context.getSharedPreferences("source_categories",0).edit().putString("items",new JSONArray().put(new JSONObject().put("name","工具").put("ids",new JSONArray().put("local:composite183"))).toString()).commit();
     context.getSharedPreferences("web-browser-v2",0).edit().clear().putString("history","[{\"t\":\"测试网页\",\"u\":\"https://example.invalid/history183\",\"a\":183}]").commit();
-    context.getSharedPreferences("MainActivity",0).edit().putBoolean("accepted",true).commit();
-    context.getSharedPreferences("LegacyPopup183RuntimeActivity",0).edit().putBoolean("accepted",true).commit();
+    context.getSharedPreferences(MainActivity.class.getName(),0).edit().putBoolean("accepted",true).commit();
+    context.getSharedPreferences(LegacyPopup183RuntimeActivity.class.getName(),0).edit().putBoolean("accepted",true).commit();
     context.getSharedPreferences("search_settings-v1",0).edit().putBoolean("auto_expand",false).putString("lanzou_base_origin","https://verify183.lanzoum.com").putBoolean("lanzou_base_origin_verified",true).putBoolean("lanzou_base_origin_explicit",true).commit();
   }
   void seedDownloads(MainActivity main){
@@ -76,7 +76,9 @@ public class PopupRuntime183Test {
       required("当前路径：分类",false);stable();screenshot("main-path");Rect original=bounds();dismiss();
       scenario.onActivity(main->SourceDestinationPopup.showWebFavorite(main,"https://example.invalid/current183","当前网页"));
       required("当前路径：分类",false);assertEquals(original,bounds());stable();screenshot("favourite-path");
-      click("进入 工具",true,false);click("进入 自建合集",true,false);required("软件",false);click("进入 软件",true,false);required("当前路径：工具 › 自建合集 › 软件",false);screenshot("favourite-folder");click("返回上一级",true,false);dismiss();
+      click("进入 工具",true,false);click("进入 自建合集",true,false);required("软件",false);click("进入 软件",true,false);required("当前路径：工具 › 自建合集 › 软件",false);screenshot("favourite-folder");
+      click("收起 软件",true,false);required("进入 软件",true);click("进入 软件",true,false);required("收起 软件",true);
+      click("返回上一级",true,false);dismiss();
       assertFalse(SharedBrowserPopup.isFavorite(context,"https://example.invalid/current183"));
       scenario.onActivity(main->main.showBatchDownloadDetails("batch183"));required("保存中",false);required("安装包",false);stable();screenshot("main-batch");
       click("示例软件0.apk",false,true);visible("分享所选原链接",true);screenshot("main-batch-selection");click("关闭",false,false);
@@ -84,6 +86,8 @@ public class PopupRuntime183Test {
       click("测试批量183",false,false);assertEquals("Batch details use the same Android window",window,root().getWindowId());required("返回下载历史列表",true);required("下载完成",false);screenshot("download-history-batch");
       click("示例软件0.apk",false,true);visible("分享所选原链接",true);screenshot("download-history-selection");click("返回下载历史列表",true,false);assertEquals(window,root().getWindowId());required("测试批量183",false);click("关闭",false,false);
       scenario.onActivity(main->SharedBrowserPopup.show(main,false,url->{}));required("测试网页",false);stable();screenshot("browsing-history");click("测试网页",false,true);visible("将所选网页加入路径",true);screenshot("browsing-history-selection");click("关闭",false,false);
+      scenario.onActivity(main->main.showSearchModeDialog());required("模糊匹配",false);stable();screenshot("search-mode-options");required("递归搜索文件夹",false).performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());idle();visible("递归搜索文件夹",false);screenshot("search-mode-recursive-visible");click("取消",false,false);
+      scenario.onActivity(main->main.showHomeSearchDefaultDialog());required("主页默认搜索范围",false);stable();screenshot("home-default-flat");click("取消",false,false);
       scenario.onActivity(main->main.showSoftwareDetailsDialog(false));required("隐私政策",false);stable();screenshot("general-about");click("关闭",false,false);
     }
     seedStores();
@@ -92,7 +96,7 @@ public class PopupRuntime183Test {
       scenario.onActivity(main->{main.ui.removeCallbacksAndMessages(null);main.loadSourceCategories();seedDownloads(main);main.showSourceDestinationPicker(Collections.emptyList(),Collections.singletonList(SourceDestinationPopup.webFavoriteItem("https://example.invalid/reference183","当前网页")));});
       required("当前路径：分类",false);screenshot("legacy181-path");dismiss();scenario.onActivity(main->main.showBatchDownloadDetails("batch183"));required("保存中",false);screenshot("legacy181-batch");click("示例软件0.apk",false,true);required("分享所选原链接",true);screenshot("legacy181-batch-selection");click("关闭",false,false);
     }
-    Intent webIntent=new Intent(context,LanzouWebActivity.class).putExtra("url","https://example.invalid/popup185").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    Intent webIntent=new Intent(context,LanzouWebActivity.class).putExtra(LanzouWebActivity.EXTRA_URL,"https://example.invalid/popup186").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try(ActivityScenario<LanzouWebActivity> scenario=ActivityScenario.launch(webIntent)){
       scenario.onActivity(web->{
         web.web.stopLoading();web.web.setWebViewClient(new android.webkit.WebViewClient());web.web.setBackgroundColor(web.BG);
@@ -100,6 +104,8 @@ public class PopupRuntime183Test {
         web.showRounded(new android.app.AlertDialog.Builder(web).setTitle("Web 普通弹窗").setMessage("验证统一圆角窗口").setNegativeButton("关闭",null).create());
       });
       required("Web 普通弹窗",false);stable();screenshot("web-general");click("关闭",false,false);
+      visible("关闭网页，返回应用",true);required("网页后退，不可用",true);screenshot("web-toolbar-close-back");
+      click("网页菜单",true,false);required("下载历史",false);assertNull("No duplicate old favorite menu",find(root(),"网页收藏",false));screenshot("web-menu-single-favorite");ui.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK);idle();
     }
     if(variant.equals("portrait-light"))realWebViewResumesWithoutCookie();
   }

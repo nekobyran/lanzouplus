@@ -31,6 +31,8 @@ final class DirectCookiePool {
     if(lease==null)return;synchronized(lock){Entry entry=find(lease.id);if(entry==null)return;rollWindow(entry,now);if(jar!=null&&!jar.isEmpty())entry.jar=copyJar(jar);entry.lastUsed=now;if(success){entry.failures=0;entry.cooldownUntil=0;}else{entry.failures=Math.min(12,entry.failures+1);long delay=Math.max(rateLimited?15000:2000,retryAfterMs);delay=Math.min(2*60*1000L,delay*(1L<<Math.min(4,entry.failures-1)));entry.cooldownUntil=Math.max(entry.cooldownUntil,now+delay);}saveEntryLocked(entry);}
   }
 
+  void exhaust(Lease lease,long now){synchronized(lock){Entry entry=find(lease.id);entry.count=HOURLY_DIRECT_LIMIT;entry.lastUsed=now;saveEntryLocked(entry);}}
+
   int size(){synchronized(lock){return entries.size();}}
 
     private Entry newEntry(long now){return newEntry(now,PROFILE_UNSPECIFIED);}

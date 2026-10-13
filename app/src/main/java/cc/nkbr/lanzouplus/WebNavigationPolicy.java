@@ -71,7 +71,7 @@ final class WebNavigationPolicy {
   }
 
   static String resolveInput(String raw) {
-    String value = raw == null ? "" : raw.trim();
+    String value = raw == null ? "" : LanzouPageNavigation.cleanShareInput(raw);
     if (value.isEmpty()) {
       return HOME_URL;
     }

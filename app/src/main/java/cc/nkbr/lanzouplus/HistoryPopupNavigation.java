@@ -48,13 +48,38 @@ final class HistoryPopupNavigation {
           new ColorDrawable(android.graphics.Color.TRANSPARENT),null));
       tab.setOnClickListener(view->{
         if(destination==current)return;
-        dialog.dismiss();
-        if(destination==DOWNLOADS)SharedDownloadHistoryPopup.show(host);
-        else SharedBrowserPopup.show(host,destination==FAVORITES,openUrl);
+        switchCollection(host,dialog,()->{
+          if(destination==DOWNLOADS)SharedDownloadHistoryPopup.show(host);
+          else SharedBrowserPopup.show(host,destination==FAVORITES,openUrl);
+        });
       });
       tabs.addView(tab,new LinearLayout.LayoutParams(0,dp(host,48),1));
     }
     panel.addView(tabs,0,new LinearLayout.LayoutParams(-1,dp(host,48)));
+  }
+
+  static void switchCollection(Activity host,AlertDialog dialog,Runnable show) {
+    View decor=dialog.getWindow().getDecorView();
+    if(Boolean.TRUE.equals(decor.getTag(R.id.history_transition)))return;
+    decor.setTag(R.id.history_transition,Boolean.TRUE);
+    Runnable replace=()->{
+      if(!dialog.isShowing()||host.isFinishing())return;
+      dialog.dismiss();show.run();
+    };
+    if(!motionEnabled(host)){replace.run();return;}
+    decor.animate().alpha(0f).setDuration(FADE_MS).withEndAction(replace).start();
+  }
+
+  static void prepareEntrance(Activity host,android.app.Dialog dialog) {
+    if(!motionEnabled(host))return;
+    View decor=dialog.getWindow().getDecorView();decor.setAlpha(0f);
+    decor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){
+      @Override public void onViewAttachedToWindow(View view){
+        view.removeOnAttachStateChangeListener(this);
+        view.post(()->view.animate().alpha(1f).setDuration(FADE_MS).start());
+      }
+      @Override public void onViewDetachedFromWindow(View view){}
+    });
   }
 
   static Consumer<String> browserOpener(Activity host) {
@@ -83,6 +108,7 @@ final class HistoryPopupNavigation {
     private final FrameLayout area;
     private final ArrayList<View> below=new ArrayList<>();
     private View current;
+    private int transition;
 
     PageHost(Activity host,FrameLayout area) {
       this.host=host;
@@ -91,14 +117,16 @@ final class HistoryPopupNavigation {
 
     void setRoot(View page) {
       if(page==null||page==current)return;
-      area.removeAllViews();
+      settle(null);area.removeAllViews();
       below.clear();
       current=page;
+      page.setAlpha(1f);
       area.addView(page,areaParams());
     }
 
     void push(View page) {
       if(page==null||page==current)return;
+      settle(null);final int version=++transition;
       View previous=current;
       if(previous!=null)below.add(previous);
       current=page;
@@ -112,26 +140,28 @@ final class HistoryPopupNavigation {
       page.animate().alpha(1f).setDuration(FADE_MS).start();
       previous.animate().cancel();
       previous.animate().alpha(0f).setDuration(FADE_MS)
-          .withEndAction(()->previous.setVisibility(View.GONE)).start();
+          .withEndAction(()->{if(version==transition&&previous!=current)previous.setVisibility(View.GONE);}).start();
     }
 
     /** Returns to the page below the current one; false when the current page is the root. */
     boolean pop() {
       if(below.isEmpty())return false;
       View leaving=current;
+      View revealing=below.get(below.size()-1);
+      settle(revealing);final int version=++transition;
       View restored=below.remove(below.size()-1);
       current=restored;
+      if(restored.getVisibility()!=View.VISIBLE)restored.setAlpha(0f);
       restored.setVisibility(View.VISIBLE);
       if(leaving==null||!motionEnabled(host)) {
         restored.setAlpha(1f);
         if(leaving!=null)area.removeView(leaving);
         return true;
       }
-      restored.setAlpha(0f);
       restored.animate().alpha(1f).setDuration(FADE_MS).start();
       leaving.animate().cancel();
       leaving.animate().alpha(0f).setDuration(FADE_MS)
-          .withEndAction(()->area.removeView(leaving)).start();
+          .withEndAction(()->{if(version==transition&&leaving!=current)area.removeView(leaving);}).start();
       return true;
     }
 
@@ -141,6 +171,16 @@ final class HistoryPopupNavigation {
 
     View current() {
       return current;
+    }
+
+    private void settle(View revealing) {
+      ++transition;
+      for(int i=area.getChildCount()-1;i>=0;i--){
+        View page=area.getChildAt(i);page.animate().cancel();
+        if(page==current)page.setVisibility(View.VISIBLE);
+        else if(below.contains(page)){if(page!=revealing)page.setVisibility(View.GONE);}
+        else area.removeView(page);
+      }
     }
 
     private FrameLayout.LayoutParams areaParams() {

@@ -1,3 +1,12 @@
 <resources>
     <item name="history_transition" type="id" />
+    <item name="onboarding_page" type="id" />
+    <item name="onboarding_status" type="id" />
+    <item name="onboarding_primary" type="id" />
+    <item name="onboarding_secondary" type="id" />
+    <item name="onboarding_storage" type="id" />
+    <item name="onboarding_battery" type="id" />
+    <item name="onboarding_base_input" type="id" />
+    <item name="onboarding_stable" type="id" />
+    <item name="onboarding_test" type="id" />
 </resources>

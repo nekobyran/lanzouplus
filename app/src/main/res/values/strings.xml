@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="onboarding_illustration">软件图标</string>
+    <string name="onboarding_welcome_plus">欢迎使用 LanzouPlus</string>
+    <string name="onboarding_intro">蓝奏云资源浏览、搜索与下载工具。开始前了解必要权限，验证一个可解析的蓝奏云基础链接，并选择更新通道。设置完成后直接进入主界面。</string>
+    <string name="onboarding_start">开始设置</string>
+    <string name="onboarding_permissions_title">授权由你决定</string>
+    <string name="onboarding_permissions_body">下载到公共目录、更新安装和管理本地文件可使用“管理所有文件”权限。电池优化豁免有助于后台下载持续运行。</string>
+    <string name="onboarding_permissions_optional">以上两项均可跳过；主界面不再自动弹出申请。需要时可在“设置”页主动授权。</string>
+    <string name="onboarding_request_storage">管理所有文件</string>
+    <string name="onboarding_request_battery">后台下载电池豁免</string>
+    <string name="onboarding_granted">已授权</string>
+    <string name="onboarding_not_granted">未授权</string>
+    <string name="onboarding_permissions_continue">继续下一步</string>
+    <string name="onboarding_skip_permissions">跳过权限</string>
+    <string name="onboarding_base_title">验证蓝奏基础链接</string>
+    <string name="onboarding_base_description">填写可用的蓝奏云公共域名，例如 https://www.lanzouw.com，也可随机查找。应用将使用真实列表解析确认可用后保存。</string>
+    <string name="onboarding_base_hint">https://www.lanzouw.com</string>
+    <string name="onboarding_base_required">这是必需步骤。基础链接为空或没有通过真实列表解析时，无法进入主界面。</string>
+    <string name="onboarding_base_invalid">请输入有效的蓝奏云 HTTP/HTTPS 链接</string>
+    <string name="onboarding_base_unavailable">候选链接未通过真实列表解析，请更换后重试。</string>
+    <string name="onboarding_base_failed">基础链接验证失败：%1$s</string>
+    <string name="onboarding_current_base">当前已验证：%1$s</string>
+    <string name="onboarding_verify_base">验证并继续</string>
+    <string name="onboarding_random_base">随机寻找可用链接</string>
+    <string name="onboarding_verify_progress">正在通过真实列表解析验证基础链接…</string>
+    <string name="onboarding_random_progress">正在检测候选域名并寻找可解析链接…</string>
+    <string name="onboarding_market_title">GitHub 项目源与资源市场</string>
+    <string name="onboarding_market_body">当前可将 LanzouPlus 的 GitHub 项目页加入网页源，方便以后在列表中打开项目。你也可以直接访问仓库。</string>
+    <string name="onboarding_market_future">资源市场与源市场的完整功能将在后续 1.8.8 版本提供；1.8.7 暂不包含已上线的资源市场。</string>
+    <string name="onboarding_add_github">添加 GitHub 项目源</string>
+    <string name="onboarding_skip_market">跳过添加</string>
+    <string name="onboarding_visit_github">在浏览器中查看 GitHub</string>
+    <string name="onboarding_adding_github">正在添加 GitHub 项目源…</string>
+    <string name="onboarding_github_failed">添加失败：%1$s。可重试或跳过。</string>
+    <string name="onboarding_channel_title">选择更新通道</string>
+    <string name="onboarding_channel_body">稳定通道是推荐默认选项。测试通道可提前获取 Alpha 等预发布版本。</string>
+    <string name="onboarding_channel_stable">稳定版（Stable）· 推荐</string>
+    <string name="onboarding_channel_test">测试版（Test）· 包含预发布</string>
+    <string name="onboarding_channel_note">选择立即保存，之后可随时在“设置 → 更新通道”中切换。切换后下一次检查更新即按新通道执行。</string>
+    <string name="onboarding_finish">完成并进入</string>
+    <string name="onboarding_cannot_open_settings">无法打开系统授权设置</string>
+    <string name="settings_update_channel">更新通道</string>
+    <string name="settings_storage_permission">申请管理所有文件权限</string>
+    <string name="settings_battery_permission">申请后台下载电池豁免</string>
+</resources>

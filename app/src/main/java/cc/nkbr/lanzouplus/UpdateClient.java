@@ -10,9 +10,10 @@ import org.json.*;
 final class UpdateClient {
   static final String ASSET_NAME="LanzouPlus.apk";
 
-  private static final String GITHUB_LATEST="https://api.github.com/repos/nekobyran/lanzouplus/releases/latest";
-    private static final String SITE_LATEST="https://lanzouplus.nkbr.cc/api/release";
+  private static final String GITHUB_RELEASES="https://api.github.com/repos/nekobyran/lanzouplus/releases?per_page=100";
+  private static final String SITE_LATEST="https://lanzouplus.nkbr.cc/api/release";
   private static final int JSON_LIMIT=256*1024;
+  private static final int GITHUB_JSON_LIMIT=4*1024*1024;
   private static final String[] GITHUB_MIRROR_PREFIXES={"https://gh.llkk.cc/","https://gh-proxy.com/","https://ghfast.top/"};
   private static final Set<String> GITHUB_MIRROR_HOSTS=new HashSet<>(Arrays.asList("gh.llkk.cc","gh-proxy.com","ghfast.top"));
 
@@ -34,75 +35,101 @@ final class UpdateClient {
     }
   }
 
-  static UpdateInfo check(String currentVersion)throws IOException{
-    return checkProduct(currentVersion,SITE_LATEST,ASSET_NAME);
+  static UpdateInfo check(String currentVersion,UpdateChannel channel)throws IOException{
+    return checkProduct(currentVersion,SITE_LATEST,ASSET_NAME,channel);
   }
 
   /**
-   * Shared two-source product check. The official {@code /api/release} endpoint and the GitHub
-   * release are queried concurrently with the existing bounded request timeouts, so one slow or
-   * broken source can never hold back a healthy one. Only valid, parsed versions take part in the
-   * newer-version comparison, and a single-source failure never turns an up-to-date result into an
-   * error. Callers already run this off the UI thread.
+   * Query the official channel endpoint and the GitHub release list concurrently. The list
+   * must be inspected by version and by product asset; its first entry is not always usable.
    */
-  static UpdateInfo checkProduct(String currentVersion,String siteLatest,String assetName)throws IOException{
-    long[] current=parseVersion(currentVersion);
+  static UpdateInfo checkProduct(String currentVersion,String siteLatest,String assetName,UpdateChannel channel)throws IOException{
+    ReleaseVersion current=ReleaseVersion.parse(currentVersion);
     boolean preferMirror=preferMirrorForLocale();
-    String[] endpoints=preferMirror?new String[]{siteLatest,GITHUB_LATEST}:new String[]{GITHUB_LATEST,siteLatest};
-    JSONObject[] data=new JSONObject[endpoints.length];
+    String siteEndpoint=siteLatest+(siteLatest.contains("?")?"&":"?")+"channel="+channel.queryValue();
+    String[] endpoints=preferMirror?new String[]{siteEndpoint,GITHUB_RELEASES}:new String[]{GITHUB_RELEASES,siteEndpoint};
+    Object[] data=new Object[endpoints.length];
     IOException[] errors=new IOException[endpoints.length];
     Thread[] workers=new Thread[endpoints.length];
     for(int i=0;i<workers.length;i++){
       final int index=i;final String endpoint=endpoints[i];
       workers[i]=new Thread(()->{
-        try{data[index]=fetch(endpoint);}
+        try{data[index]=siteEndpoint.equals(endpoint)?fetch(endpoint):fetchReleaseList(endpoint);}
         catch(IOException error){errors[index]=error;}
         catch(RuntimeException error){errors[index]=new IOException("更新请求失败",error);}
       },"lanzouplus-update-"+index);
       workers[i].setDaemon(true);
       workers[i].start();
     }
-    for(Thread worker:workers){
-      boolean interrupted=false;
-      while(worker.isAlive())try{worker.join();}catch(InterruptedException error){interrupted=true;}
-      if(interrupted)Thread.currentThread().interrupt();
+    for(Thread worker:workers)try{worker.join();}catch(InterruptedException error){
+      Thread.currentThread().interrupt();
+      throw new InterruptedIOException("更新检查被中断");
     }
     IOException first=null;UpdateInfo found=null;boolean checked=false;
     for(int i=0;i<endpoints.length;i++){
       if(data[i]==null){if(errors[i]!=null&&first==null)first=errors[i];continue;}
       try{
-        UpdateInfo info=siteLatest.equals(endpoints[i])?parseSiteRelease(data[i],current,preferMirror,assetName):parse(data[i],current,false,preferMirror,assetName);
+        UpdateInfo info=siteEndpoint.equals(endpoints[i])
+            ?parseSiteRelease((JSONObject)data[i],current,preferMirror,assetName,channel)
+            :selectGithubRelease((JSONArray)data[i],current,preferMirror,assetName,channel);
         checked=true;
-        if(info!=null&&(found==null||compare(parseVersion(info.version),parseVersion(found.version))>0||(info.version.equals(found.version)&&found.body.isEmpty()&&!info.body.isEmpty())))found=info;
-      }catch(IOException error){if(first==null)first=error;}
+        if(info!=null&&(found==null||ReleaseVersion.parse(info.version).compareTo(ReleaseVersion.parse(found.version))>0
+            ||(ReleaseVersion.parse(info.version).compareTo(ReleaseVersion.parse(found.version))==0&&found.body.isEmpty()&&!info.body.isEmpty())))found=info;
+      }catch(IOException|ClassCastException error){if(first==null)first=new IOException("更新信息格式无效",error);}
     }
     if(found!=null)return found;
     if(!checked&&first!=null)throw first;
     return null;
   }
 
-    static UpdateInfo parseSiteRelease(JSONObject data,long[] current,boolean preferMirror,String assetName)throws IOException{
+  static UpdateInfo parseSiteRelease(JSONObject data,ReleaseVersion current,boolean preferMirror,String assetName,UpdateChannel channel)throws IOException{
     if(!data.optBoolean("ok"))throw new IOException("官网更新接口不可用");
+    if(data.optBoolean("draft"))return null;
     String tag=data.optString("tag","").trim();
-    long[] latest=parseVersion(tag);
-    if(compare(latest,current)<=0)return null;
+    ReleaseVersion latest=ReleaseVersion.parse(tag);
+    if(channel==UpdateChannel.STABLE&&(latest.isAlpha()||data.optBoolean("prerelease")))return null;
+    if(latest.compareTo(current)<=0)return null;
     JSONObject asset=data.optJSONObject("asset");
     if(asset==null||!assetName.equals(asset.optString("name")))throw new IOException("官网更新信息缺少安装包");
     long size=asset.optLong("size",-1);
     if(size<=0)throw new IOException("官网更新安装包大小无效");
     String github=asset.optString("githubUrl","").trim();
     requireGithubAsset(github,tag,assetName);
-    String mirror=("synchronized".equals(data.optString("mirrorStatus"))||"proxy".equals(data.optString("mirrorStatus")))?asset.optString("mirrorUrl","").trim():"";
+    JSONObject mirrorInfo=data.optJSONObject("mirror");
+    String status=mirrorInfo==null?"":mirrorInfo.optString("status","");
+    String mirror=("local-static".equals(status)||"github-proxy".equals(status)||"github-shared-release".equals(status))?asset.optString("mirrorUrl","").trim():"";
     if(mirror.isEmpty())mirror=githubMirrorAsset(github);
     requireMirrorAsset(mirror,github,assetName);
     return new UpdateInfo(normalizeVersion(tag),data.optString("releaseNotes","").trim(),github,mirror,size,preferMirror,assetName);
   }
 
-  static UpdateInfo parse(JSONObject release,long[] current,boolean fromSite,boolean preferMirror,String assetName)throws IOException{
-    if(release.optBoolean("draft")||release.optBoolean("prerelease"))throw new IOException("更新信息不是正式版本");
-    String rawTag=release.optString("tag_name",release.optString("version","")).trim();
-    long[] latest=parseVersion(rawTag);
-    if(compare(latest,current)<=0)return null;
+  static UpdateInfo selectGithubRelease(JSONArray releases,ReleaseVersion current,boolean preferMirror,String assetName,UpdateChannel channel){
+    UpdateInfo selected=null;
+    ReleaseVersion selectedVersion=null;
+    for(int i=0;i<releases.length();i++){
+      JSONObject release=releases.optJSONObject(i);
+      if(release==null)continue;
+      try{
+        UpdateInfo candidate=parseGithubRelease(release,current,preferMirror,assetName,channel);
+        if(candidate==null)continue;
+        ReleaseVersion candidateVersion=ReleaseVersion.parse(candidate.version);
+        if(selectedVersion==null||candidateVersion.compareTo(selectedVersion)>0){
+          selected=candidate;
+          selectedVersion=candidateVersion;
+        }
+      }catch(IOException invalidCandidate){
+        // One unusable release must not hide a valid release for this product.
+      }
+    }
+    return selected;
+  }
+
+  static UpdateInfo parseGithubRelease(JSONObject release,ReleaseVersion current,boolean preferMirror,String assetName,UpdateChannel channel)throws IOException{
+    if(release.optBoolean("draft"))return null;
+    String rawTag=release.optString("tag_name","").trim();
+    ReleaseVersion latest=ReleaseVersion.parse(rawTag);
+    if(channel==UpdateChannel.STABLE&&(latest.isAlpha()||release.optBoolean("prerelease")))return null;
+    if(latest.compareTo(current)<=0)return null;
     JSONArray assets=release.optJSONArray("assets");
     if(assets==null)throw new IOException("更新信息缺少安装包");
     JSONObject asset=null;
@@ -115,16 +142,25 @@ final class UpdateClient {
     if(asset==null)throw new IOException("更新信息缺少指定安装包");
     long size=asset.optLong("size",-1);
     if(size<=0)throw new IOException("更新安装包大小无效");
-    String github=asset.optString("browser_download_url",release.optString("browser_download_url","")).trim();
-    String mirror=asset.optString("mirror_url",release.optString("mirror_url","")).trim();
-    String version=normalizeVersion(rawTag);
+    String github=asset.optString("browser_download_url","").trim();
     requireGithubAsset(github,rawTag,assetName);
-    if(mirror.isEmpty())mirror=fromSite?release.optString("download_url","").trim():githubMirrorAsset(github);
-    if(!mirror.isEmpty())requireMirrorAsset(mirror,github,assetName);
-    return new UpdateInfo(version,release.optString("body","").trim(),github,mirror,size,preferMirror,assetName);
+    String mirror=githubMirrorAsset(github);
+    return new UpdateInfo(normalizeVersion(rawTag),release.optString("body","").trim(),github,mirror,size,preferMirror,assetName);
   }
 
   static JSONObject fetch(String endpoint)throws IOException{
+    Object result=fetchPayload(endpoint,JSON_LIMIT);
+    if(!(result instanceof JSONObject))throw new IOException("官网更新信息格式无效");
+    return (JSONObject)result;
+  }
+
+  static JSONArray fetchReleaseList(String endpoint)throws IOException{
+    Object result=fetchPayload(endpoint,GITHUB_JSON_LIMIT);
+    if(!(result instanceof JSONArray))throw new IOException("GitHub 发布列表格式无效");
+    return (JSONArray)result;
+  }
+
+  private static Object fetchPayload(String endpoint,int limit)throws IOException{
     URL current=new URL(endpoint);
     String expectedHost=current.getHost().toLowerCase(Locale.ROOT);
     for(int redirects=0;redirects<4;redirects++){
@@ -141,27 +177,19 @@ final class UpdateClient {
         }
         if(code!=HttpURLConnection.HTTP_OK)throw new IOException("更新请求失败 HTTP "+code);
         long length=connection.getContentLengthLong();
-        if(length>JSON_LIMIT)throw new IOException("更新信息过大");
+        if(length>limit)throw new IOException("更新信息过大");
         try(InputStream input=connection.getInputStream();ByteArrayOutputStream output=new ByteArrayOutputStream(length>0?(int)length:4096)){
           byte[] buffer=new byte[4096];int total=0;
-          for(int count;(count=input.read(buffer))>0;){total+=count;if(total>JSON_LIMIT)throw new IOException("更新信息过大");output.write(buffer,0,count);}
-          try{return new JSONObject(new String(output.toByteArray(),StandardCharsets.UTF_8));}catch(JSONException error){throw new IOException("更新信息格式无效",error);}
+          for(int count;(count=input.read(buffer))>0;){total+=count;if(total>limit)throw new IOException("更新信息过大");output.write(buffer,0,count);}
+          try{return new JSONTokener(new String(output.toByteArray(),StandardCharsets.UTF_8)).nextValue();}
+          catch(JSONException error){throw new IOException("更新信息格式无效",error);}
         }
       }finally{connection.disconnect();}
     }
     throw new IOException("更新地址跳转过多");
   }
 
-  static long[] parseVersion(String value)throws IOException{
-    String normalized=normalizeVersion(value);
-    if(!normalized.matches("(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)"))throw new IOException("版本号格式无效");
-    String[] parts=normalized.split("\\.");long[] out=new long[3];
-    try{for(int i=0;i<3;i++)out[i]=Long.parseLong(parts[i]);}catch(NumberFormatException error){throw new IOException("版本号超出范围",error);}
-    return out;
-  }
-
-  static String normalizeVersion(String value){String out=value==null?"":value.trim();return out.startsWith("v")?out.substring(1):out;}
-  static int compare(long[] left,long[] right){for(int i=0;i<3;i++){int value=Long.compare(left[i],right[i]);if(value!=0)return value;}return 0;}
+  static String normalizeVersion(String value){String out=value==null?"":value.trim();return out.startsWith("v")||out.startsWith("V")?out.substring(1):out;}
   static boolean isRedirect(int code){return code==301||code==302||code==303||code==307||code==308;}
   static boolean defaultHttpsPort(URL url){return url.getPort()==-1||url.getPort()==443;}
   static boolean preferMirrorForLocale(){Locale locale=Locale.getDefault();String country=locale.getCountry(),language=locale.getLanguage();return "zh".equalsIgnoreCase(language)||"CN".equalsIgnoreCase(country)||"HK".equalsIgnoreCase(country)||"MO".equalsIgnoreCase(country)||"TW".equalsIgnoreCase(country)||"SG".equalsIgnoreCase(country);}

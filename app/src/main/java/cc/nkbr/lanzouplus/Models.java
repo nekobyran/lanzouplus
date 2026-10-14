@@ -7,6 +7,7 @@ final class Models {
   static final byte MEMBER_UNKNOWN=0,MEMBER_FILE=1,MEMBER_DIRECTORY=2,MEMBER_FOLDER=3,MEMBER_REMOTE_FOLDER=4;
   static final class Item {
     String title="", url="", shareUrl="", size="", time="", iconUrl="", source="", password="", description="", folderId="", sourceId="", error="";
+    final List<String> categories=new ArrayList<>();
     /** True only when this row was served by a persisted/live directory index lookup. */
     boolean folder, sourceEntry, indexHit;
   }
@@ -23,6 +24,7 @@ final class Models {
   }
   static final class SourceMember {
     String id="", parentId="", title="", url="", password="", iconUrl="", size="", time="", description="", error="";
+    final List<String> categories=new ArrayList<>();
     byte kind=MEMBER_UNKNOWN;
     boolean searchable, lightweight, metadataLoaded, iconLoaded, detailsLoaded;
     long refreshedAt;
@@ -33,6 +35,7 @@ final class Models {
     String parentId="";
     byte kind=SOURCE_OFFICIAL;
     boolean searchable, overlay, metadataOverride, childDirectory;
+    final List<String> categories=new ArrayList<>();
     final List<SourceMember> members=new ArrayList<>();
   }
   static final class SourceTestResult {

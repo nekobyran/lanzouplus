@@ -7,7 +7,7 @@ android {
  compileSdk = 36
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1008007; versionName = "1.8.7"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1008008; versionName = "1.8.8alpha" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {
@@ -28,6 +28,4 @@ dependencies {
  implementation("dev.rikka.shizuku:api:13.1.5")
  implementation("dev.rikka.shizuku:provider:13.1.5")
  compileOnly("androidx.annotation:annotation:1.3.0")
- androidTestImplementation("androidx.test:runner:1.6.2")
- androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

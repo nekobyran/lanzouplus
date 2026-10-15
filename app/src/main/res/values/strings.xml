@@ -26,8 +26,8 @@
     <string name="onboarding_verify_progress">正在通过真实列表解析验证基础链接…</string>
     <string name="onboarding_random_progress">正在检测候选域名并寻找可解析链接…</string>
     <string name="onboarding_market_title">GitHub 项目源与资源市场</string>
-    <string name="onboarding_market_body">当前可将 LanzouPlus 的 GitHub 项目页加入网页源，方便以后在列表中打开项目。你也可以直接访问仓库。</string>
-    <string name="onboarding_market_future">资源市场与源市场的完整功能将在后续 1.8.8 版本提供；1.8.7 暂不包含已上线的资源市场。</string>
+    <string name="onboarding_market_body">可以添加 GitHub 标准仓库源，也可以跳过后在列表里的资源市场选择。仓库内容会缓存在本地，并按版本获取后续更新。</string>
+    <string name="onboarding_market_future">列表页提供资源市场和独立仓库工程。你可以选择路径制作自己的标准仓库，或添加其他发布者的源。</string>
     <string name="onboarding_add_github">添加 GitHub 项目源</string>
     <string name="onboarding_skip_market">跳过添加</string>
     <string name="onboarding_visit_github">在浏览器中查看 GitHub</string>

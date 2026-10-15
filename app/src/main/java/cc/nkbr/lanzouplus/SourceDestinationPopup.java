@@ -2,8 +2,6 @@ package cc.nkbr.lanzouplus;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.Context;
-import android.content.SharedPreferences;
 import android.graphics.drawable.ColorDrawable;
 import android.text.InputType;
 import android.view.Gravity;
@@ -26,8 +24,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 /**
  * One "join a path" picker shared by the download page, the Web page and the shared browser popup.
@@ -40,8 +36,6 @@ import org.json.JSONObject;
  * single source of truth.</p>
  */
 final class SourceDestinationPopup {
-  private static final String CATEGORY_PREFS = "source_categories", CATEGORY_KEY = "items";
-
   private SourceDestinationPopup() {}
 
   /** Everything the picker needs from its host; all calls happen on the host thread. */
@@ -50,6 +44,11 @@ final class SourceDestinationPopup {
 
     /** Category name to member source ids; "全部" is implied and never listed. */
     Map<String, Set<String>> categories();
+
+    default boolean includeSourcePaths(){return false;}
+    default void loadFolderPaths(Models.Source source,String nodeId,String category,java.util.function.Consumer<List<Models.SourceMember>> done){done.accept(folders(source,nodeId));}
+    default Models.Source pathSource(Models.Source parent,Models.SourceMember member){return parent;}
+    default String pathNodeId(Models.Source parent,Models.SourceMember member){return member.id;}
 
     List<Models.SourceMember> folders(Models.Source composite, String nodeId);
 
@@ -115,6 +114,14 @@ final class SourceDestinationPopup {
    * sources, {@code items} are catalogue items whose share link is added to the chosen folders.
    */
   static AlertDialog show(Activity host, Catalog catalog, List<Models.Source> sourceInput, List<Models.Item> itemInput) {
+    return show(host,catalog,sourceInput,itemInput,null);
+  }
+
+  static AlertDialog select(Activity host,Catalog catalog,java.util.function.Consumer<List<Destination>> selected){
+    return show(host,catalog,Collections.emptyList(),Collections.emptyList(),selected);
+  }
+
+  private static AlertDialog show(Activity host, Catalog catalog, List<Models.Source> sourceInput, List<Models.Item> itemInput,java.util.function.Consumer<List<Destination>> selection) {
     if (host == null || host.isFinishing() || catalog == null) return null;
     SharedPopupSurface.Theme theme = new SharedPopupSurface.Theme(host);
     List<Models.Source> available;
@@ -162,10 +169,10 @@ final class SourceDestinationPopup {
             - SharedPopupSurface.dp(host, 350)))));
 
     AlertDialog dialog = new AlertDialog.Builder(host)
-        .setTitle("批量选择加入路径")
+        .setTitle(selection==null?"批量选择加入路径":"选择搜索或打包路径")
         .setView(panel)
         .setNegativeButton("取消", null)
-        .setPositiveButton("添加到所选路径", null)
+        .setPositiveButton(selection==null?"添加到所选路径":"使用所选路径", null)
         .create();
 
     dialog.setOwnerActivity(host);
@@ -174,7 +181,7 @@ final class SourceDestinationPopup {
     update[0] = () -> {
       summary.setText("已选 " + selected.size() + " 个路径");
       summary.setContentDescription("提交前摘要，已选 " + selected.size() + " 个路径");
-      if (submit[0] != null) submit[0].setEnabled(!selected.isEmpty() && (!sources.isEmpty() || !items.isEmpty()));
+      if (submit[0] != null) submit[0].setEnabled(selection!=null||!selected.isEmpty() && (!sources.isEmpty() || !items.isEmpty()));
     };
     java.util.function.Consumer<Destination> focus = here -> {
       current[0]=here;
@@ -194,17 +201,18 @@ final class SourceDestinationPopup {
       if (here == null || here.categoryOnly()) return;
       createFolderDialog(host, catalog, theme, here, render[0]);
     });
+    if(selection!=null)createFolder.setVisibility(View.GONE);
 
     dialog.setOnDismissListener(ignored -> catalog.release());
     // Prepare destinations and the submit callback before the first frame.
     SharedPopupSurface.styleDialog(host, dialog, theme, () -> {
       submit[0] = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
       submit[0].setOnClickListener(v -> {
-        if (selected.isEmpty()) return;
+        if (selection==null&&selected.isEmpty()) return;
         List<Destination> destinations = new ArrayList<>(selected.values());
         catalog.submitting();
         dialog.dismiss();
-        apply(host, catalog, sources, items, destinations);
+        if(selection==null)apply(host, catalog, sources, items, destinations);else selection.accept(destinations);
       });
       render[0].run();
     });
@@ -288,12 +296,21 @@ final class SourceDestinationPopup {
       if(here.categoryOnly()){
         Set<String> ids=here.category.equals("全部")?null:catalog.categories().get(here.category);
         for(Models.Source source:available){
-          if(!MainActivity.compositeSource(source)||ids!=null&&!ids.contains(LanzouCore.sourceId(source)))continue;
+          // A repository container owns its cached children (they carry a repositoryUrl). At the
+          // "全部" root they would also appear as a second, top-level copy of the same source, so
+          // they are listed only inside their container. A named category still lists them.
+          if(here.category.equals("全部")&&!source.repositoryUrl.isEmpty())continue;
+          if(!catalog.includeSourcePaths()&&!MainActivity.compositeSource(source)||ids!=null&&!ids.contains(LanzouCore.sourceId(source)))continue;
           String title=source.title.isEmpty()?"自建目录":source.title;
           add(area,new Destination(here.category,source,"",here.path+" › "+title),here);
         }
-      }else for(Models.SourceMember member:catalog.folders(here.composite,here.nodeId))
-        add(area,new Destination(here.category,here.composite,member.id,here.path+" › "+member.title),here);
+      }else{
+        TextView loading=SharedPopupSurface.label(host,"正在读取路径…",12,theme.muted);area.addView(loading);
+        catalog.loadFolderPaths(here.composite,here.nodeId,here.category,members->host.runOnUiThread(()->{
+          area.removeAllViews();for(Models.SourceMember member:members)add(area,new Destination(here.category,catalog.pathSource(here.composite,member),catalog.pathNodeId(here.composite,member),here.path+" › "+member.title),here);
+          if(area.getChildCount()==0){TextView empty=SharedPopupSurface.label(host,"此位置没有下级目录",12,theme.muted);area.addView(empty);}
+        }));
+      }
       if(area.getChildCount()==0){
         TextView empty=SharedPopupSurface.label(host,"此位置没有下级自建目录",12,theme.muted);
         empty.setGravity(Gravity.CENTER);area.addView(empty,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,44)));
@@ -626,78 +643,19 @@ final class SourceDestinationPopup {
     }
   }
 
-  /**
-   * Preference codec for the shared category store. It keeps the whole group record — name,
-   * description and member ids — so adding members never drops a description the source page wrote,
-   * and it migrates the legacy {@code urls} array and stored aliases into member ids.
-   */
-  static final class Categories {
-    final LinkedHashMap<String, LinkedHashSet<String>> members = new LinkedHashMap<>();
-    final LinkedHashMap<String, String> descriptions = new LinkedHashMap<>();
-
-    static Categories parse(String raw, Map<String, String> aliases) {
-      Categories store = new Categories();
-      JSONArray groups = new JSONArray();
-      try {
-        groups = new JSONArray(raw == null ? "[]" : raw);
-      } catch (Exception ignored) {
-      }
-      for (int i = 0; i < groups.length(); i++) {
-        JSONObject group = groups.optJSONObject(i);
-        if (group == null) continue;
-        String name = group.optString("name").trim();
-        if (name.isEmpty() || name.equals("全部") || store.members.containsKey(name)) continue;
-        LinkedHashSet<String> ids = new LinkedHashSet<>();
-        JSONArray values = group.optJSONArray("ids");
-        if (values == null) values = group.optJSONArray("urls");
-        if (values != null) {
-          for (int j = 0; j < values.length(); j++) {
-            String stored = values.optString(j);
-            if (stored.isEmpty()) continue;
-            ids.add(aliases == null ? stored : aliases.getOrDefault(stored, stored));
-          }
-        }
-        store.members.put(name, ids);
-        store.descriptions.put(name, group.optString("description"));
-      }
-      return store;
-    }
-
-    String write() {
-      JSONArray groups = new JSONArray();
-      try {
-        for (Map.Entry<String, LinkedHashSet<String>> group : members.entrySet()) {
-          groups.put(new JSONObject()
-              .put("name", group.getKey())
-              .put("description", descriptions.getOrDefault(group.getKey(), ""))
-              .put("ids", new JSONArray(group.getValue())));
-        }
-      } catch (Exception ignored) {
-      }
-      return groups.toString();
-    }
-  }
-
   /** Preference-backed catalog: LanzouCore for sources and composites, prefs for categories. */
   private static class StoredCatalog implements Catalog {
     private final Activity host;
     private final LanzouCore core;
-    private final SharedPreferences prefs;
-    private final Categories store;
+    private final Map<String,Set<String>> memberships=new LinkedHashMap<>();
 
     StoredCatalog(Activity host, LanzouCore core) {
       this.host = host;
       this.core = core;
-      prefs = host.getApplicationContext().getSharedPreferences(CATEGORY_PREFS, Context.MODE_PRIVATE);
-      LinkedHashMap<String, String> aliases = new LinkedHashMap<>();
       try {
-        for (Models.Source source : core.sources()) {
-          aliases.put(source.url, LanzouCore.sourceId(source));
-          if (!source.id.isEmpty()) aliases.put(source.id, LanzouCore.sourceId(source));
-        }
-      } catch (Exception ignored) {
-      }
-      store = Categories.parse(prefs.getString(CATEGORY_KEY, "[]"), aliases);
+        core.migrateLegacySourceCategories();
+        for(Models.Source source:core.knownCategorySources())for(String category:source.categories)memberships.computeIfAbsent(category,key->new LinkedHashSet<>()).add(LanzouCore.sourceId(source));
+      } catch(Exception error){throw new IllegalStateException("无法读取源分类",error);}
     }
 
     @Override public List<Models.Source> sources() throws Exception {
@@ -705,7 +663,7 @@ final class SourceDestinationPopup {
     }
 
     @Override public Map<String, Set<String>> categories() {
-      return Collections.unmodifiableMap(new LinkedHashMap<String, Set<String>>(store.members));
+      return Collections.unmodifiableMap(memberships);
     }
 
     @Override public List<Models.SourceMember> folders(Models.Source composite, String nodeId) {
@@ -731,10 +689,8 @@ final class SourceDestinationPopup {
     }
 
     @Override public void addCategoryMembers(String category, Set<String> sourceIds) {
-      LinkedHashSet<String> members = store.members.get(category);
-      if (members == null) return;
-      members.addAll(sourceIds);
-      prefs.edit().putString(CATEGORY_KEY, store.write()).apply();
+      try{for(String id:sourceIds){Models.Source source=core.sourceById(id);if(source==null)continue;List<String> labels=new ArrayList<>(source.categories);labels.add(category);core.updateSourceCategories(id,labels);}memberships.computeIfAbsent(category,key->new LinkedHashSet<>()).addAll(sourceIds);}
+      catch(Exception error){throw new IllegalStateException("源分类保存失败",error);}
     }
 
     @Override public void applied(final String summary, final boolean failed) {

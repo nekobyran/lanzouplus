@@ -8,7 +8,7 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 ## 正式版本
 
-- 当前版本：`1.8.7`
+- 当前版本：`1.8.8alpha`
 - 包名：`cc.nkbr.lanzouplus`
 - 最低系统：Android 7.0（API 24）
 - 正式下载：[lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -18,9 +18,14 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 ## 功能
 
-- 导入、导出并合并本地或 HTTPS 源规则
-- 并发搜索、分页进度、暂停与继续
-- 蓝奏目录和文件夹浏览、缓存与路径导航
+- 导入、导出并合并本地或 HTTPS 源规则，支持明文源导出与订阅路径选择
+- 分类标签与多路径搜索范围；并发搜索、分页进度、暂停与继续
+- 蓝奏目录和文件夹浏览、缓存与路径导航；目录分页沿用公开的状态语义
+- 资源市场与 GitHub 标准仓库源：仓库作为一个项目显示，进入后查看内部源并缓存到本地
+- 本地仓库工程页：保存工程、明文导入导出并生成标准仓库压缩包
+- 设置页按“列表与外观、搜索与索引、源与市场、下载、账号与权限、关于与更新”横向分类切换
+- 引导流程覆盖权限、蓝奏基础链接验证、GitHub 源与更新通道，完成后播放一次主页过场
+- 更新通道区分稳定与测试两条清单，并按 SemVer 规则比较版本
 - 下载历史、失败重试、系统安装及文件管理器联动
 - 跟随系统的明暗主题与横竖屏自适应布局
 
@@ -44,6 +49,16 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 本项目采用 [MIT License](LICENSE)。允许个人与商业使用、修改及再分发；复制或分发本软件及其重要部分时，必须保留原版权声明与许可声明。
 
+## 开源借鉴
+
+- [npm/node-semver](https://github.com/npm/node-semver)：更新检查沿用其 SemVer 分段比较与预发布排序规则；未引入其源码或运行依赖。
+- [zaxtyson/LanZouCloud-API](https://github.com/zaxtyson/LanZouCloud-API)（MIT）：目录分页沿用其记录的公开状态含义，并按本项目实测结果实现；未引入其源文件。
+- [AppIntro](https://github.com/AppIntro/AppIntro)（Apache-2.0）：引导入场借鉴按方向组合位移、透明度与恢复交互状态的思路，逐元素时序和主页形变使用 Android 原生 Animator 实现。
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot)：资源市场借鉴以 GitHub 仓库登记信息、读取上游描述与配图的组织方式。
+- [GitHub CLI](https://github.com/cli/cli)（MIT）：正式发布复用 Release 创建、文件上传和回读命令，Alpha 使用 prerelease 且不更新稳定 latest。
+
+上游内容与权利归原作者所有。
+
 作者：nekobyran · Bilibili UID：607234739
 
 ## 赞助(subscription)
@@ -59,9 +74,22 @@ This public repository contains only the **empty-source edition with no home rec
 
 > Product boundary: this repository, its GitHub releases, and the public website contain LanzouPlus only.
 
+### Features
+
+- Import, export, and merge local or HTTPS source rules, including plain-text source export and subscription path selection
+- Category tags and multi-path search scope; concurrent search with paged progress, pause, and resume
+- Lanzou directory and folder browsing with cache and path navigation; directory pagination keeps the public state semantics
+- Resource market and GitHub standard repository sources: a repository appears as one project and its inner sources are cached locally
+- Local repository project screen: save a project, import or export plain text, and build a standard repository archive
+- Settings split into horizontal categories: list and appearance, search and index, sources and market, downloads, account and permissions, about and updates
+- Onboarding covers permissions, base link verification, GitHub sources, and the update channel, then plays one home transition
+- Update channels keep separate stable and test manifests and compare versions with SemVer rules
+- Download history with retry, system installer hand-off, and file manager integration
+- Follows the system light and dark theme with portrait and landscape layouts
+
 ### Release
 
-- Version: `1.8.7`
+- Version: `1.8.8alpha`
 - Package: `cc.nkbr.lanzouplus`
 - Minimum Android: 7.0 (API 24)
 - Official page and download: [lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -77,6 +105,16 @@ JDK 17 and the Android SDK are required:
 ```
 
 The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, and `c` must remain zero-byte files.
+
+### Open-source references
+
+- [npm/node-semver](https://github.com/npm/node-semver): the update check follows its SemVer segment comparison and prerelease ordering rules; no upstream code or runtime dependency is bundled.
+- [zaxtyson/LanZouCloud-API](https://github.com/zaxtyson/LanZouCloud-API) (MIT): directory pagination follows the public state meanings recorded there and is implemented from this project's own live results; no upstream source file is bundled.
+- [AppIntro](https://github.com/AppIntro/AppIntro) (Apache-2.0): onboarding follows its directional translation, opacity and interaction-restoration approach; Android Animator implements the stagger and home morph.
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot): the market follows its organization of GitHub repository entries with upstream descriptions and images.
+- [GitHub CLI](https://github.com/cli/cli) (MIT): releases use its create, asset upload and download commands; alpha releases are prereleases and do not replace stable latest.
+
+Upstream content and rights stay with the original authors.
 
 ### License
 

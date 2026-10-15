@@ -3,7 +3,7 @@ package cc.nkbr.lanzouplus;
 import java.util.*;
 
 final class Models {
-  static final byte SOURCE_OFFICIAL=0,SOURCE_COMPOSITE=1,SOURCE_SINGLE=2,SOURCE_WEB=3;
+  static final byte SOURCE_OFFICIAL=0,SOURCE_COMPOSITE=1,SOURCE_SINGLE=2,SOURCE_WEB=3,SOURCE_REPOSITORY=4;
   static final byte MEMBER_UNKNOWN=0,MEMBER_FILE=1,MEMBER_DIRECTORY=2,MEMBER_FOLDER=3,MEMBER_REMOTE_FOLDER=4;
   static final class Item {
     String title="", url="", shareUrl="", size="", time="", iconUrl="", source="", password="", description="", folderId="", sourceId="", error="";
@@ -30,6 +30,7 @@ final class Models {
     long refreshedAt;
   }
   static final class Source {
+    String iconUrl="",repositoryUrl="",repositoryVersion="",repositoryVersionMode="";
     String id="", nodeId="", title="", url="", password="", error="", publisher="", avatarUrl="", description="", originPath="", originUrl="";
     /** Catalog id of the source a child directory was discovered under; empty for root sources. */
     String parentId="";
@@ -50,6 +51,7 @@ final class Models {
   }
   /** Per-search tuning. LanzouCore consumes a clamped copy for every run. */
   static final class SearchOptions {
+    final List<Source> scopeSources=new ArrayList<>();
     static final int MODE_MIXED=0,MODE_API=1,MODE_DIRECTORY=2,MODE_INDEX=3;
     static final int MASK_API=1,MASK_DIRECTORY=2,MASK_INDEX=4,MASK_ALL=MASK_API|MASK_DIRECTORY|MASK_INDEX;
     int concurrency=0;
@@ -97,6 +99,7 @@ final class Models {
       fuzzyMatching=value;
       return this;
     }
+    SearchOptions withScopeSources(Collection<Source> values){scopeSources.clear();scopeSources.addAll(values);return this;}
 
     static int normalizeModeMask(int value){int mask=value&MASK_ALL;return mask==0?MASK_DIRECTORY:mask;}
     static int maskForMode(int value){switch(value){case MODE_API:return MASK_API;case MODE_DIRECTORY:return MASK_DIRECTORY;case MODE_INDEX:return MASK_INDEX;default:return MASK_ALL;}}
@@ -115,7 +118,7 @@ final class Models {
       // maxPages is a caller-supplied, explicit bound. It is never clamped to an
       // arbitrary ceiling: 0 means "until the last page" and any positive value
       // is honored exactly as given.
-      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,maxPages)).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching);
+      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,maxPages)).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching).withScopeSources(scopeSources);
     }
   }
   interface Progress {

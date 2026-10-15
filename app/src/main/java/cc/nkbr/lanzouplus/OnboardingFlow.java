@@ -8,6 +8,7 @@ import android.content.res.ColorStateList;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -33,6 +34,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /** Full-screen, resumable first-run setup. The required base origin is verified by LanzouCore. */
 final class OnboardingFlow {
@@ -42,6 +46,7 @@ final class OnboardingFlow {
   static final String CHANNEL_KEY="channel";
   static final String DEBUG_PREVIEW_STEP="lz_onboarding_preview_step";
   static final int STORAGE_REQUEST=70;
+  private static final long STAGGER_MS=45;
   private static final String STATE_STEP="onboarding.step";
   private static final String STATE_DRAFT="onboarding.draft";
 
@@ -50,6 +55,7 @@ final class OnboardingFlow {
   private final boolean preview;
   private final AtomicInteger requestGeneration=new AtomicInteger();
   private int step;
+  private int direction=1;
   private boolean active=true;
   private boolean busy;
   private boolean changing;
@@ -59,6 +65,7 @@ final class OnboardingFlow {
   private String status="";
   private TextView statusView;
   private EditText baseInput;
+  private EditText githubInput;
   private Button primaryButton;
   private Button secondaryButton;
   private ProgressBar workingIndicator;
@@ -155,6 +162,7 @@ final class OnboardingFlow {
     busy=false;
     status="";
     requestGeneration.incrementAndGet();
+    direction=next<step?-1:1;
     step=next;
     if(!preview)prefs.edit().putInt("step",step).apply();
     fadeTo(this::render);
@@ -166,6 +174,7 @@ final class OnboardingFlow {
     changing=true;
     previous.animate().cancel();
     previous.animate().alpha(0f).setDuration(110)
+        .translationX(-direction*dp(20))
         .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
         .withEndAction(()->{if(active&&shellView==previous)show.run();}).start();
   }
@@ -194,13 +203,19 @@ final class OnboardingFlow {
     parent.addView(new View(activity),new LinearLayout.LayoutParams(1,dp(height)));
   }
 
-  private Button button(int title,View.OnClickListener click){
+  private Button button(int title,int fill,int textColor,boolean outline,View.OnClickListener click){
     Button button=new Button(activity);
     button.setText(title);
+    button.setTextSize(15);
     button.setAllCaps(false);
+    button.setGravity(Gravity.CENTER);
     button.setMinHeight(dp(52));
-    button.setBackgroundTintList(ColorStateList.valueOf(activity.SURFACE));
-    button.setTextColor(activity.TEXT);
+    button.setMinimumHeight(dp(52));
+    button.setTextColor(textColor);
+    button.setElevation(0f);
+    button.setStateListAnimator(null);
+    GradientDrawable surface=outline?activity.shape(fill,26):activity.solidShape(fill,26);
+    button.setBackground(activity.filterRipple(surface));
     button.setOnClickListener(click);
     return button;
   }
@@ -322,34 +337,52 @@ final class OnboardingFlow {
         step==BASE?R.string.onboarding_verify_base:
         step==MARKET?R.string.onboarding_add_github:
         R.string.onboarding_finish;
-    primaryButton=button(action,v->primaryAction());
-    primaryButton.setBackgroundTintList(ColorStateList.valueOf(activity.PRIMARY));
-    primaryButton.setTextColor(activity.darkMode?Color.rgb(56,30,114):Color.WHITE);
+    primaryButton=button(action,activity.PRIMARY,activity.darkMode?Color.rgb(56,30,114):Color.WHITE,false,v->primaryAction());
     primaryButton.setId(R.id.onboarding_primary);
     primaryButton.setEnabled(!busy);
     footer.addView(primaryButton,new LinearLayout.LayoutParams(-1,dp(52)));
     if(step==PERMISSIONS||step==MARKET||step==BASE){
       int secondary=step==PERMISSIONS?R.string.onboarding_skip_permissions:
           step==MARKET?R.string.onboarding_skip_market:R.string.onboarding_random_base;
-      secondaryButton=button(secondary,v->secondaryAction());
+      secondaryButton=button(secondary,activity.SURFACE,activity.TEXT,true,v->secondaryAction());
       secondaryButton.setId(R.id.onboarding_secondary);
       secondaryButton.setEnabled(!busy);
       footer.addView(secondaryButton,new LinearLayout.LayoutParams(-1,dp(52)));
     }
     changing=false;
-    if(activity.motionEnabled()){
-      shell.setAlpha(0f);
-      shell.animate().alpha(1f).setDuration(160)
-          .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
-      if(step==WELCOME){
-        reveal(welcomeName,0);reveal(icon,60);reveal(welcomeIntro,120);
-      }
+    long delay=0;
+    for(View target:orderedMotionTargets(shell,direction)){reveal(target,delay);delay+=STAGGER_MS;}
+  }
+
+  /**
+   * Every visible content node of the step in document order, reversed when the step moves backwards.
+   * Nested rows such as the channel radios are included element by element.
+   */
+  static List<View> orderedMotionTargets(View root,int direction){
+    List<View> targets=new ArrayList<>();
+    collectMotionTargets(root,targets);
+    if(direction<0)Collections.reverse(targets);
+    return targets;
+  }
+
+  private static void collectMotionTargets(View view,List<View> targets){
+    if(view==null||view.getVisibility()!=View.VISIBLE)return;
+    if(view instanceof ViewGroup){
+      ViewGroup group=(ViewGroup)view;
+      for(int i=0;i<group.getChildCount();i++)collectMotionTargets(group.getChildAt(i),targets);
+      if(group.getChildCount()>0)return;
+    }
+    if(view instanceof TextView||view instanceof ImageView||view instanceof ProgressBar||view.getBackground()!=null){
+      targets.add(view);
     }
   }
 
   private void reveal(View view,long delay){
+    view.animate().cancel();
+    if(!activity.motionEnabled()){view.setAlpha(1f);view.setTranslationX(0f);return;}
     view.setAlpha(0f);
-    view.animate().alpha(1f).setStartDelay(delay).setDuration(180)
+    view.setTranslationX(direction*dp(28));
+    view.animate().alpha(1f).translationX(0f).setStartDelay(delay).setDuration(230)
         .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
   }
 
@@ -369,13 +402,13 @@ final class OnboardingFlow {
     addSpace(body,10);
     explanation(body,R.string.onboarding_permissions_body);
     addSpace(body,22);
-    Button storage=button(R.string.onboarding_request_storage,v->requestStoragePermission(activity));
+    Button storage=button(R.string.onboarding_request_storage,activity.SURFACE,activity.TEXT,true,v->requestStoragePermission(activity));
     storage.setId(R.id.onboarding_storage);
     storage.setText(activity.getString(R.string.onboarding_request_storage)+
         " · "+activity.getString(storageGranted()?R.string.onboarding_granted:R.string.onboarding_not_granted));
     body.addView(storage,new LinearLayout.LayoutParams(-1,dp(58)));
     addSpace(body,12);
-    Button battery=button(R.string.onboarding_request_battery,v->requestBatteryPermission(activity));
+    Button battery=button(R.string.onboarding_request_battery,activity.SURFACE,activity.TEXT,true,v->requestBatteryPermission(activity));
     battery.setId(R.id.onboarding_battery);
     battery.setText(activity.getString(R.string.onboarding_request_battery)+
         " · "+activity.getString(batteryGranted()?R.string.onboarding_granted:R.string.onboarding_not_granted));
@@ -425,10 +458,8 @@ final class OnboardingFlow {
     addSpace(body,10);
     explanation(body,R.string.onboarding_market_body);
     addSpace(body,12);
-    TextView github=activity.text(MainActivity.LANZOU_PLUS_REPOSITORY,14,activity.PRIMARY);
-    github.setTextIsSelectable(true);
-    body.addView(github,new LinearLayout.LayoutParams(-1,-2));
-    Button open=button(R.string.onboarding_visit_github,
+    githubInput=new EditText(activity);githubInput.setSingleLine(true);githubInput.setTextColor(activity.TEXT);githubInput.setHintTextColor(activity.MUTED);githubInput.setText("https://github.com/nekobyran/lzpmarket-lanzoumax");githubInput.setHint("GitHub 标准仓库链接");githubInput.setContentDescription("GitHub 仓库源链接");body.addView(githubInput,new LinearLayout.LayoutParams(-1,dp(56)));
+    Button open=button(R.string.onboarding_visit_github,activity.SURFACE,activity.TEXT,true,
         v->activity.openInBrowser(MainActivity.LANZOU_PLUS_REPOSITORY,""));
     body.addView(open,new LinearLayout.LayoutParams(-1,dp(52)));
     addSpace(body,16);
@@ -568,11 +599,12 @@ final class OnboardingFlow {
 
   private void addGithubSource(){
     if(busy)return;
+    String github=githubInput.getText().toString().trim();
     int generation=requestGeneration.incrementAndGet();
     startBusy(R.string.onboarding_adding_github);
     activity.io.execute(()->{
       try{
-        activity.core.addUserSource(MainActivity.LANZOU_PLUS_REPOSITORY,"");
+        activity.core.addUserSource(github,"");
         activity.runOnUiThread(()->{
           if(!active||step!=MARKET||generation!=requestGeneration.get())return;
           endBusy();
@@ -603,7 +635,9 @@ final class OnboardingFlow {
     requestGeneration.incrementAndGet();
     activity.onboarding=null;
     activity.safeStartMainExperience();
-    activity.handleExternalAction(activity.getIntent());
+    Intent original=activity.getIntent();
+    activity.pendingOnboardingAction=()->activity.handleExternalAction(original);
+    HomeOnboardingReveal.play(activity,!preview,activity::completeOnboardingAction);
   }
 
   private boolean storageGranted(){

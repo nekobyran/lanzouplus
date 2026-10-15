@@ -271,6 +271,7 @@ final class LanzouCore {
         private static volatile byte[] BUILT_IN_SOURCE_HINTS;private static volatile Map<String,Integer> BUILT_IN_SOURCE_HINT_MAP=Collections.emptyMap();
   private static volatile Context appContext;
   private final Context context;
+  private MarketRepositoryClient repositoryClient;
     private volatile DirectCookiePool directCookiePool;
   private volatile boolean directoryCachingEnabled=true;
     private final java.util.concurrent.atomic.AtomicBoolean indexCancelled=new java.util.concurrent.atomic.AtomicBoolean(),persistedCompositeMembersLoaded=new java.util.concurrent.atomic.AtomicBoolean();
@@ -778,6 +779,83 @@ final class LanzouCore {
     return copySource(source);
   }
 
+  synchronized MarketRepositoryClient marketRepositories(){
+    if(repositoryClient==null)repositoryClient=new MarketRepositoryClient(new File(context.getFilesDir(),"market-repositories"));
+    return repositoryClient;
+  }
+
+  List<Models.Source> repositorySources(Models.Source source,boolean refresh)throws Exception{
+    MarketRepositoryClient.Document previous=marketRepositories().cached(source.url);
+    MarketRepositoryClient.Document document=marketRepositories().load(source.url,refresh);
+    Models.Source current=document.source();LinkedHashSet<String> rootLabels=new LinkedHashSet<>(current.categories);for(String label:source.categories)if(!SourceCategories.builtIn(label))rootLabels.add(label);SourceCategories.replace(current.categories,rootLabels);
+    storeUserSource(current);List<Models.Source> values=document.sources();
+    if(previous!=null&&previous!=document&&mergeRepositoryCategories(previous.sources(),values))marketRepositories().save(new MarketRepositoryClient.Document(document.githubUrl,document.rawRoot,document.ownerAvatar,document.metadata,sourceDocument(values).toString(),document.readme,document.sourcesLoaded,document.checkedAt));
+    return values;
+  }
+
+  /**
+   * A new upstream snapshot replaces {@code sources.lzp}, so the classifications saved on the
+   * previous snapshot are folded back in and the refreshed document is what gets cached.
+   */
+  private static boolean mergeRepositoryCategories(List<Models.Source> previous,List<Models.Source> refreshed)throws Exception{
+    if(previous==null||previous.isEmpty()||refreshed==null||refreshed.isEmpty())return false;
+    Map<String,Models.Source> saved=new HashMap<>();
+    for(Models.Source source:previous)saved.put(sourceId(source),source);
+    boolean changed=false;
+    for(Models.Source source:refreshed){
+      Models.Source old=saved.get(sourceId(source));if(old==null)continue;
+      LinkedHashSet<String> labels=new LinkedHashSet<>(SourceCategories.normalized(source.categories));
+      int before=labels.size();labels.addAll(SourceCategories.normalized(old.categories));
+      if(labels.size()!=before){SourceCategories.replace(source.categories,labels);changed=true;}
+      Map<String,Models.SourceMember> members=new HashMap<>();for(Models.SourceMember member:old.members)members.put(member.id,member);
+      for(Models.SourceMember member:source.members){Models.SourceMember local=members.get(member.id);if(local==null)continue;LinkedHashSet<String> tags=new LinkedHashSet<>(member.categories);if(tags.addAll(local.categories)){SourceCategories.replace(member.categories,tags);changed=true;}}
+      normalizeSourceCategories(source);
+    }
+    return changed;
+  }
+
+  List<Models.Source> cachedRepositorySources(Models.Source source)throws Exception{
+    MarketRepositoryClient.Document document=marketRepositories().cached(source.url);
+    return document==null?Collections.emptyList():document.sources();
+  }
+
+  List<Models.Source> knownCategorySources()throws IOException{
+    List<Models.Source> out=new ArrayList<>(sources());
+    try{for(Models.Source source:new ArrayList<>(out))if(source.kind==Models.SOURCE_REPOSITORY)out.addAll(cachedRepositorySources(source));}
+    catch(Exception error){throw new IOException("仓库缓存读取失败",error);}return out;
+  }
+
+  private void persistClassifiedSource(Models.Source source)throws Exception{
+    if(source.repositoryUrl.isEmpty()){storeUserSourceLocked(source);return;}
+    MarketRepositoryClient.Document document=marketRepositories().cached(source.repositoryUrl);
+    List<Models.Source> values=document.sources();boolean found=false;
+    for(int i=0;i<values.size();i++)if(sourceId(values.get(i)).equals(sourceId(source))){values.set(i,source);found=true;break;}
+    if(!found)throw new IOException("仓库内源已不存在");
+    marketRepositories().save(new MarketRepositoryClient.Document(document.githubUrl,document.rawRoot,document.ownerAvatar,document.metadata,sourceDocument(values).toString(),document.readme,document.sourcesLoaded,document.checkedAt));
+  }
+
+  List<Models.Item> collectLocalPathItems(Models.Source source)throws Exception{
+    Set<String> scope=compositeScope(source);List<Models.Item> out=new ArrayList<>();
+    for(Models.SourceMember member:source.members)if(inCompositeScope(member,scope)&&member.kind!=Models.MEMBER_FOLDER)out.add(itemFromMember(member,source.title));return out;
+  }
+
+  static List<Models.Source> parseSourceDocument(String raw)throws Exception{
+    if(raw.getBytes(StandardCharsets.UTF_8).length>RULE_LIMIT)throw new IOException("源文件超过 8 MiB");
+    JSONObject document=new JSONObject(raw);if(document.getInt("version")!=2)throw new IOException("仅支持 v2 源文件");
+    JSONArray rows=document.getJSONArray("sources");List<Models.Source> out=new ArrayList<>();Set<String> ids=new HashSet<>();
+    for(int i=0;i<rows.length();i++){Models.Source source=sourceFromJson(rows.getJSONObject(i));if(!ids.add(sourceId(source)))throw new IOException("源身份重复");out.add(source);}return out;
+  }
+
+  String exportSourceRules(boolean staticRepositories)throws Exception{
+    return exportSourceRules(null,staticRepositories);
+  }
+  String exportSourceRules(Collection<String> ids,boolean staticRepositories)throws Exception{
+    LinkedHashMap<String,Models.Source> out=new LinkedHashMap<>();for(Models.Source source:sources()){
+      if(ids!=null&&!ids.contains(sourceId(source)))continue;
+      if(staticRepositories&&source.kind==Models.SOURCE_REPOSITORY){for(Models.Source child:repositorySources(source,false))out.putIfAbsent(sourceId(child),child);}else out.putIfAbsent(sourceId(source),source);
+    }return sourceDocument(out.values()).toString(2)+"\n";
+  }
+
   AddBatchResult addUserSourcesBatch(String raw)throws InterruptedException{return addUserSourcesBatch(raw,0,false);}
   AddBatchResult addUserSourcesBatch(String raw,boolean discoverNonEmptyChildren)throws InterruptedException{return addUserSourcesBatch(raw,0,discoverNonEmptyChildren);}
 
@@ -842,7 +920,7 @@ final class LanzouCore {
 
   private Models.Source resolveUserSource(String url,String password)throws Exception{return resolveUserSource(url,password,true);}
   private Models.Source resolveUserSource(String url,String password,boolean parseDescription)throws Exception{
-    UserSourceInput input=parseUserSourceInput(url,password);String normalized=input.url,pwd=input.password;Models.Source source;if(!isLanzouSourceUrl(normalized))source=webSource(normalized,pwd);else{Exception singleError;try{source=singleSource(normalized,pwd,probeSingleSource(normalized,pwd));}catch(Exception error){singleError=error;try{source=detectSource(normalized,pwd);}catch(Exception directoryError){if(singleError instanceof ShareCancelledException)throw singleError;if(directoryError instanceof ShareCancelledException)throw directoryError;throw directoryError;}}}if(!parseDescription){source.description="";for(Models.SourceMember member:source.members)member.description="";}return source;
+    UserSourceInput input=parseUserSourceInput(url,password);String normalized=input.url,pwd=input.password;Models.Source source;if(MarketRepository.githubUrl(normalized))source=marketRepositories().load(normalized,false).source();else if(!isLanzouSourceUrl(normalized))source=webSource(normalized,pwd);else{Exception singleError;try{source=singleSource(normalized,pwd,probeSingleSource(normalized,pwd));}catch(Exception error){singleError=error;try{source=detectSource(normalized,pwd);}catch(Exception directoryError){if(singleError instanceof ShareCancelledException)throw singleError;if(directoryError instanceof ShareCancelledException)throw directoryError;throw directoryError;}}}if(!parseDescription){source.description="";for(Models.SourceMember member:source.members)member.description="";}return source;
   }
 
   private static Models.Source singleSource(String rootUrl,String password,Models.SourceMember raw)throws IOException{
@@ -972,6 +1050,7 @@ final class LanzouCore {
 
   /** Classifies only locally stored links, using the existing share URL recognizer. */
   static void normalizeSourceCategories(Models.Source source){
+    if(source.kind==Models.SOURCE_REPOSITORY){SourceCategories.replace(source.categories,source.categories);return;}
     Map<String,Integer> nodes=new HashMap<>();
     int[] types=new int[source.members.size()];
     ArrayDeque<Integer> changed=new ArrayDeque<>();
@@ -994,23 +1073,45 @@ final class LanzouCore {
 
   private static int categoryLinkType(String url){return url.isEmpty()?0:isLanzouSourceUrl(url)?1:2;}
 
+  /**
+   * One known source by id. A root link disambiguates entries that share an id across
+   * repositories; without one, a plain local entry wins over a repository child.
+   */
+  private Models.Source knownCategorySource(String id,String repositoryUrl)throws IOException{
+    String repository=repositoryUrl==null?"":repositoryUrl.trim();
+    for(Models.Source source:knownCategorySources()){
+      if(!sourceId(source).equals(id))continue;
+      if(source.repositoryUrl.equals(repository))return source;
+    }
+    return null;
+  }
+
   Models.Source updateSourceCategories(String rawId,Collection<String> categories)throws Exception{
+    return updateSourceCategories(rawId,"",categories);
+  }
+
+  /** Classifies one source node, using the owning repository link when the node lives in a cache. */
+  Models.Source updateSourceCategories(String rawId,String repositoryUrl,Collection<String> categories)throws Exception{
     synchronized(USER_SOURCE_LOCK){
-      String id=sourceRootId(rawId);Models.Source target=null;
-      for(Models.Source source:sources())if(sourceId(source).equals(id)){target=source;break;}
+      String id=sourceRootId(rawId);Models.Source target=knownCategorySource(id,repositoryUrl);
       if(target==null)throw new IOException("源已不存在");
       SourceCategories.replace(target.categories,categories);normalizeSourceCategories(target);
-      storeUserSourceLocked(target);touchSourceRevisionLocked(id);return copySource(target);
+      persistClassifiedSource(target);touchSourceRevisionLocked(id);return copySource(target);
     }
   }
 
   Models.Source updateMemberCategories(String rawId,String memberId,Collection<String> categories)throws Exception{
+    return updateMemberCategories(rawId,"",memberId,categories);
+  }
+
+  /** Classifies one member of a self-built collection, locating the owner by its repository link. */
+  Models.Source updateMemberCategories(String rawId,String repositoryUrl,String memberId,Collection<String> categories)throws Exception{
     synchronized(USER_SOURCE_LOCK){
-      Models.Source source=editableComposite(rawId);Models.SourceMember target=null;
+      Models.Source source=knownCategorySource(sourceRootId(rawId),repositoryUrl);if(source==null||source.kind!=Models.SOURCE_COMPOSITE)throw new IOException("自建合集已不存在");Models.SourceMember target=null;
       for(Models.SourceMember member:source.members)if(member.id.equals(memberId)){target=member;break;}
       if(target==null)throw new IOException("项目已不存在");
       SourceCategories.replace(target.categories,categories);normalizeSourceCategories(source);
-      storeUserSourceLocked(source);touchSourceRevisionLocked(sourceRootId(rawId));return copySource(source);
+      persistClassifiedSource(source);touchSourceRevisionLocked(sourceRootId(rawId));return copySource(source);
     }
   }
 
@@ -1025,7 +1126,7 @@ final class LanzouCore {
         for(int i=0;i<groups.length();i++){
           JSONObject group=groups.getJSONObject(i);String category=SourceCategories.name(group.getString("name"));
           if(category.isEmpty()||SourceCategories.builtIn(category))continue;
-          JSONArray ids=group.getJSONArray("ids");
+          JSONArray ids=group.optJSONArray("ids");if(ids==null)ids=group.optJSONArray("urls");if(ids==null)continue;
           for(int j=0;j<ids.length();j++){
             String id=ids.getString(j);
             if(id.equals(sourceId(source))){source.categories.add(category);changed=true;}
@@ -1109,7 +1210,10 @@ final class LanzouCore {
       List<Models.Source> cached=preparedSearchCatalog;
       if(cached!=null&&preparedSearchCatalogRevision==revision)return cached;
       Set<String> removed=loadRemovedSources();List<Models.Source> built=new ArrayList<>();
-      for(Models.Source source:searchSources(removed))built.add(copySource(source));
+      for(Models.Source source:searchSources(removed)){
+        if(source.kind==Models.SOURCE_REPOSITORY){try{for(Models.Source child:cachedRepositorySources(source))built.add(copySource(child));}catch(Exception error){throw new IOException("仓库搜索缓存读取失败",error);}}
+        else built.add(copySource(source));
+      }
       List<Models.Source> prepared=Collections.unmodifiableList(built);
       synchronized(sourcePlanLock){preparedSearchCatalog=prepared;preparedSearchCatalogRevision=revision;}
       return prepared;
@@ -1174,13 +1278,15 @@ final class LanzouCore {
   }
 
   private static Models.SourceMember copyMember(Models.SourceMember value){Models.SourceMember out=new Models.SourceMember();out.kind=value.kind;out.id=value.id;out.parentId=value.parentId;out.title=value.title;out.url=value.url;out.password=value.password;out.iconUrl=value.iconUrl;out.size=value.size;out.time=value.time;out.description=value.description;out.error=value.error;out.searchable=value.searchable;out.lightweight=value.lightweight;out.metadataLoaded=value.metadataLoaded;out.iconLoaded=value.iconLoaded;out.detailsLoaded=value.detailsLoaded;out.refreshedAt=value.refreshedAt;out.categories.addAll(value.categories);return out;}
-  private static Models.Source copySource(Models.Source value){Models.Source out=new Models.Source();copySourceInto(value,out);return out;}
-  private static void copySourceInto(Models.Source value,Models.Source out){out.id=value.id;out.nodeId=value.nodeId;out.kind=value.kind;out.title=value.title;out.url=value.url;out.password=value.password;out.searchable=value.searchable;out.error=value.error;out.publisher=value.publisher;out.avatarUrl=value.avatarUrl;out.description=value.description;out.originPath=value.originPath;out.originUrl=value.originUrl;out.parentId=value.parentId;out.childDirectory=value.childDirectory;out.overlay=value.overlay;out.metadataOverride=value.metadataOverride;out.categories.clear();out.categories.addAll(value.categories);out.members.clear();for(Models.SourceMember member:value.members)out.members.add(copyMember(member));}
-  private static JSONObject sourceJson(Models.Source value)throws JSONException{normalizeSourceCategories(value);JSONObject out=new JSONObject().put("v",2).put("id",value.id).put("kind",value.kind).put("title",value.title).put("url",value.url).put("password",value.password).put("searchable",value.searchable).put("error",value.error).put("publisher",value.publisher).put("avatar",value.avatarUrl).put("description",value.description).put("childDirectory",value.childDirectory).put("originPath",value.originPath).put("originUrl",value.originUrl).put("parentId",value.parentId).put("overlay",value.overlay).put("metadataOverride",value.metadataOverride).put("categories",new JSONArray(value.categories));JSONArray members=new JSONArray();for(Models.SourceMember member:value.members){boolean localWeb=value.kind==Models.SOURCE_COMPOSITE&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty()&&!isLanzouSourceUrl(member.url);boolean light=!localWeb&&value.kind!=Models.SOURCE_SINGLE&&value.kind!=Models.SOURCE_WEB&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY||member.lightweight);JSONObject item=new JSONObject().put("kind",member.kind).put("id",member.id).put("parent",member.parentId).put("url",member.url).put("password",member.password).put("icon",member.iconUrl).put("title",member.title).put("error",member.error).put("searchable",member.searchable).put("lightweight",light).put("categories",new JSONArray(member.categories));if(!light||!member.size.isEmpty())item.put("size",member.size);if(!light||!member.time.isEmpty())item.put("time",member.time);if(!light||!member.description.isEmpty())item.put("description",member.description);members.put(item);}return out.put("members",members);}
-  private static JSONObject sourceDocument(Collection<Models.Source> sources)throws JSONException{JSONArray values=new JSONArray();for(Models.Source source:sources)values.put(sourceJson(source));return new JSONObject().put("version",2).put("sources",values);}
+  static Models.Source copySource(Models.Source value){Models.Source out=new Models.Source();copySourceInto(value,out);return out;}
+  private static void copySourceInto(Models.Source value,Models.Source out){out.id=value.id;out.nodeId=value.nodeId;out.kind=value.kind;out.iconUrl=value.iconUrl;out.repositoryUrl=value.repositoryUrl;out.repositoryVersion=value.repositoryVersion;out.repositoryVersionMode=value.repositoryVersionMode;out.title=value.title;out.url=value.url;out.password=value.password;out.searchable=value.searchable;out.error=value.error;out.publisher=value.publisher;out.avatarUrl=value.avatarUrl;out.description=value.description;out.originPath=value.originPath;out.originUrl=value.originUrl;out.parentId=value.parentId;out.childDirectory=value.childDirectory;out.overlay=value.overlay;out.metadataOverride=value.metadataOverride;out.categories.clear();out.categories.addAll(value.categories);out.members.clear();for(Models.SourceMember member:value.members)out.members.add(copyMember(member));}
+  static JSONObject sourceJson(Models.Source value)throws JSONException{normalizeSourceCategories(value);JSONObject out=new JSONObject().put("v",2).put("id",value.id).put("kind",value.kind).put("icon",value.iconUrl).put("repositoryVersion",value.repositoryVersion).put("repositoryVersionMode",value.repositoryVersionMode).put("title",value.title).put("url",value.url).put("password",value.password).put("searchable",value.searchable).put("error",value.error).put("publisher",value.publisher).put("avatar",value.avatarUrl).put("description",value.description).put("childDirectory",value.childDirectory).put("originPath",value.originPath).put("originUrl",value.originUrl).put("parentId",value.parentId).put("overlay",value.overlay).put("metadataOverride",value.metadataOverride).put("categories",new JSONArray(value.categories));JSONArray members=new JSONArray();for(Models.SourceMember member:value.members){boolean localWeb=value.kind==Models.SOURCE_COMPOSITE&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty()&&!isLanzouSourceUrl(member.url);boolean light=!localWeb&&value.kind!=Models.SOURCE_SINGLE&&value.kind!=Models.SOURCE_WEB&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY||member.lightweight);JSONObject item=new JSONObject().put("kind",member.kind).put("id",member.id).put("parent",member.parentId).put("url",member.url).put("password",member.password).put("icon",member.iconUrl).put("title",member.title).put("error",member.error).put("searchable",member.searchable).put("lightweight",light).put("categories",new JSONArray(member.categories));if(!light||!member.size.isEmpty())item.put("size",member.size);if(!light||!member.time.isEmpty())item.put("time",member.time);if(!light||!member.description.isEmpty())item.put("description",member.description);members.put(item);}return out.put("members",members);}
+  static JSONObject sourceDocument(Collection<Models.Source> sources)throws JSONException{JSONArray values=new JSONArray();for(Models.Source source:sources)values.put(sourceJson(source));return new JSONObject().put("version",2).put("sources",values);}
   private static Models.Source sourceFromJson(JSONObject value)throws Exception{
     Models.Source source=new Models.Source();source.kind=(byte)value.optInt("kind",Models.SOURCE_OFFICIAL);source.title=cleanRuleCell(value.optString("title"));source.password=value.optString("password");source.searchable=value.optBoolean("searchable");source.error=value.optString("error");source.publisher=cleanRuleCell(value.optString("publisher"));source.avatarUrl=value.optString("avatar").trim();source.description=value.optString("description");source.childDirectory=value.optBoolean("childDirectory");source.originPath=cleanRuleCell(value.optString("originPath"));source.originUrl=value.optString("originUrl").trim();source.parentId=value.optString("parentId").trim();source.overlay=value.optBoolean("overlay");source.metadataOverride=value.optBoolean("metadataOverride");source.categories.addAll(SourceCategories.read(value));
-    if(source.kind==Models.SOURCE_COMPOSITE){
+    if(source.kind==Models.SOURCE_REPOSITORY){
+      source.id=source.url=MarketRepository.canonicalUrl(value.getString("url"));source.iconUrl=value.optString("icon");source.repositoryVersion=value.optString("repositoryVersion");source.repositoryVersionMode=value.optString("repositoryVersionMode");source.searchable=false;
+    }else if(source.kind==Models.SOURCE_COMPOSITE){
       source.id=value.optString("id").trim();if(!source.id.startsWith("local:")||source.id.length()>96)throw new IOException("自建合集身份无效");source.url="";JSONArray members=value.optJSONArray("members");if(members==null)members=new JSONArray();LinkedHashSet<String> unique=new LinkedHashSet<>(),ids=new LinkedHashSet<>(),folderIds=new LinkedHashSet<>();
       for(int i=0;i<members.length();i++){JSONObject raw=members.getJSONObject(i);Models.SourceMember member=new Models.SourceMember();member.kind=(byte)raw.optInt("kind",Models.MEMBER_UNKNOWN);if(member.kind<Models.MEMBER_FILE||member.kind>Models.MEMBER_REMOTE_FOLDER)member.kind=Models.MEMBER_FILE;member.id=cleanRuleCell(raw.optString("id"));if(member.id.isEmpty())member.id="m"+Integer.toString(i,36);if(!ids.add(member.id))throw new IOException("自建合集节点重复");if(member.kind==Models.MEMBER_FOLDER)folderIds.add(member.id);member.parentId=cleanRuleCell(raw.optString("parent"));member.password=raw.optString("password");if(member.password.length()>64||containsControl(member.password))throw new IOException("自建合集成员无效");if(member.kind!=Models.MEMBER_FOLDER){member.url=normalizeUserSourceUrl(raw.optString("url"));if(!unique.add(member.parentId+'\n'+memberKey(member)))throw new IOException("自建合集成员重复");}boolean localWeb=(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY)&&!member.url.isEmpty()&&!isLanzouSourceUrl(member.url);member.lightweight=!localWeb&&(member.kind==Models.MEMBER_FILE||member.kind==Models.MEMBER_DIRECTORY||raw.optBoolean("lightweight"));member.title=cleanRuleCell(raw.optString("title"));member.iconUrl=raw.optString("icon").trim();member.size=cleanRuleCell(raw.optString("size"));member.time=cleanRuleCell(raw.optString("time"));member.description=raw.optString("description");if(localWeb){member.metadataLoaded=true;member.iconLoaded=!member.iconUrl.isEmpty();member.detailsLoaded=true;}member.error=cleanRuleCell(raw.optString("error"));member.searchable=raw.optBoolean("searchable");member.categories.addAll(SourceCategories.read(raw));source.members.add(member);}
             if(!source.overlay)for(Models.SourceMember member:source.members)if(!member.parentId.isEmpty()&&!folderIds.contains(member.parentId))member.parentId="";source.searchable=true;if((!source.overlay||source.metadataOverride)&&source.title.isEmpty())throw new IOException("自建合集标题无效");
@@ -1988,11 +2094,11 @@ final class LanzouCore {
 
   List<Models.Item> search(String query,Models.Source extra,List<Models.Item> extraLocal,Models.SearchOptions options,Set<String> allowedSourceIds,Models.Progress progress) throws Exception {
     Models.SearchOptions searchOptions=(options==null?new Models.SearchOptions():options).normalized();
-    LinkedHashMap<String,Models.Source> unique;SearchSourceSeam sourceSeam=searchSourceSeam;if(sourceSeam==null)unique=searchableSources(extra,allowedSourceIds);else{unique=new LinkedHashMap<>();List<Models.Source> injected=sourceSeam.searchable(extra,allowedSourceIds);if(injected!=null)for(Models.Source source:injected)if(source!=null&&source.url!=null)unique.putIfAbsent(sourceId(source),source);}unique.entrySet().removeIf(entry->entry.getValue().kind==Models.SOURCE_SINGLE||!searchOptions.directoryEnabled()&&searchOptions.apiEnabled()&&!apiSearchCapable(entry.getValue()));String extraKey=sourceId(extra);List<Models.Source> src=new ArrayList<>(unique.size());Models.Source first=extraKey.isEmpty()?null:unique.get(extraKey);if(first!=null)src.add(first);for(Models.Source source:unique.values())if(source!=first&&source.password!=null&&!source.password.isEmpty())src.add(source);for(Models.Source source:unique.values())if(source!=first&&(source.password==null||source.password.isEmpty()))src.add(source);final List<Models.Item> local=extraLocal==null?Collections.emptyList():extraLocal;
+    LinkedHashMap<String,Models.Source> unique;SearchSourceSeam sourceSeam=searchSourceSeam;if(sourceSeam==null)unique=searchableSources(extra,allowedSourceIds);else{unique=new LinkedHashMap<>();List<Models.Source> injected=sourceSeam.searchable(extra,allowedSourceIds);if(injected!=null)for(Models.Source source:injected)if(source!=null&&source.url!=null)unique.putIfAbsent(sourceId(source),source);}if(!searchOptions.scopeSources.isEmpty()){unique.clear();for(Models.Source selected:searchOptions.scopeSources){if(selected.kind==Models.SOURCE_REPOSITORY){for(Models.Source child:cachedRepositorySources(selected))unique.putIfAbsent(sourceId(child),child);}else unique.putIfAbsent(sourceId(selected),copySource(selected));}}unique.entrySet().removeIf(entry->entry.getValue().kind==Models.SOURCE_SINGLE||!searchOptions.directoryEnabled()&&searchOptions.apiEnabled()&&!apiSearchCapable(entry.getValue()));String extraKey=sourceId(extra);List<Models.Source> src=new ArrayList<>(unique.size());Models.Source first=extraKey.isEmpty()?null:unique.get(extraKey);if(first!=null)src.add(first);for(Models.Source source:unique.values())if(source!=first&&source.password!=null&&!source.password.isEmpty())src.add(source);for(Models.Source source:unique.values())if(source!=first&&(source.password==null||source.password.isEmpty()))src.add(source);final List<Models.Item> local=extraLocal==null?Collections.emptyList():extraLocal;
     List<Models.Item> out=Collections.synchronizedList(new ArrayList<>());final Object searchResultLock=new Object();if(src.isEmpty())return out;
     Set<String> seen=ConcurrentHashMap.newKeySet();
         Future<?> fastLocalFuture=null;
-    if(extraKey.isEmpty()){
+    if(extraKey.isEmpty()&&searchOptions.scopeSources.isEmpty()){
             fastLocalFuture=SOURCE_UA_POOL.submit(()->{try{SearchLocalSeam localSeam=searchLocalSeam;List<Models.Item> fastLocal=localSeam==null?sourceNameItems(query,allowedSourceIds):localSeam.items(query,allowedSourceIds);if(fastLocal==null||fastLocal.isEmpty()||isSearchCancelled(progress))return null;java.util.concurrent.atomic.AtomicInteger fastFound=new java.util.concurrent.atomic.AtomicInteger();List<Models.Item> fresh;synchronized(searchResultLock){if(isSearchCancelled(progress))return null;fresh=addFresh(fastLocal,seen,out,fastFound);}if(progress!=null&&!fresh.isEmpty())synchronized(progress){if(!progress.isCancelled()&&!isSearchCancelled(progress))progress.onBatch(Collections.unmodifiableList(fresh));}}catch(Exception ignored){}return null;});
     }
 
@@ -2073,7 +2179,7 @@ final class LanzouCore {
     return new ArrayList<>(matched.values());
   }
 
-  Models.Source sourceById(String id)throws IOException{if(id==null||id.isEmpty())return null;for(Models.Source source:sources())if(sourceId(source).equals(id))return copySource(source);return null;}
+  Models.Source sourceById(String id)throws IOException{if(id==null||id.isEmpty())return null;return knownCategorySource(id,"");}
 
   private static Models.Source remoteSource(Models.SourceMember member){Models.Source out=new Models.Source();out.id=out.url=member.url;out.title=member.title;out.password=member.password;out.publisher=member.title;out.avatarUrl=member.iconUrl;out.description=member.description;out.error=member.error;out.searchable=member.searchable;return out;}
 

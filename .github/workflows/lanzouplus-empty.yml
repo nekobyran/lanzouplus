@@ -37,6 +37,8 @@ jobs:
     outputs:
       version: ${{ steps.inspect.outputs.version }}
       asset-suffix: ${{ steps.inspect.outputs.asset-suffix }}
+      prerelease: ${{ steps.inspect.outputs.prerelease }}
+      release-title: ${{ steps.inspect.outputs.release-title }}
     steps:
       - name: Check out the exact source commit
         uses: actions/checkout@v4
@@ -71,7 +73,7 @@ jobs:
           expected = os.environ.get("EXPECTED_VERSION", "")
           mode = os.environ.get("MODE", "validate")
           release_notes = os.environ.get("RELEASE_NOTES", "")
-          if mode == "release" and (not re.fullmatch(r"\d+\.\d+\.\d+", expected) or versions[0] != expected):
+          if mode == "release" and (not re.fullmatch(r"\d+\.\d+\.\d+(?:-?alpha(?:\.?\d+)?)?", expected) or versions[0] != expected):
               raise SystemExit("release input version does not match app/build.gradle.kts")
           if mode == "release" and not release_notes.strip():
               raise SystemExit("formal release notes must not be empty")
@@ -148,10 +150,12 @@ jobs:
                   raise SystemExit("built APK contains a full-flavor path")
               abis = sorted({name.split("/")[1] for name in entries if name.startswith("lib/") and name.endswith(".so") and len(name.split("/")) > 2})
           suffix = "android-arm64" if abis == ["arm64-v8a"] else "android"
+          prerelease = "true" if "alpha" in version.lower() else "false"
+          release_title = f"LanzouPlus {version}" if tuple(int(part) for part in re.match(r"\d+\.\d+\.\d+", version).group(0).split(".")) > (1, 8, 7) else f"LanzouPlus / LanzouMax {version}"
           with pathlib.Path("ci/metadata.txt").open("w", encoding="utf-8") as output:
-              output.write(f"version={version}\nasset-suffix={suffix}\nabis={','.join(abis) or 'none'}\n")
+              output.write(f"version={version}\nasset-suffix={suffix}\nprerelease={prerelease}\nrelease-title={release_title}\nabis={','.join(abis) or 'none'}\n")
           with pathlib.Path(__import__('os').environ['GITHUB_OUTPUT']).open("a", encoding="utf-8") as output:
-              output.write(f"version={version}\nasset-suffix={suffix}\n")
+              output.write(f"version={version}\nasset-suffix={suffix}\nprerelease={prerelease}\nrelease-title={release_title}\n")
           print(f"asset suffix={suffix}; native ABIs={abis or ['none']}")
           PY
 
@@ -175,6 +179,8 @@ jobs:
     env:
       VERSION: ${{ needs.build.outputs.version }}
       ASSET_SUFFIX: ${{ needs.build.outputs.asset-suffix }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+      RELEASE_TITLE: ${{ needs.build.outputs.release-title }}
       EXPECTED_COMMIT: ${{ inputs.commit }}
     steps:
       - name: Check out source and annotated release tag
@@ -316,6 +322,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
+          release_title="$RELEASE_TITLE"
           cp "dist/$INTERNAL_ASSET" "dist/$ASSET"
           ref_json="$RUNNER_TEMP/release-tag-ref.json"
           ref_error="$RUNNER_TEMP/release-tag-ref.error"
@@ -339,8 +346,14 @@ jobs:
           if [ "$release_status" -eq 0 ]; then
             :
           elif grep -Eq 'HTTP 404|Not Found' "$release_error"; then
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
-              --title "LanzouPlus / LanzouMax $VERSION" --notes-file dist/release-notes.md
+            if [ "$PRERELEASE" = "true" ]; then
+              gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+                --prerelease --latest=false \
+                --title "$release_title" --notes-file dist/release-notes.md
+            else
+              gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+                --title "$release_title" --notes-file dist/release-notes.md
+            fi
 
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           else
@@ -440,9 +453,15 @@ jobs:
               retry_release_api true --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$obsolete_id"
             fi
           done < "$RUNNER_TEMP/obsolete-assets.txt"
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
-            --title "LanzouPlus / LanzouMax $VERSION" --notes-file dist/release-notes.md \
-            --draft=false --prerelease=false --latest
+          if [ "$PRERELEASE" = "true" ]; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+              --title "$release_title" --notes-file dist/release-notes.md \
+              --draft=false --prerelease=true --latest=false
+          else
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$EXPECTED_COMMIT" \
+              --title "$release_title" --notes-file dist/release-notes.md \
+              --draft=false --prerelease=false --latest
+          fi
 
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$release_json"
           final_readback="$RUNNER_TEMP/final-readback"
@@ -453,6 +472,7 @@ jobs:
           python3 - "$release_json" "$ASSET" "$BYTES" "$EXPECTED_COMMIT" "$VERSION" <<'PY'
           import json
           import pathlib
+          import re
           import sys
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
           name, size, commit, version = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
@@ -464,11 +484,14 @@ jobs:
               raise SystemExit("release asset set must contain one LanzouPlus.apk and at most one LanzouMax.apk")
           if matches[0].get("size") != size:
               raise SystemExit("LanzouPlus release asset size mismatch")
-          if release.get("tag_name") != f"v{version}" or release.get("name") != f"LanzouPlus / LanzouMax {version}":
+          numeric = tuple(int(part) for part in re.match(r"\d+\.\d+\.\d+", version).group(0).split("."))
+          expected_name = f"LanzouPlus {version}" if numeric > (1, 8, 7) else f"LanzouPlus / LanzouMax {version}"
+          if release.get("tag_name") != f"v{version}" or release.get("name") != expected_name:
               raise SystemExit("release tag or title mismatch")
           if "## Build / 构建" not in release.get("body", ""):
               raise SystemExit("release title or notes mismatch")
-          if release.get("target_commitish") != commit or release.get("draft") or release.get("prerelease"):
+          expected_prerelease = "alpha" in version.lower()
+          if release.get("target_commitish") != commit or release.get("draft") or release.get("prerelease") is not expected_prerelease:
               raise SystemExit("release target or publication state mismatch")
           PY
                     test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object | select(.type == "commit") | .sha')" = "$EXPECTED_COMMIT"

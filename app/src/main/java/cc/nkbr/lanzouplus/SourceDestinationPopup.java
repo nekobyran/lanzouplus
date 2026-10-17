@@ -158,6 +158,17 @@ final class SourceDestinationPopup {
     locationBar.addView(createFolder, new LinearLayout.LayoutParams(SharedPopupSurface.dp(host, 44), SharedPopupSurface.dp(host, 44)));
     panel.addView(locationBar, new LinearLayout.LayoutParams(-1, SharedPopupSurface.dp(host, 44)));
 
+    LinearLayout searchRow=new LinearLayout(host);searchRow.setGravity(Gravity.CENTER_VERTICAL);
+    EditText pathSearch=new EditText(host);pathSearch.setSingleLine(true);
+    pathSearch.setTextSize(13);pathSearch.setTextColor(theme.text);pathSearch.setHintTextColor(theme.muted);
+    pathSearch.setHint("搜索路径名称，或输入完整路径");pathSearch.setContentDescription("搜索或输入已有路径");
+    pathSearch.setImeOptions(EditorInfo.IME_ACTION_GO);
+    searchRow.addView(pathSearch,new LinearLayout.LayoutParams(0,SharedPopupSurface.dp(host,48),1));
+    Button chooseTyped=new Button(host);chooseTyped.setText("一键选择");chooseTyped.setTextSize(12);
+    chooseTyped.setTextColor(theme.accent);chooseTyped.setAllCaps(false);chooseTyped.setContentDescription("一键选择输入路径");
+    searchRow.addView(chooseTyped,new LinearLayout.LayoutParams(-2,SharedPopupSurface.dp(host,48)));
+    panel.addView(searchRow,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,52)));
+
     TextView summary = SharedPopupSurface.label(host, "已选 0 个路径", 12, theme.accent);
     panel.addView(summary, new LinearLayout.LayoutParams(-1, SharedPopupSurface.dp(host, 34)));
 
@@ -167,8 +178,8 @@ final class SourceDestinationPopup {
     scroll.setVerticalScrollBarEnabled(true);
     scroll.addView(choices, new ScrollView.LayoutParams(-1, -2));
     panel.addView(scroll, new LinearLayout.LayoutParams(-1, Math.min(SharedPopupSurface.dp(host, 330),
-        Math.max(SharedPopupSurface.dp(host, 180), host.getResources().getDisplayMetrics().heightPixels
-            - SharedPopupSurface.dp(host, 350)))));
+        Math.max(SharedPopupSurface.dp(host, 84), host.getResources().getDisplayMetrics().heightPixels
+            - SharedPopupSurface.dp(host, 420)))));
 
     AlertDialog dialog = new AlertDialog.Builder(host)
         .setTitle(selection==null?"批量选择加入路径":"选择搜索或打包路径")
@@ -180,6 +191,7 @@ final class SourceDestinationPopup {
     dialog.setOwnerActivity(host);
     final Button[] submit = {null};
     final Runnable[] update = {null}, render = {null};
+    final List<Destination> searchPaths=searchablePaths(catalog,available);
     update[0] = () -> {
       summary.setText("已选 " + selected.size() + " 个路径");
       summary.setContentDescription("提交前摘要，已选 " + selected.size() + " 个路径");
@@ -192,16 +204,45 @@ final class SourceDestinationPopup {
       createFolder.setEnabled(here!=null&&!here.categoryOnly());
     };
     render[0] = () -> {
+      if(tree[0]!=null){Set<String> indexed=new LinkedHashSet<>();for(Destination d:searchPaths)indexed.add(d.key());for(DestinationTree.Branch branch:tree[0].branches.values())if(indexed.add(branch.destination.key()))searchPaths.add(branch.destination);}
       choices.removeAllViews();
+      String query=pathSearch.getText().toString();
+      if(!query.trim().isEmpty()){
+        List<Destination> matches=matchingPaths(searchPaths,query);
+        for(Destination destination:matches){
+          View row=destinationRow(host,theme,destination,selected,()->{
+            selected.put(destination.key(),destination);current[0]=destination;
+            path.setText("当前路径："+destination.path);update[0].run();render[0].run();
+          },update[0],containsAll(destination,sources));
+          if(row instanceof LinearLayout){View label=((LinearLayout)row).getChildAt(2);if(label instanceof TextView)((TextView)label).setText(destination.path);}
+          row.setContentDescription("选择已有路径 "+destination.path);
+          choices.addView(row,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,50)));
+        }
+        if(matches.isEmpty())choices.addView(SharedPopupSurface.label(host,"没有匹配的已有路径",13,theme.muted));
+        update[0].run();return;
+      }
       tree[0]=new DestinationTree(host,theme,catalog,available,sources,selected,expanded,focus,update[0]);
       tree[0].roots(choices);
       focus.accept(current[0]);update[0].run();
     };
-    back.setOnClickListener(v -> {if(current[0]!=null)tree[0].collapse(current[0]);});
+    back.setOnClickListener(v -> {if(!pathSearch.getText().toString().isEmpty()){pathSearch.setText("");return;}if(current[0]!=null&&tree[0]!=null)tree[0].collapse(current[0]);});
+    Runnable chooseInput=()->{
+      List<Destination> matches=matchingPaths(searchPaths,pathSearch.getText().toString());
+      String normalized=normalizedPath(pathSearch.getText().toString());
+      List<Destination> exact=new ArrayList<>();for(Destination candidate:matches)if(normalizedPath(candidate.path).equals(normalized))exact.add(candidate);
+      if(exact.size()==1)matches=exact;
+      else if(exact.isEmpty()){List<Destination> named=new ArrayList<>();for(Destination candidate:matches)if(normalizedPath(candidate.name()).equals(normalized))named.add(candidate);if(named.size()==1)matches=named;}
+      if(normalized.isEmpty()||matches.size()!=1){pathSearch.setError(normalized.isEmpty()?"请输入已有路径":matches.isEmpty()?"没有匹配的已有路径":"存在多个同名路径，请输入完整路径或选择下方结果");return;}
+      Destination chosen=matches.get(0);selected.put(chosen.key(),chosen);focus.accept(chosen);update[0].run();render[0].run();
+      pathSearch.setError(null);pathSearch.clearFocus();
+    };
+    chooseTyped.setOnClickListener(v->chooseInput.run());
+    pathSearch.setOnEditorActionListener((v,action,event)->{if(action==EditorInfo.IME_ACTION_GO){chooseInput.run();return true;}return false;});
+    pathSearch.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){pathSearch.setError(null);render[0].run();}public void afterTextChanged(android.text.Editable e){}});
     createFolder.setOnClickListener(v -> {
       Destination here = current[0];
       if (here == null || here.categoryOnly()) return;
-      createFolderDialog(host, catalog, theme, here, render[0]);
+      createFolderDialog(host, catalog, theme, here, ()->{searchPaths.clear();searchPaths.addAll(searchablePaths(catalog,available));render[0].run();});
     });
     if(selection!=null)createFolder.setVisibility(View.GONE);
 
@@ -220,6 +261,42 @@ final class SourceDestinationPopup {
     });
     dialog.show();
     return dialog;
+  }
+
+  static String normalizedPath(String value){
+    return (value==null?"":value).trim().toLowerCase(Locale.ROOT).replace('\\','/').replace('›','/').replace('>','/').replaceAll("\\s*/\\s*","/");
+  }
+  static List<Destination> matchingPaths(List<Destination> paths,String query){
+    String value=normalizedPath(query);List<Destination> out=new ArrayList<>();
+    if(value.isEmpty())return out;
+    for(Destination path:paths)if(normalizedPath(path.path).contains(value)||path.composite!=null&&normalizedPath(path.composite.url).equals(value))out.add(path);
+    out.sort((a,b)->Integer.compare(normalizedPath(a.path).equals(value)?0:normalizedPath(a.name()).equals(value)?1:2,normalizedPath(b.path).equals(value)?0:normalizedPath(b.name()).equals(value)?1:2));
+    return out;
+  }
+  /** Local hierarchy only: searching never scans the network or parses every remote folder. */
+  static List<Destination> searchablePaths(Catalog catalog,List<Models.Source> sources){
+    LinkedHashMap<String,Destination> out=new LinkedHashMap<>();
+    if(!catalog.includeSourcePaths()){
+      Destination all=new Destination("全部",null,"","全部");out.put(all.key(),all);
+      for(Map.Entry<String,Set<String>> category:catalog.categories().entrySet()){Destination d=new Destination(category.getKey(),category.getValue(),category.getKey());out.put(d.key(),d);}
+    }
+    Map<String,String> repositories=new LinkedHashMap<>();for(Models.Source source:sources)if(source.kind==Models.SOURCE_REPOSITORY)repositories.put(source.url,source.title);
+    for(Models.Source source:sources){
+      if(!catalog.includeSourcePaths()&&!MainActivity.compositeSource(source))continue;
+      String title=source.title;
+      if(!source.repositoryUrl.isEmpty()&&repositories.containsKey(source.repositoryUrl))title=repositories.get(source.repositoryUrl)+" › "+title;
+      Destination root=new Destination("全部",source,"",title);out.put(root.key(),root);
+      Map<String,Models.SourceMember> members=new LinkedHashMap<>();for(Models.SourceMember member:source.members)members.put(member.id,member);
+      for(Models.SourceMember member:source.members){
+        if(member.kind!=Models.MEMBER_FOLDER&&(!catalog.includeSourcePaths()||!SourcePathCatalog.pathEntry(member)))continue;
+        List<String> names=new ArrayList<>();Set<String> seen=new LinkedHashSet<>();Models.SourceMember cursor=member;
+        while(cursor!=null&&seen.add(cursor.id)){names.add(0,cursor.title);cursor=members.get(cursor.parentId);}
+        String full=title+" › "+String.join(" › ",names);
+        Models.Source child=member.kind==Models.MEMBER_FOLDER?null:SourcePathCatalog.childSource(source,member);
+        Destination destination=new Destination("全部",child==null?source:child,child==null?member.id:"",full);out.put(destination.key(),destination);
+      }
+    }
+    return new ArrayList<>(out.values());
   }
 
   /**

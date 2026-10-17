@@ -41,7 +41,7 @@ final class LanzouSliderVerification implements AutoCloseable {
    * visibility facts (rendered box, computed style, visible ancestors), so a {@code display:none}
    * remnant of an already solved slider is not reported as a live challenge.
    */
-  private static final String PROBE_SCRIPT="(function(){\nvar html='',active=false,geometry=null;\nfunction visible(el,win){if(!el)return false;var r=el.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;for(var n=el;n&&n.nodeType===1;n=n.parentElement){var st=win.getComputedStyle(n);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity)<=0.01)return false;}return true;}\nfunction scan(doc,win,ox,oy,sx,sy){\nhtml+='\\n'+(doc.documentElement?doc.documentElement.outerHTML:'');\nvar nodes=doc.querySelectorAll('#nc_1_n1z,.nc_scale,#aliyunCaptcha-window,[id*=captcha][role=dialog],[id*=Captcha][role=dialog]');\nfor(var i=0;i<nodes.length;i++)if(visible(nodes[i],win))active=true;\nvar pairs=[['#aliyunCaptcha-sliding-slider','#aliyunCaptcha-sliding-body'],['.nc_scale .btn_slide','.nc_scale'],['#nc_1_n1z','#nc_1__scale_text']];\nfor(var j=0;j<pairs.length;j++){var slider=doc.querySelector(pairs[j][0]),track=doc.querySelector(pairs[j][1]);if(!visible(slider,win)||!visible(track,win))continue;active=true;var a=slider.getBoundingClientRect(),b=track.getBoundingClientRect();if(!geometry&&b.width>a.width){geometry={x:ox+(a.left+a.width/2)*sx,y:oy+(a.top+a.height/2)*sy,distance:(b.right-a.right+2)*sx};}}\nvar words=doc.body?doc.body.innerText:'';active=active||words.indexOf('请完成以下操作，验证您是真人')>=0||words.indexOf('verify that you are a real person')>=0;\nvar frames=doc.querySelectorAll('iframe');for(var k=0;k<frames.length;k++){var f=frames[k];if(!visible(f,win))continue;try{var child=f.contentDocument;if(child){var r=f.getBoundingClientRect();scan(child,f.contentWindow,ox+(r.left+f.clientLeft)*sx,oy+(r.top+f.clientTop)*sy,sx*r.width/f.offsetWidth,sy*r.height/f.offsetHeight);}}catch(e){}}\n}\nscan(document,window,0,0,1,1);var vv=window.visualViewport;\nreturn {html:html,challenge:active,ready:!!geometry,x:geometry?geometry.x-(vv?vv.offsetLeft:0):0,y:geometry?geometry.y-(vv?vv.offsetTop:0):0,distance:geometry?geometry.distance:0,viewport:vv?vv.width:window.innerWidth};\n})()";
+  private static final String PROBE_SCRIPT="(function(){\nvar html='',active=false,geometry=null;\nfunction visible(el,win){if(!el)return false;var r=el.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;for(var n=el;n&&n.nodeType===1;n=n.parentElement){var st=win.getComputedStyle(n);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity)<=0.01)return false;}return true;}\nfunction scan(doc,win,ox,oy,sx,sy){\nhtml+='\\n'+(doc.documentElement?doc.documentElement.outerHTML:'');\nvar nodes=doc.querySelectorAll('#nc_1_n1z,.nc_scale,#aliyunCaptcha-window,[id*=captcha][role=dialog],[id*=Captcha][role=dialog]');\nfor(var i=0;i<nodes.length;i++)if(visible(nodes[i],win))active=true;\nvar pairs=[['#aliyunCaptcha-sliding-slider','#aliyunCaptcha-sliding-body'],['.nc_scale .btn_slide','.nc_scale'],['#nc_1_n1z','#nc_1__scale_text']];\nfor(var j=0;j<pairs.length;j++){var slider=doc.querySelector(pairs[j][0]),track=doc.querySelector(pairs[j][1]);if(!visible(slider,win)||!visible(track,win))continue;active=true;var a=slider.getBoundingClientRect(),b=track.getBoundingClientRect();if(!geometry&&b.width>a.width){geometry={x:ox+(a.left+a.width/2)*sx,y:oy+(a.top+a.height/2)*sy,distance:(b.right-a.right+2)*sx};}}\nvar words=doc.body?doc.body.innerText:'';active=active||words.indexOf('请完成以下操作，验证您是真人')>=0||words.indexOf('verify that you are a real person')>=0;\nvar frames=doc.querySelectorAll('iframe');for(var k=0;k<frames.length;k++){var f=frames[k];if(!visible(f,win))continue;try{var child=f.contentDocument;if(child){var r=f.getBoundingClientRect();scan(child,f.contentWindow,ox+(r.left+f.clientLeft)*sx,oy+(r.top+f.clientTop)*sy,sx*r.width/f.offsetWidth,sy*r.height/f.offsetHeight);}}catch(e){}}\n}\nscan(document,window,0,0,1,1);var vv=window.visualViewport;\nreturn {html:html,challenge:active,ready:!!geometry,focused:document.hasFocus(),x:geometry?geometry.x-(vv?vv.offsetLeft:0):0,y:geometry?geometry.y-(vv?vv.offsetTop:0):0,distance:geometry?geometry.distance:0,viewport:vv?vv.width:window.innerWidth};\n})()";
   /** Poll cadence: while the page is young, while it is settled, and after the drag retired. */
   private static final long ACTIVE_POLL_MS=120L,LOADING_POLL_MS=400L,IDLE_POLL_MS=1000L;
   private static final long ACTIVE_WINDOW_NANOS=TimeUnit.MILLISECONDS.toNanos(8000L);
@@ -79,6 +79,7 @@ final class LanzouSliderVerification implements AutoCloseable {
     // Verification images are functional inputs, including in the normally image-free renderer.
     web.getSettings().setBlockNetworkImage(false);
     web.getSettings().setLoadsImagesAutomatically(true);
+    web.getSettings().setOffscreenPreRaster(true);
     if(web.getWidth()==0||web.getHeight()==0){
       android.util.DisplayMetrics metrics=web.getResources().getDisplayMetrics();
       web.measure(View.MeasureSpec.makeMeasureSpec(metrics.widthPixels,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(metrics.heightPixels,View.MeasureSpec.EXACTLY));
@@ -89,6 +90,7 @@ final class LanzouSliderVerification implements AutoCloseable {
     // by the pending move frame, which keeps the observation running). Returning false leaves the
     // WebView's own touch handling untouched.
     web.setOnTouchListener((view,event)->{if(!dispatchingTouch){userTouched=true;cancelPointer();}return false;});
+    web.requestFocus();
     probe();
   }
 
@@ -133,7 +135,10 @@ final class LanzouSliderVerification implements AutoCloseable {
     if(state!=null&&LanzouCore.verifiedBrowserUseful(page,state.optBoolean("challenge"))){
       verifiedPage=page;finish(true);return;
     }
-    if(!attempted&&!userTouched&&state!=null&&state.optBoolean("ready")&&System.nanoTime()<deadline&&beginGesture(state))return;
+    if(!attempted&&!userTouched&&state!=null&&state.optBoolean("ready")&&System.nanoTime()<deadline){
+      if(!state.optBoolean("focused")){web.requestFocus();scheduleNext();return;}
+      beginGesture(state);
+    }
     scheduleNext();
   }
 
@@ -157,39 +162,41 @@ final class LanzouSliderVerification implements AutoCloseable {
     return now<deadline?LOADING_POLL_MS:IDLE_POLL_MS;
   }
 
-  /** @return true when the synthetic drag started; the drag itself reschedules the next probe. */
-  private boolean beginGesture(JSONObject state){
+  /** DOM geometry precedes compositor hit-test readiness; commit the page before pressing. */
+  private void beginGesture(JSONObject state){
     long remaining=TimeUnit.NANOSECONDS.toMillis(deadline-System.nanoTime());
-    if(remaining<450L)return false;
+    if(remaining<450L)return;
     double viewport=state.optDouble("viewport"),cssDistance=state.optDouble("distance");
-    if(viewport<=0d||cssDistance<=0d)return false;
+    if(viewport<=0d||cssDistance<=0d)return;
     float scale=(float)(web.getWidth()/viewport);
     startX=(float)state.optDouble("x")*scale;startY=(float)state.optDouble("y")*scale;distance=(float)cssDistance*scale;
     duration=Math.min(remaining/2L,Math.max(450L,Math.round(cssDistance*3d)));
     WindowManager manager=(WindowManager)web.getContext().getSystemService(android.content.Context.WINDOW_SERVICE);
     frameDelay=Math.max(1L,Math.round(1000d/manager.getDefaultDisplay().getRefreshRate()));
-    attempted=true;web.requestFocus();
-    web.postVisualStateCallback(SystemClock.uptimeMillis(),new WebView.VisualStateCallback(){
-      @Override public void onComplete(long requestId){web.postOnAnimation(()->{
-        if(closed)return;
-        if(userTouched||System.nanoTime()>=deadline){scheduleNext();return;}
-        pressed=true;downAt=SystemClock.uptimeMillis();
-        touch(MotionEvent.ACTION_DOWN,startX,startY);handler.postDelayed(LanzouSliderVerification.this::move,frameDelay);
-      });}
+    attempted=true;
+    web.postVisualStateCallback(0L,new WebView.VisualStateCallback(){
+      @Override public void onComplete(long requestId){
+        web.postOnAnimation(()->web.postOnAnimation(()->{
+          if(closed||userTouched||System.nanoTime()>=deadline)return;
+          pressed=true;downAt=SystemClock.uptimeMillis();
+          touch(MotionEvent.ACTION_DOWN,startX,startY);
+          handler.postDelayed(LanzouSliderVerification.this::move,frameDelay);
+        }));
+      }
     });
-    return true;
+    web.invalidate();
   }
 
   private void move(){
     if(closed)return;
-    if(!pressed){scheduleNext();return;}
+    if(!pressed)return;
     if(expired()){finish(false);return;}
-    if(userTouched||System.nanoTime()>=deadline){cancelPointer();scheduleNext();return;}
+    if(userTouched||System.nanoTime()>=deadline){cancelPointer();return;}
     double progress=Math.min(1d,(double)(SystemClock.uptimeMillis()-downAt)/duration);
     float x=startX+distance*(float)(1d-Math.pow(1d-progress,3d));
     touch(MotionEvent.ACTION_MOVE,x,startY);
     if(progress<1d){handler.postDelayed(this::move,frameDelay);return;}
-    lift(startX+distance,startY);handler.postDelayed(this::probe,180L);
+    lift(startX+distance,startY);
   }
 
   private void lift(float x,float y){
@@ -207,11 +214,14 @@ final class LanzouSliderVerification implements AutoCloseable {
   LanzouCore.DirectLink verifiedPage(){return verifiedPage;}
 
   private void touch(int action,float x,float y){
-    MotionEvent.PointerProperties pointer=new MotionEvent.PointerProperties();pointer.id=0;pointer.toolType=MotionEvent.TOOL_TYPE_FINGER;
-    MotionEvent.PointerCoords point=new MotionEvent.PointerCoords();point.x=x;point.y=y;point.pressure=action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL?0f:1f;point.size=0.5f;
-    MotionEvent event=MotionEvent.obtain(downAt,SystemClock.uptimeMillis(),action,1,new MotionEvent.PointerProperties[]{pointer},new MotionEvent.PointerCoords[]{point},0,0,1f,1f,0,0,InputDevice.SOURCE_TOUCHSCREEN,0);
+    int[] origin=new int[2];web.getLocationOnScreen(origin);
+    // Android's input dispatcher marks injected pointers with virtual device ID -1.
+    MotionEvent event=MotionEvent.obtain(downAt,SystemClock.uptimeMillis(),action,x+origin[0],y+origin[1],1f,1f,0,1f,1f,-1,0);
+    event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+    // Keep raw coordinates in screen space, as Android does when dispatching into a child view.
+    event.offsetLocation(-origin[0],-origin[1]);
     dispatchingTouch=true;
-    try{web.dispatchTouchEvent(event);}finally{dispatchingTouch=false;event.recycle();}
+    try{web.onTouchEvent(event);}finally{dispatchingTouch=false;event.recycle();}
   }
 
   /** Terminal outcome: a real share page verdict, or an expired bounded deadline. */

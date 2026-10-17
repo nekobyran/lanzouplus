@@ -5,13 +5,11 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
@@ -79,7 +77,8 @@ final class MarketProjectEditor {
   private final Draft draft;
   private EditText nameInput;
   private EditText versionInput;
-  private Spinner modePicker;
+  private MainActivity.SearchCategoryPicker modePicker;
+  private EditText iconInput;
   private TextView modeHelp;
   private TextView pathSummary;
   private Button choosePathsButton;
@@ -117,7 +116,7 @@ final class MarketProjectEditor {
   }
 
   void show() {
-    owner.primaryBase(1);
+    owner.base();
     owner.pageKind = 6;
     owner.activeSource = null;
     owner.clearFolderTrail();
@@ -181,52 +180,34 @@ final class MarketProjectEditor {
         "版本号",
         InputType.TYPE_CLASS_TEXT,
         draft.version);
-    modePicker = new Spinner(owner);
-    ArrayAdapter<String> modes = new ArrayAdapter<>(
-        owner, android.R.layout.simple_spinner_item, MODE_LABELS);
-    modes.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-    modePicker.setAdapter(modes);
-    modePicker.setMinimumHeight(owner.dp(48));
-    modePicker.setSelection(modeIndex(draft.versionMode), false);
-    modePicker.setPrompt("选择版本模式");
     int selectedMode = modeIndex(draft.versionMode);
-    modePicker.setContentDescription("版本模式，" + MODE_LABELS[selectedMode]);
     modeHelp = helperText(MODE_HELP[selectedMode]);
     modeHelp.setPadding(owner.dp(2), owner.dp(4), owner.dp(2), owner.dp(2));
-    modePicker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-      @Override
-      public void onItemSelected(
-          android.widget.AdapterView<?> parent, View view, int position, long id) {
-        draft.versionMode = MODE_VALUES[position];
-        modePicker.setContentDescription("版本模式，" + MODE_LABELS[position]);
-        if (modeHelp != null) modeHelp.setText(MODE_HELP[position]);
-      }
-
-      @Override
-      public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+    modePicker = owner.new SearchCategoryPicker(java.util.Arrays.asList(MODE_LABELS), MODE_LABELS[selectedMode], label -> {
+      int index = java.util.Arrays.asList(MODE_LABELS).indexOf(label);
+      draft.versionMode = MODE_VALUES[index];
+      modeHelp.setText(MODE_HELP[index]);
     });
-
-    EditText publisherInput = inputField(
-        "对外显示的发布者名称",
-        "发布者名称",
-        InputType.TYPE_CLASS_TEXT,
-        draft.publisher);
+    TextView publisherSummary = helperText("登录 GitHub 后自动读取名称和头像，发布时使用当前账号。");
+    try {
+      GithubAccountClient.Profile profile = GithubAccountClient.production(owner).cachedProfile();
+      if (profile != null) {
+        draft.publisher = profile.login;
+        draft.publisherAvatar = profile.avatarUrl;
+        publisherSummary.setText("@" + profile.login + " · 名称与头像来自当前 GitHub 账号");
+      }
+    } catch (java.io.IOException ignored) {}
     EditText descriptionInput = multilineField(
         "简要介绍仓库内容",
         "简介",
         3,
         6,
         draft.description);
-    EditText iconInput = inputField(
+    iconInput = inputField(
         "https://… 或 /storage/…/icon.png",
         "仓库图标",
         InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
         draft.icon);
-    EditText avatarInput = inputField(
-        "https://… 或 /storage/…/avatar.png",
-        "发布者头像",
-        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
-        draft.publisherAvatar);
     EditText readmeInput = multilineField(
         "支持 Markdown、图片与常用排版",
         "README 文档",
@@ -242,18 +223,15 @@ final class MarketProjectEditor {
     addPair(
         content,
         field("版本号", "按所选模式填写版本号。", versionInput, 54),
-        field("版本模式", "", modePicker, 48, modeHelp),
+        field("版本模式", "", modePicker.view(), 54, modeHelp),
         wide);
     addPair(
         content,
-        field("发布者名称", "会显示在仓库详情中。", publisherInput, 54),
+        field("发布者（GitHub 账号）", "无需手动填写名称和头像。", publisherSummary, -2),
         field("简介", "支持多行文本。", descriptionInput, -2),
         wide);
-    addPair(
-        content,
-        imageField("仓库图标", "支持图片 URL 或本机图片。", iconInput),
-        imageField("发布者头像", "支持图片 URL 或本机图片。", avatarInput),
-        wide);
+    content.addView(imageField("仓库图标", "支持图片 URL 或通过系统选择图片。", iconInput),
+        new LinearLayout.LayoutParams(-1,-2));
 
     LinearLayout readmeField =
         field("README 文档", "README 中的图片会随工程一起保存。", readmeInput, -2);
@@ -303,10 +281,8 @@ final class MarketProjectEditor {
     watch(nameInput, value -> draft.name = value);
     watch(titleInput, value -> draft.title = value);
     watch(versionInput, value -> draft.version = value);
-    watch(publisherInput, value -> draft.publisher = value);
     watch(descriptionInput, value -> draft.description = value);
     watch(iconInput, value -> draft.icon = value);
-    watch(avatarInput, value -> draft.publisherAvatar = value);
     watch(readmeInput, value -> draft.readme = value);
   }
 
@@ -462,10 +438,15 @@ final class MarketProjectEditor {
   private LinearLayout imageField(String label, String helper, EditText input) {
     LinearLayout group = field(label, helper, input, 54);
     Button pick = secondaryButton("选择本机图片");
-    pick.setOnClickListener(v -> MarketFilePicker.choose(
-        owner,
-        ".png,.jpg,.jpeg,.webp,.gif",
-        file -> input.setText(file.getAbsolutePath())));
+    pick.setOnClickListener(v -> {
+      final Draft selectedDraft = draft;
+      MarketFilePicker.chooseImage(owner, uri -> {
+        if (!isRetainedDraft(selectedDraft)) return;
+        selectedDraft.icon = uri;
+        MarketProjectEditor current = activeEditor == null ? null : activeEditor.get();
+        if (current != null && current.draft == selectedDraft) current.iconInput.setText(uri);
+      });
+    });
     group.addView(pick, new LinearLayout.LayoutParams(-2, owner.dp(48)));
     return group;
   }

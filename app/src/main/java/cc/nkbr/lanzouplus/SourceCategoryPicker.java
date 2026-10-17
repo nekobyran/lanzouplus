@@ -54,6 +54,26 @@ final class SourceCategoryPicker {
     Picker picker=new Picker(owner,known,initial,done);picker.cancel=cancel;return picker.show();
   }
 
+  static AlertDialog showExisting(MainActivity owner,List<Models.Source> known,Collection<String> initial,Consumer<List<String>> done,Runnable cancel){
+    Picker picker=new Picker(owner,known,initial,done);picker.existingOnly=true;picker.cancel=cancel;return picker.show();
+  }
+  static AlertDialog showExisting(MainActivity owner,List<Models.Source> known,Collection<String> initial,Consumer<List<String>> done){return showExisting(owner,known,initial,done,null);}
+  static void editExistingSelection(MainActivity owner,List<Models.Source> known,Collection<String> selected,String previous,Runnable changed){
+    AlertDialog actions=new AlertDialog.Builder(owner).setTitle(previous).setItems(new String[]{"删除标签","更换为已有分类"},(dialog,index)->{if(index==0){selected.remove(previous);changed.run();}else showExisting(owner,known,selected,values->{selected.clear();selected.addAll(values);changed.run();});}).create();owner.showRounded(actions);
+  }
+
+  /** Full local paths are shared by category rows and the home selection chips. */
+  static String memberPath(Models.Source source,Models.SourceMember member){
+    LinkedList<String> parts=new LinkedList<>();parts.add(member.title);String id=member.parentId;Set<String> seen=new HashSet<>();
+    while(!id.isEmpty()&&seen.add(id)){Models.SourceMember parent=null;for(Models.SourceMember value:source.members)if(value.id.equals(id)){parent=value;break;}if(parent==null)break;parts.addFirst(parent.title);id=parent.parentId;}
+    parts.addFirst(source.originPath.isEmpty()?source.title:source.originPath);return String.join(" / ",parts);
+  }
+  static Map<String,LinkedHashSet<String>> categoryPaths(List<Models.Source> sources){
+    Map<String,LinkedHashSet<String>> out=new LinkedHashMap<>();
+    for(Models.Source source:sources){String path=source.originPath.isEmpty()?source.title:source.originPath;for(String label:labels(source))out.computeIfAbsent(label,key->new LinkedHashSet<>()).add(path);for(Models.SourceMember member:source.members)for(String label:labels(member))out.computeIfAbsent(label,key->new LinkedHashSet<>()).add(memberPath(source,member));}
+    return out;
+  }
+
   private static final class Picker {
     final MainActivity owner;
     final List<Models.Source> known;
@@ -65,6 +85,8 @@ final class SourceCategoryPicker {
     BaseAdapter adapter;
     AlertDialog dialog;
     Runnable cancel;
+    boolean existingOnly;
+    final Map<String,LinkedHashSet<String>> paths=new LinkedHashMap<>();
 
     Picker(MainActivity owner,List<Models.Source> known,Collection<String> initial,Consumer<List<String>> done){
       this.owner=owner;this.known=known;this.done=done;selected.addAll(SourceCategories.normalized(initial));
@@ -72,9 +94,10 @@ final class SourceCategoryPicker {
     AlertDialog show(){
       LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(18),0,owner.dp(18),0);
       LinearLayout input=new LinearLayout(owner);input.setGravity(Gravity.CENTER_VERTICAL);
-      search=owner.sourceInput("搜索或添加分类",android.text.InputType.TYPE_CLASS_TEXT);
+      search=owner.sourceInput(existingOnly?"搜索已有分类或所属路径":"搜索或添加分类",android.text.InputType.TYPE_CLASS_TEXT);
       input.addView(search,new LinearLayout.LayoutParams(0,owner.dp(50),1));
       ImageButton add=owner.iconButton(R.drawable.ic_add,"添加常驻分类");input.addView(add,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));panel.addView(input);
+      if(existingOnly)add.setVisibility(View.GONE);
       HorizontalScrollView tags=new HorizontalScrollView(owner);tags.setHorizontalScrollBarEnabled(false);
       chips=new LinearLayout(owner);chips.setGravity(Gravity.CENTER_VERTICAL);tags.addView(chips);panel.addView(tags,new LinearLayout.LayoutParams(-1,owner.dp(44)));
       ListView list=new ListView(owner);list.setDividerHeight(0);
@@ -82,7 +105,8 @@ final class SourceCategoryPicker {
         public int getCount(){return visible.size();} public Object getItem(int position){return visible.get(position);}public long getItemId(int position){return position;}
         public View getView(int position,View recycled,ViewGroup parent){
           CheckBox row=recycled instanceof CheckBox?(CheckBox)recycled:new CheckBox(owner);
-          String label=visible.get(position);row.setText(label);row.setTextColor(owner.TEXT);row.setMinHeight(owner.dp(48));row.setButtonTintList(android.content.res.ColorStateList.valueOf(owner.PRIMARY));
+          String label=visible.get(position);String locations=paths.containsKey(label)?String.join(" · ",paths.get(label)):"常驻分类";row.setText(label+"\n"+locations);row.setTextColor(owner.TEXT);row.setMinHeight(owner.dp(58));row.setButtonTintList(android.content.res.ColorStateList.valueOf(owner.PRIMARY));
+          row.setContentDescription(label);
           row.setOnCheckedChangeListener(null);row.setChecked(selected.contains(label));
           row.setOnCheckedChangeListener((button,checked)->{if(checked)selected.add(label);else selected.remove(label);renderChips();});return row;
         }
@@ -98,8 +122,8 @@ final class SourceCategoryPicker {
       directories.setOnClickListener(v->HistoryPopupNavigation.switchCollection(owner,dialog,()->directory(null,"",new ArrayList<>())));
       refreshOptions();renderChips();owner.showRounded(dialog);return dialog;
     }
-    void refreshOptions(){options.clear();List<String> all=new ArrayList<>(collect(known));all.addAll(CategoryEditor.getShortcuts(owner));all.addAll(selected);options.addAll(SourceCategories.normalized(all));filter();}
-    void filter(){String query=search.getText().toString().trim().toLowerCase(Locale.ROOT);visible.clear();for(String label:options)if(label.toLowerCase(Locale.ROOT).contains(query))visible.add(label);adapter.notifyDataSetChanged();}
+    void refreshOptions(){options.clear();paths.clear();paths.putAll(categoryPaths(known));List<String> all=new ArrayList<>(paths.keySet());all.addAll(CategoryEditor.getShortcuts(owner));if(!existingOnly)all.addAll(selected);options.addAll(SourceCategories.normalized(all));if(existingOnly)selected.retainAll(options);filter();}
+    void filter(){String query=search.getText().toString().trim().toLowerCase(Locale.ROOT);visible.clear();for(String label:options){String locations=paths.containsKey(label)?String.join(" ",paths.get(label)):"";if((label+" "+locations).toLowerCase(Locale.ROOT).contains(query))visible.add(label);}adapter.notifyDataSetChanged();}
     void renderChips(){
       chips.removeAllViews();
       if(selected.isEmpty()){TextView empty=owner.text("未限定分类",12,owner.MUTED);chips.addView(empty);return;}
@@ -113,6 +137,7 @@ final class SourceCategoryPicker {
       }
     }
     void replace(String previous){
+      if(existingOnly){List<String> choices=new ArrayList<>(options);choices.remove(previous);AlertDialog pick=new AlertDialog.Builder(owner).setTitle("更换为已有分类").setItems(choices.toArray(new String[0]),(d,index)->{selected.remove(previous);selected.add(choices.get(index));renderChips();adapter.notifyDataSetChanged();}).create();owner.showRounded(pick);return;}
       EditText input=owner.sourceInput("更换为分类名称",android.text.InputType.TYPE_CLASS_TEXT);input.setText(previous);input.setSelectAllOnFocus(true);
       LinearLayout panel=new LinearLayout(owner);panel.setPadding(owner.dp(20),0,owner.dp(20),0);panel.addView(input,new LinearLayout.LayoutParams(-1,owner.dp(52)));
       AlertDialog edit=new AlertDialog.Builder(owner).setTitle("更换分类").setView(panel).setNegativeButton("取消",null).setPositiveButton("更换",null).create();

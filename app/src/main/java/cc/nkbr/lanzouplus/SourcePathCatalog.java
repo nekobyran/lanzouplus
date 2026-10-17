@@ -59,7 +59,7 @@ final class SourcePathCatalog implements SourceDestinationPopup.Catalog {
     Models.Source child=new Models.Source();child.kind=Models.SOURCE_OFFICIAL;child.id=url;child.url=child.originUrl=url;
     child.parentId=LanzouCore.sourceId(parent);child.title=member.title==null||member.title.isEmpty()?url:member.title;
     child.password=member.password==null?"":member.password;child.searchable=parent.searchable;
-    child.originPath=parent.title==null||parent.title.isEmpty()?child.title:parent.title+" / "+child.title;return child;
+    child.originPath=SourceCategoryPicker.memberPath(parent,member);child.childDirectory=true;child.repositoryUrl=parent.repositoryUrl;return child;
   }
 
   public void loadFolderPaths(Models.Source source,String nodeId,String category,java.util.function.Consumer<List<Models.SourceMember>> done){

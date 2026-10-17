@@ -8,6 +8,27 @@ import java.util.*;
 
 /** App-owned file browser limited to locations the application can already read. */
 final class MarketFilePicker {
+  private static final int IMAGE_REQUEST=18491;
+  private static java.util.function.Consumer<String> imageSelected;
+  static android.content.Intent imageIntent(){
+    return new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT)
+        .addCategory(android.content.Intent.CATEGORY_OPENABLE).setType("image/*")
+        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION|android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+  }
+  static void chooseImage(MainActivity owner,java.util.function.Consumer<String> selected){
+    imageSelected=selected;
+    try{owner.startActivityForResult(imageIntent(),IMAGE_REQUEST);}
+    catch(android.content.ActivityNotFoundException unavailable){imageSelected=null;owner.showNotice("系统没有可用的图片选择器",true);}
+  }
+  static boolean onActivityResult(MainActivity owner,int request,int result,android.content.Intent data){
+    if(request!=IMAGE_REQUEST)return false;
+    java.util.function.Consumer<String> selected=imageSelected;imageSelected=null;
+    if(result!=android.app.Activity.RESULT_OK||data==null||data.getData()==null)return true;
+    android.net.Uri uri=data.getData();
+    try{if((data.getFlags()&android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)!=0)owner.getContentResolver().takePersistableUriPermission(uri,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(SecurityException ignored){}
+    if(selected!=null)selected.accept(uri.toString());
+    return true;
+  }
   static void choose(MainActivity owner,String suffixes,java.util.function.Consumer<File> selected){
     LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(16),owner.dp(6),owner.dp(16),owner.dp(6));
     TextView path=owner.text("",12,owner.MUTED);panel.addView(path);LinearLayout actions=new LinearLayout(owner);Button up=owner.toolbarTextButton("上一级"),app=owner.toolbarTextButton("应用文件");actions.addView(up);actions.addView(app);panel.addView(actions);

@@ -305,6 +305,8 @@ final class GithubProjectPublisher {
             if (!requestedName.matches("[A-Za-z0-9_.-]+")) {
                 throw new IOException("GitHub 仓库名称不符合规范");
             }
+            project.metadata.put("publisher", profile.login);
+            project.metadata.put("publisherAvatar", profile.avatarUrl);
             Association associated = loadAssociation(context, login, project.id);
             ensureNotCancelled(cancelled);
             progress.status("正在构建标准工程 ZIP，并准备一次提交全部内容…");

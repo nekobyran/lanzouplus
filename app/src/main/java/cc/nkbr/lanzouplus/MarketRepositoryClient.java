@@ -21,9 +21,9 @@ final class MarketRepositoryClient {
   static final int CACHE_LIMIT=SOURCE_LIMIT+README_LIMIT+METADATA_LIMIT+1024*1024;
   /** One catalog row: the canonical link plus the server's real snapshot state. */
   static final class CatalogEntry {
-    final String githubUrl,status,updatedAt,addedAt;
+    final String githubUrl,status,updatedAt,addedAt,description;
     final long snapshotRevision;
-    CatalogEntry(String githubUrl,String status,long snapshotRevision,String updatedAt,String addedAt){this.githubUrl=githubUrl;this.status=status;this.snapshotRevision=snapshotRevision;this.updatedAt=updatedAt;this.addedAt=addedAt;}
+    CatalogEntry(String githubUrl,String status,long snapshotRevision,String updatedAt,String addedAt,String description){this.githubUrl=githubUrl;this.status=status;this.snapshotRevision=snapshotRevision;this.updatedAt=updatedAt;this.addedAt=addedAt;this.description=description;}
   }
 
   /**
@@ -39,7 +39,10 @@ final class MarketRepositoryClient {
     List<String> urls(){List<String> out=new ArrayList<>();for(CatalogEntry entry:entries)out.add(entry.githubUrl);return out;}
     String fingerprint(){StringBuilder out=new StringBuilder();for(CatalogEntry entry:entries)out.append(entry.githubUrl).append('\u0001').append(entry.snapshotRevision).append('\u0001').append(entry.updatedAt).append('\u0001').append(entry.status).append('\n');return out.toString();}
   }
-  interface Transport { byte[] get(String url,int limit)throws Exception; }
+  interface Transport {
+    byte[] get(String url,int limit)throws Exception;
+    default JSONObject post(String url,JSONObject value)throws Exception{return httpPost(url,value);}
+  }
   /**
    * One repository snapshot. A metadata-only preview carries the name, publisher, version,
    * description, icon and owner avatar without the encrypted source document, so a market row
@@ -244,13 +247,29 @@ final class MarketRepositoryClient {
     JSONArray rows=value.getJSONArray("repositories");List<CatalogEntry> entries=new ArrayList<>();
     for(int i=0;i<rows.length();i++){
       JSONObject object=rows.getJSONObject(i);
-      entries.add(new CatalogEntry(MarketRepository.canonicalUrl(object.getString("githubUrl")),object.optString("status"),object.optLong("snapshotRevision",0),object.optString("updatedAt"),object.optString("addedAt")));
+      entries.add(new CatalogEntry(MarketRepository.canonicalUrl(object.getString("githubUrl")),object.optString("status"),object.optLong("snapshotRevision",0),object.optString("updatedAt"),object.optString("addedAt"),object.optString("description")));
     }
     return new Catalog(entries,value.optLong("total",entries.size()),value.optInt("offset",offset),value.optInt("limit",limit));
   }
 
-  String submit(String raw)throws Exception{
-    String url=MarketRepository.canonicalUrl(raw),identity=url.substring("https://github.com/".length()),root=rawRoot(identity);
+  static String submissionDescription(String raw)throws IOException{
+    String value=raw.trim();
+    if(value.isEmpty())throw new IOException("请填写仓库简介");
+    if(value.codePointCount(0,value.length())>30)throw new IOException("简介最多 30 字");
+    return value;
+  }
+
+  String submit(String raw,String rawDescription)throws Exception{
+    String description=submissionDescription(rawDescription),url=MarketRepository.canonicalUrl(raw);
+    // Read every live catalog page before any repository validation or write request.
+    for(int offset=0;;){
+      Catalog page=catalog(offset,100);
+      for(CatalogEntry entry:page.entries)if(entry.githubUrl.equalsIgnoreCase(url))throw new IOException("该仓库已收录，无需重复上传");
+      offset+=page.entries.size();
+      if(offset>=page.total)break;
+      if(page.entries.isEmpty())throw new IOException("市场清单未读取完整，请重试");
+    }
+    String identity=url.substring("https://github.com/".length()),root=rawRoot(identity);
     MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
     metadata.validateSubmission(url);
     String sourceJson=new String(MarketSourceCodec.decode(transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
@@ -259,12 +278,12 @@ final class MarketRepositoryClient {
     if(readme.trim().isEmpty())throw new IOException("仓库 README 不能为空");
     if(!metadata.icon.isEmpty())transport.get(metadata.assetUrl(root,metadata.icon),2*1024*1024);
     if(!metadata.publisherAvatar.isEmpty())transport.get(metadata.assetUrl(root,metadata.publisherAvatar),2*1024*1024);
-    JSONObject preflight=postJson(MARKET_ORIGIN+"/api/v1/repositories/preflight",new JSONObject().put("githubUrl",url));
+    JSONObject preflight=transport.post(MARKET_ORIGIN+"/api/v1/repositories/preflight",new JSONObject().put("githubUrl",url));
     String code=preflight.getString("verificationCode");
-    postJson(MARKET_ORIGIN+"/api/v1/repositories",new JSONObject().put("githubUrl",url).put("verificationCode",code));return url;
+    transport.post(MARKET_ORIGIN+"/api/v1/repositories",new JSONObject().put("githubUrl",url).put("verificationCode",code).put("description",description));return url;
   }
 
-  private JSONObject postJson(String endpoint,JSONObject value)throws Exception{
+  private static JSONObject httpPost(String endpoint,JSONObject value)throws Exception{
     HttpURLConnection connection=(HttpURLConnection)new URL(endpoint).openConnection();
     connection.setConnectTimeout(12000);connection.setReadTimeout(30000);connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json; charset=utf-8");
     try{

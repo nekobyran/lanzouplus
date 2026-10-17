@@ -7,7 +7,7 @@ android {
  compileSdk = 36
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1009000; versionName = "1.9.0alpha" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1009001; versionName = "1.9.1alpha" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {

@@ -11,10 +11,8 @@ import org.json.*;
 /** Market and subscription navigation reuse the existing source rows and list state. */
 final class MarketPages {
   final MainActivity owner;
-  private Runnable marketBack;
   MarketPages(MainActivity owner){this.owner=owner;}
   void addSourcePageActions(){
-    ImageButton market=owner.iconButton(R.drawable.ic_globe,"资源市场");market.setOnClickListener(v->showMarket(false));owner.pageHeaderRow.addView(market,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton projects=owner.iconButton(R.drawable.ic_edit,"仓库工程");projects.setOnClickListener(v->showProjects());owner.pageHeaderRow.addView(projects,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
   }
   void showRepository(Models.Source repository,boolean refresh){
@@ -42,12 +40,7 @@ final class MarketPages {
   private void publishSources(int session,GridLayout grid,List<Models.Source> target,List<Models.Source> values){owner.runOnUiThread(()->{if(session!=owner.navigationSession||owner.sourceGrid!=grid)return;target.clear();target.addAll(values);owner.sourceDataRevision++;owner.rebuildCategoryMemberships(target);owner.renderSourceCategories(target);owner.renderSources(grid,target,owner.sourceFilter.getText().toString(),owner.sourceHeading);MainActivity.SourceListPageState restore=owner.pendingSourceListRestore;if(restore!=null){owner.pendingSourceListRestore=null;owner.restoreFolderScrollBeforeDraw(owner.pageScroll,restore.pageScroll.getScrollY());}});}
 
   void showMarket(boolean force){
-    if(owner.pageKind!=5){
-      if(owner.pageKind==1){owner.retainSourceListPage();marketBack=()->{if(!owner.restoreSourceListPage())owner.showSources();};}
-      else if(owner.pageKind==4)marketBack=owner::showSettings;
-      else marketBack=owner::showSources;
-    }
-    owner.pageDirection=1;owner.base();owner.pageKind=5;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=marketBack;owner.primaryHeader("资源市场");back(owner.systemBackAction);
+    owner.pageDirection=1;owner.primaryBase(4);owner.pageKind=5;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=owner::navigateHome;owner.primaryHeader("资源市场");
     ImageButton submit=owner.iconButton(R.drawable.ic_add,"上传 GitHub 仓库链接");submit.setOnClickListener(v->submitDialog());owner.pageHeaderRow.addView(submit,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton reload=owner.iconButton(R.drawable.ic_refresh,"更新市场");reload.setOnClickListener(v->showMarket(true));owner.pageHeaderRow.addView(reload,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     TextView status=owner.text("正在读取市场…",13,owner.MUTED);owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(28)));
@@ -80,9 +73,23 @@ final class MarketPages {
     return new MarketIndex(value.optString("fingerprint"),urls);
   }
   void submitDialog(){
-    EditText input=owner.sourceInput("https://github.com/发布者/lzpmarket-名称",android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);LinearLayout panel=new LinearLayout(owner);panel.setPadding(owner.dp(20),owner.dp(8),owner.dp(20),owner.dp(8));panel.addView(input,new LinearLayout.LayoutParams(-1,owner.dp(56)));
-    AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("检测并上传仓库链接").setView(panel).setNegativeButton("取消",null).setPositiveButton("检测并上传",null).create();int session=owner.navigationSession;prompt.setOnShowListener(dialog->prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{Button action=prompt.getButton(AlertDialog.BUTTON_POSITIVE);action.setEnabled(false);action.setText("正在检测…");final String link=input.getText().toString();owner.io.execute(()->{try{owner.core.marketRepositories().submit(link);owner.runOnUiThread(()->{if(owner.navigationSession!=session)return;prompt.dismiss();owner.showNotice("仓库校验通过，已提交市场",false);showMarket(true);});}catch(Exception error){owner.runOnUiThread(()->{if(owner.navigationSession!=session)return;action.setEnabled(true);action.setText("检测并上传");input.setError(owner.friendlyError(error));});}});}));owner.showRounded(prompt);
+    LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(20),owner.dp(8),owner.dp(20),owner.dp(8));
+    EditText input=owner.sourceInput("https://github.com/发布者/lzpmarket-名称",android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);panel.addView(input,new LinearLayout.LayoutParams(-1,owner.dp(56)));
+    EditText description=owner.sourceInput("仓库简介（必填，最多 30 字）",android.text.InputType.TYPE_CLASS_TEXT);description.setContentDescription("仓库简介，最多30字");
+    description.setFilters(new android.text.InputFilter[]{(source,start,end,dest,dstart,dend)->{
+      String inserted=source.subSequence(start,end).toString(),before=dest.subSequence(0,dstart).toString(),after=dest.subSequence(dend,dest.length()).toString();
+      int available=30-before.codePointCount(0,before.length())-after.codePointCount(0,after.length());
+      if(inserted.codePointCount(0,inserted.length())<=available)return null;
+      return available<=0?"":inserted.substring(0,inserted.offsetByCodePoints(0,available));
+    }});panel.addView(description,new LinearLayout.LayoutParams(-1,owner.dp(56)));
+    TextView count=owner.text("0 / 30 字 · 上传前会更新市场并查重",12,owner.MUTED);panel.addView(count);
+    description.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){String value=s.toString();count.setText(value.codePointCount(0,value.length())+" / 30 字 · 上传前会更新市场并查重");}public void afterTextChanged(android.text.Editable e){}});
+    AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("检测并上传仓库链接").setView(panel).setNegativeButton("取消",null).setPositiveButton("检测并上传",null).create();int session=owner.navigationSession;
+    prompt.setOnShowListener(dialog->prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+      final String summary;try{summary=MarketRepositoryClient.submissionDescription(description.getText().toString());}catch(Exception error){description.setError(error.getMessage());return;}
+      Button action=prompt.getButton(AlertDialog.BUTTON_POSITIVE);action.setEnabled(false);action.setText("更新清单并检测…");final String link=input.getText().toString();
+      owner.io.execute(()->{try{owner.core.marketRepositories().submit(link,summary);owner.runOnUiThread(()->{if(owner.navigationSession!=session)return;prompt.dismiss();owner.showNotice("仓库与简介已提交市场",false);showMarket(true);});}catch(Exception error){owner.runOnUiThread(()->{if(owner.navigationSession!=session)return;action.setEnabled(true);action.setText("检测并上传");input.setError(owner.friendlyError(error));});}});
+    }));owner.showRounded(prompt);
   }
   void showProjects(){new MarketProjects(owner).show();}
-  private void back(Runnable action){ImageButton back=owner.iconButton(R.drawable.ic_back,"返回列表");back.setOnClickListener(v->action.run());owner.pageHeaderRow.addView(back,0,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));}
 }

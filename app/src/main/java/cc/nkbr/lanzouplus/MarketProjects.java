@@ -39,7 +39,7 @@ final class MarketProjects implements MarketProjectEditor.Host {
   }
 
   private void showList() {
-    owner.primaryBase(1);
+    owner.base();
     owner.pageKind = 6;
     owner.activeSource = null;
     owner.clearFolderTrail();
@@ -181,7 +181,7 @@ final class MarketProjects implements MarketProjectEditor.Host {
   }
 
   private void edit(MarketProject existing) {
-    // primaryBase() below uses the app page stack, whose animatePage() delegate is PageMotion.
+    // The project editor uses the same independent page transition as the market.
     owner.pageDirection = 1;
     new MarketProjectEditor(owner, this, existing).show();
   }
@@ -289,7 +289,10 @@ final class MarketProjects implements MarketProjectEditor.Host {
     if (reference.startsWith("https://")) {
       return MarketRepositoryClient.httpGet(reference, 8 * 1024 * 1024);
     }
-    try (InputStream input = new FileInputStream(reference)) {
+    try (InputStream input = reference.startsWith("content:")
+        ? owner.getContentResolver().openInputStream(Uri.parse(reference))
+        : new FileInputStream(reference)) {
+      if (input == null) throw new IOException("无法读取所选图片");
       return MarketRepositoryClient.bytes(input, 8 * 1024 * 1024);
     }
   }

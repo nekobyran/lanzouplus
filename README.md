@@ -8,7 +8,7 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 ## 正式版本
 
-- 当前版本：`1.8.8alpha`
+- 当前版本：`1.8.9alpha`
 - 包名：`cc.nkbr.lanzouplus`
 - 最低系统：Android 7.0（API 24）
 - 正式下载：[lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -51,6 +51,7 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 ## 开源借鉴
 
+- [commonmark-java](https://github.com/commonmark/commonmark-java)（BSD-2-Clause）：直接使用 CommonMark 解析器及表格、删除线、任务列表、标题锚点扩展，在本地显示市场仓库的完整 README 与图片。
 - [npm/node-semver](https://github.com/npm/node-semver)：更新检查沿用其 SemVer 分段比较与预发布排序规则；未引入其源码或运行依赖。
 - [zaxtyson/LanZouCloud-API](https://github.com/zaxtyson/LanZouCloud-API)（MIT）：目录分页沿用其记录的公开状态含义，并按本项目实测结果实现；未引入其源文件。
 - [AppIntro](https://github.com/AppIntro/AppIntro)（Apache-2.0）：引导入场借鉴按方向组合位移、透明度与恢复交互状态的思路，逐元素时序和主页形变使用 Android 原生 Animator 实现。
@@ -89,7 +90,7 @@ This public repository contains only the **empty-source edition with no home rec
 
 ### Release
 
-- Version: `1.8.8alpha`
+- Version: `1.8.9alpha`
 - Package: `cc.nkbr.lanzouplus`
 - Minimum Android: 7.0 (API 24)
 - Official page and download: [lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -108,6 +109,7 @@ The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, a
 
 ### Open-source references
 
+- [commonmark-java](https://github.com/commonmark/commonmark-java) (BSD-2-Clause): the local README view uses its CommonMark parser and table, strikethrough, task-list and heading-anchor extensions, with upstream images.
 - [npm/node-semver](https://github.com/npm/node-semver): the update check follows its SemVer segment comparison and prerelease ordering rules; no upstream code or runtime dependency is bundled.
 - [zaxtyson/LanZouCloud-API](https://github.com/zaxtyson/LanZouCloud-API) (MIT): directory pagination follows the public state meanings recorded there and is implemented from this project's own live results; no upstream source file is bundled.
 - [AppIntro](https://github.com/AppIntro/AppIntro) (Apache-2.0): onboarding follows its directional translation, opacity and interaction-restoration approach; Android Animator implements the stagger and home morph.

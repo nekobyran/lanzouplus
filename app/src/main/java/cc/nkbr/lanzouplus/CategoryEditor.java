@@ -25,19 +25,23 @@ final class CategoryEditor {
     Tags(MainActivity owner,Collection<String> initial,boolean offerShortcuts){
       this.owner=owner;labels.addAll(SourceCategories.normalized(initial));
       panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(20),owner.dp(8),owner.dp(20),owner.dp(8));
-      rows=new LinearLayout(owner);rows.setOrientation(LinearLayout.VERTICAL);panel.addView(rows);
+      rows=new LinearLayout(owner);rows.setGravity(Gravity.CENTER_VERTICAL);HorizontalScrollView tagScroll=new HorizontalScrollView(owner);tagScroll.setHorizontalScrollBarEnabled(false);tagScroll.addView(rows);panel.addView(tagScroll,new LinearLayout.LayoutParams(-1,owner.dp(44)));
       input=owner.sourceInput("输入分类，点击加号保存",android.text.InputType.TYPE_CLASS_TEXT);
       LinearLayout editor=new LinearLayout(owner);editor.setGravity(Gravity.CENTER_VERTICAL);editor.addView(input,new LinearLayout.LayoutParams(0,owner.dp(50),1));
       ImageButton add=owner.iconButton(R.drawable.ic_add,"添加分类");editor.addView(add,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));panel.addView(editor);
       Runnable[] render={null};
       render[0]=()->{rows.removeAllViews();for(String label:new ArrayList<>(labels)){
         TextView chip=owner.sourceTag(label);chip.setTextSize(13);chip.setPadding(owner.dp(12),owner.dp(6),owner.dp(12),owner.dp(6));
-        LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-2,owner.dp(38));params.bottomMargin=owner.dp(5);rows.addView(chip,params);
+        LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-2,owner.dp(38));params.rightMargin=owner.dp(5);rows.addView(chip,params);
         chip.setContentDescription("分类 "+label+(SourceCategories.builtIn(label)?"，自动分类":"，长按编辑或删除"));
-        if(!SourceCategories.builtIn(label))chip.setOnLongClickListener(v->{AlertDialog choices=new AlertDialog.Builder(owner).setTitle(label).setItems(new String[]{"编辑","删除"},(dialog,index)->{if(index==1){labels.remove(label);render[0].run();}else{input.setText(label);labels.remove(label);input.requestFocus();render[0].run();}}).create();owner.showRounded(choices);return true;});
+        if(!SourceCategories.builtIn(label))chip.setOnLongClickListener(v->{AlertDialog choices=new AlertDialog.Builder(owner).setTitle(label).setItems(new String[]{"编辑","删除"},(dialog,index)->{if(index==1){labels.remove(label);render[0].run();}else{
+          EditText replacement=owner.sourceInput("分类名称",android.text.InputType.TYPE_CLASS_TEXT);replacement.setText(label);
+          AlertDialog edit=new AlertDialog.Builder(owner).setTitle("更换分类").setView(replacement).setNegativeButton("取消",null).setPositiveButton("保存",null).create();
+          edit.setOnShowListener(ignored->edit.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{String name=SourceCategories.name(replacement.getText().toString());if(name.isEmpty()){replacement.setError("请输入分类名称");return;}labels.set(labels.indexOf(label),name);SourceCategories.replace(labels,labels);rememberShortcut(owner,name);render[0].run();edit.dismiss();}));owner.showRounded(edit);
+        }}).create();owner.showRounded(choices);return true;});
       }};
       render[0].run();
-      add.setOnClickListener(v->{String label=SourceCategories.name(input.getText().toString());if(!label.isEmpty()){labels.add(label);SourceCategories.replace(labels,labels);input.setText("");render[0].run();}});
+      add.setOnClickListener(v->{String label=SourceCategories.name(input.getText().toString());if(!label.isEmpty()){rememberShortcut(owner,label);labels.add(label);SourceCategories.replace(labels,labels);input.setText("");render[0].run();}});
       if(offerShortcuts){HorizontalScrollView scroll=new HorizontalScrollView(owner);scroll.setHorizontalScrollBarEnabled(false);LinearLayout row=new LinearLayout(owner);for(String value:getShortcuts(owner)){Button shortcut=owner.toolbarTextButton(value);shortcut.setOnClickListener(v->{if(!labels.contains(value)){labels.add(value);render[0].run();}});row.addView(shortcut);}scroll.addView(row);panel.addView(scroll);}
     }
 
@@ -52,6 +56,11 @@ final class CategoryEditor {
     List<String> out=new ArrayList<>(Arrays.asList(SourceCategories.LANZOU,SourceCategories.OTHER));
     try{JSONArray rows=new JSONArray(owner.getSharedPreferences("market",Context.MODE_PRIVATE).getString("shortcuts","[]"));for(int i=0;i<rows.length();i++)out.add(rows.getString(i));}catch(JSONException ignored){}
     return SourceCategories.normalized(out);
+  }
+  static void rememberShortcut(MainActivity owner,String raw){
+    String label=SourceCategories.name(raw);if(label.isEmpty())return;
+    List<String> values=getShortcuts(owner);values.add(label);
+    owner.getSharedPreferences("market",Context.MODE_PRIVATE).edit().putString("shortcuts",new JSONArray(SourceCategories.normalized(values)).toString()).apply();
   }
   static void shortcuts(MainActivity owner){show(owner,"快捷分类",getShortcuts(owner),false,values->owner.getSharedPreferences("market",Context.MODE_PRIVATE).edit().putString("shortcuts",new JSONArray(values).toString()).apply());}
   static void source(MainActivity owner,Models.Source source){

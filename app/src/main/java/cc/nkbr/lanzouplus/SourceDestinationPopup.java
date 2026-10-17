@@ -46,6 +46,7 @@ final class SourceDestinationPopup {
     Map<String, Set<String>> categories();
 
     default boolean includeSourcePaths(){return false;}
+    default List<Destination> initialSelection(){return Collections.emptyList();}
     default void loadFolderPaths(Models.Source source,String nodeId,String category,java.util.function.Consumer<List<Models.SourceMember>> done){done.accept(folders(source,nodeId));}
     default Models.Source pathSource(Models.Source parent,Models.SourceMember member){return parent;}
     default String pathNodeId(Models.Source parent,Models.SourceMember member){return member.id;}
@@ -135,6 +136,7 @@ final class SourceDestinationPopup {
     final List<Models.Source> sources = new ArrayList<>(sourceInput == null ? Collections.emptyList() : sourceInput);
     final List<Models.Item> items = new ArrayList<>(itemInput == null ? Collections.emptyList() : itemInput);
     final LinkedHashMap<String, Destination> selected = new LinkedHashMap<>();
+    if(selection!=null)for(Destination destination:catalog.initialSelection())selected.put(destination.key(),destination);
     final LinkedHashSet<String> expanded = new LinkedHashSet<>();
     final DestinationTree[] tree = {null};
     final Destination[] current = {null};
@@ -185,7 +187,7 @@ final class SourceDestinationPopup {
     };
     java.util.function.Consumer<Destination> focus = here -> {
       current[0]=here;
-      path.setText("当前路径："+(here==null?"分类":here.path));
+      path.setText("当前路径："+(here==null?(selection==null?"分类":"全部路径"):here.path));
       back.setEnabled(here!=null);
       createFolder.setEnabled(here!=null&&!here.categoryOnly());
     };
@@ -211,8 +213,8 @@ final class SourceDestinationPopup {
         if (selection==null&&selected.isEmpty()) return;
         List<Destination> destinations = new ArrayList<>(selected.values());
         catalog.submitting();
-        dialog.dismiss();
-        if(selection==null)apply(host, catalog, sources, items, destinations);else selection.accept(destinations);
+        if(selection==null){dialog.dismiss();apply(host,catalog,sources,items,destinations);}
+        else HistoryPopupNavigation.switchCollection(host,dialog,()->selection.accept(destinations));
       });
       render[0].run();
     });
@@ -283,6 +285,10 @@ final class SourceDestinationPopup {
       this.selected=selected;this.expanded=expanded;this.focus=focus;this.changed=changed;
     }
     void roots(LinearLayout area){
+      if(catalog.includeSourcePaths()){
+        for(Models.Source source:available)if(source.repositoryUrl.isEmpty())add(area,new Destination("全部",source,"",source.title),null);
+        return;
+      }
       add(area,new Destination("全部",null,"","全部"),null);
       for(Map.Entry<String,Set<String>> category:catalog.categories().entrySet())
         add(area,new Destination(category.getKey(),category.getValue(),category.getKey()),null);

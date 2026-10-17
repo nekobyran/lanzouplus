@@ -1,0 +1,4 @@
+<resources>
+    <string name="market_readme_content">仓库完整说明</string>
+    <string name="market_readme_loading">正在排版仓库说明…</string>
+</resources>

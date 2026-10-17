@@ -19,8 +19,11 @@ final class SourcePathCatalog implements SourceDestinationPopup.Catalog {
   }
   private final MainActivity owner;
   private final List<Models.Source> values;
+  private final List<SourceDestinationPopup.Destination> initial;
   private final Map<String,Models.Source> resolved=new java.util.concurrent.ConcurrentHashMap<>();
-  SourcePathCatalog(MainActivity owner,List<Models.Source> values){this.owner=owner;this.values=values;}
+  SourcePathCatalog(MainActivity owner,List<Models.Source> values){this(owner,values,Collections.emptyList());}
+  SourcePathCatalog(MainActivity owner,List<Models.Source> values,List<SourceDestinationPopup.Destination> initial){this.owner=owner;this.values=values;this.initial=new ArrayList<>(initial);}
+  public List<SourceDestinationPopup.Destination> initialSelection(){return initial;}
   public List<Models.Source> sources(){return values;}
   public boolean includeSourcePaths(){return true;}
   public Map<String,Set<String>> categories(){Map<String,Set<String>> out=new LinkedHashMap<>();for(Models.Source source:values)for(String category:source.categories)out.computeIfAbsent(category,k->new LinkedHashSet<>()).add(LanzouCore.sourceId(source));return out;}

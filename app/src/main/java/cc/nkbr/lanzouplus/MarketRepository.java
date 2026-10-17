@@ -56,6 +56,8 @@ final class MarketRepository {
     return rawRoot+path(asset);
   }
 
+  String assetUrlUnchecked(String root,String value){try{return assetUrl(root,value);}catch(IOException invalid){throw new IllegalArgumentException(invalid);}}
+
   static int compareVersions(String mode,String left,String right)throws IOException{
     if("integer".equals(mode)){
       if(!left.matches("[0-9]+")||!right.matches("[0-9]+"))throw new IOException("整数版本号只能包含数字");

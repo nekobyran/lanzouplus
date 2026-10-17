@@ -7,7 +7,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import org.json.*;
 
-/** GitHub owns repository content; the market service stores only repository URLs. */
+/** Repository content and cached presentation belong to GitHub; the market records its identity. */
 final class MarketRepositoryClient {
   static final String MARKET_ORIGIN="https://lanzoumarket.nkbr.cc";
   static final int SOURCE_LIMIT=8*1024*1024;
@@ -67,6 +67,8 @@ final class MarketRepositoryClient {
       if(parsedSources==null){parsedSources=LanzouCore.parseSourceDocument(sourceJson);for(Models.Source value:parsedSources)value.repositoryUrl=githubUrl;}
       List<Models.Source> values=new ArrayList<>();for(Models.Source value:parsedSources)values.add(LanzouCore.copySource(value));return values;
     }
+    String sourceIconUrl(){try{return metadata.assetUrl(rawRoot,metadata.icon);}catch(IOException error){return "";}}
+    String sourcePublisher(){return metadata.publisher.isEmpty()?ownerLogin():metadata.publisher;}
     JSONObject json()throws Exception{return new JSONObject().put("githubUrl",githubUrl).put("rawRoot",rawRoot).put("ownerAvatar",ownerAvatar).put("metadata",metadata.json).put("sourceJson",sourceJson).put("sourcesLoaded",sourcesLoaded).put("readme",readme).put("checkedAt",checkedAt);}
   }
   private final File directory;
@@ -97,7 +99,21 @@ final class MarketRepositoryClient {
    */
   Document preview(String raw)throws Exception{
     String url=MarketRepository.canonicalUrl(raw);Object lock=repositoryLocks.computeIfAbsent(url,key->new Object());
-    synchronized(lock){return previewLocked(url);}
+    synchronized(lock){return previewLocked(url,false);}
+  }
+  Document preview(String raw,boolean force)throws Exception{
+    String url=MarketRepository.canonicalUrl(raw);synchronized(repositoryLocks.computeIfAbsent(url,key->new Object())){return previewLocked(url,force);}
+  }
+  /** Detail reads README without downloading the encrypted source or replacing an installed snapshot. */
+  Document readme(String raw,boolean force)throws Exception{
+    String url=MarketRepository.canonicalUrl(raw);synchronized(repositoryLocks.computeIfAbsent(url,key->new Object())){
+      Document cached=cached(url),preview=previewLocked(url,force);
+      if(!force&&!preview.readme.isEmpty())return preview;
+      String readme=new String(transport.get(preview.rawRoot+preview.metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
+      Document result=new Document(url,preview.rawRoot,preview.ownerAvatar,preview.metadata,preview.sourceJson,readme,preview.sourcesLoaded,preview.checkedAt);
+      if(cached==null||!cached.sourcesLoaded||preview.sourcesLoaded)save(result);
+      return result;
+    }
   }
   /**
    * Reads the metadata a market row needs. An existing snapshot keeps its decoded sources and
@@ -105,13 +121,14 @@ final class MarketRepositoryClient {
    * version leaves the stored snapshot alone so a later {@link #load} still refetches the
    * encrypted document. A repository with no snapshot yet is stored as a metadata-only preview.
    */
-  private Document previewLocked(String url)throws Exception{
+  private Document previewLocked(String url,boolean force)throws Exception{
     Document old=cached(url);
-    if(old!=null&&System.currentTimeMillis()-old.checkedAt<60*60*1000L)return old;
+    if(old!=null&&!force&&System.currentTimeMillis()-old.checkedAt<60*60*1000L)return old;
     String identity=url.substring("https://github.com/".length());
     String root=rawRoot(identity);
     MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
     if(old==null){Document fresh=new Document(url,root,avatarUrl(identity),metadata,"","",false,System.currentTimeMillis());save(fresh);return fresh;}
+    if(old.metadata.versionMode.equals(metadata.versionMode)&&MarketRepository.compareVersions(metadata.versionMode,metadata.version,old.metadata.version)<0)return old;
     if(!upstreamAhead(metadata,old.metadata)){Document kept=new Document(url,root,avatarUrl(identity),metadata,old.sourceJson,old.readme,old.sourcesLoaded,System.currentTimeMillis());save(kept);return kept;}
     return new Document(url,root,avatarUrl(identity),metadata,"","",false,System.currentTimeMillis());
   }
@@ -129,7 +146,7 @@ final class MarketRepositoryClient {
     String sourceJson="",readme="";boolean sourcesLoaded=false;
     if(old!=null&&old.sourcesLoaded&&metadata.versionMode.equals(old.metadata.versionMode)){
       int compared=MarketRepository.compareVersions(metadata.versionMode,metadata.version,old.metadata.version);
-      if(compared<=0){sourceJson=old.sourceJson;readme=old.readme;sourcesLoaded=true;if(compared<0)metadata=old.metadata;}
+      if(compared<0||compared==0&&!force){sourceJson=old.sourceJson;readme=old.readme;sourcesLoaded=true;if(compared<0)metadata=old.metadata;}
     }
     if(!sourcesLoaded){
       sourceJson=new String(MarketSourceCodec.decode(transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
@@ -155,6 +172,40 @@ final class MarketRepositoryClient {
   /** GitHub serves the owner avatar directly; a missing owner answers 404 like any raw read. */
   static String avatarUrl(String identity){return "https://github.com/"+identity.substring(0,identity.indexOf('/'))+".png?size=96";}
 
+  /** Public GitHub repository identity, independent of a published lzpmarket manifest. */
+  static final class GithubInfo {
+    final String name,owner,avatar,description;
+    final long stars,loadedAt;
+    GithubInfo(String name,String owner,String avatar,String description,long stars,long loadedAt){
+      this.name=name;this.owner=owner;this.avatar=avatar;this.description=description;this.stars=stars;this.loadedAt=loadedAt;
+    }
+  }
+  private final Map<String,GithubInfo> githubInfoCache=new ConcurrentHashMap<>();
+
+  GithubInfo githubInfo(String raw,boolean force)throws Exception{
+    String url=MarketRepository.canonicalUrl(raw);
+    GithubInfo cached=githubInfoCache.get(url);
+    File file=new File(new File(directory,"github-info"),cacheFile(url).getName());
+    if(cached==null&&file.isFile()){
+      JSONObject saved=new JSONObject(new String(read(file,128*1024),StandardCharsets.UTF_8));
+      cached=new GithubInfo(saved.getString("name"),saved.getString("owner"),saved.getString("avatar"),saved.getString("description"),saved.getLong("stars"),saved.getLong("loadedAt"));
+      githubInfoCache.put(url,cached);
+    }
+    if(!force&&cached!=null&&System.currentTimeMillis()-cached.loadedAt<10*60*1000L)return cached;
+    String identity=url.substring("https://github.com/".length());
+    JSONObject repository=new JSONObject(new String(transport.get("https://api.github.com/repos/"+identity,128*1024),StandardCharsets.UTF_8));
+    JSONObject owner=repository.getJSONObject("owner");
+    GithubInfo info=new GithubInfo(repository.optString("name",identity.substring(identity.indexOf('/')+1)),
+        owner.optString("login",identity.substring(0,identity.indexOf('/'))),
+        owner.optString("avatar_url",avatarUrl(identity)),repository.isNull("description")?"":repository.optString("description",""),
+        repository.optLong("stargazers_count",-1),System.currentTimeMillis());
+    githubInfoCache.put(url,info);
+    if(!file.getParentFile().isDirectory()&&!file.getParentFile().mkdirs())throw new IOException("无法创建 GitHub 信息缓存");
+    JSONObject saved=new JSONObject().put("name",info.name).put("owner",info.owner).put("avatar",info.avatar).put("description",info.description).put("stars",info.stars).put("loadedAt",info.loadedAt);
+    try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(StandardCharsets.UTF_8));}
+    return info;
+  }
+
   synchronized void save(Document value)throws Exception{
     File file=cacheFile(value.githubUrl);if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("无法创建仓库缓存目录");
     File temp=new File(directory,file.getName()+".tmp");
@@ -178,7 +229,15 @@ final class MarketRepositoryClient {
   }
 
   String submit(String raw)throws Exception{
-    String url=MarketRepository.canonicalUrl(raw);Document document=load(url,true);document.metadata.validateSubmission(url);
+    String url=MarketRepository.canonicalUrl(raw),identity=url.substring("https://github.com/".length()),root=rawRoot(identity);
+    MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
+    metadata.validateSubmission(url);
+    String sourceJson=new String(MarketSourceCodec.decode(transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
+    if(LanzouCore.parseSourceDocument(sourceJson).isEmpty())throw new IOException("仓库至少需要一个有效源");
+    String readme=new String(transport.get(root+metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
+    if(readme.trim().isEmpty())throw new IOException("仓库 README 不能为空");
+    if(!metadata.icon.isEmpty())transport.get(metadata.assetUrl(root,metadata.icon),2*1024*1024);
+    if(!metadata.publisherAvatar.isEmpty())transport.get(metadata.assetUrl(root,metadata.publisherAvatar),2*1024*1024);
     JSONObject preflight=postJson(MARKET_ORIGIN+"/api/v1/repositories/preflight",new JSONObject().put("githubUrl",url));
     String code=preflight.getString("verificationCode");
     postJson(MARKET_ORIGIN+"/api/v1/repositories",new JSONObject().put("githubUrl",url).put("verificationCode",code));return url;

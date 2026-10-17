@@ -180,30 +180,51 @@ final class MarketRepositoryClient {
       this.name=name;this.owner=owner;this.avatar=avatar;this.description=description;this.stars=stars;this.loadedAt=loadedAt;
     }
   }
+  private static final class GithubInfoGate{volatile long generation;}
   private final Map<String,GithubInfo> githubInfoCache=new ConcurrentHashMap<>();
+  private final Map<String,GithubInfoGate> githubInfoGates=new ConcurrentHashMap<>();
 
   GithubInfo githubInfo(String raw,boolean force)throws Exception{
     String url=MarketRepository.canonicalUrl(raw);
-    GithubInfo cached=githubInfoCache.get(url);
-    File file=new File(new File(directory,"github-info"),cacheFile(url).getName());
-    if(cached==null&&file.isFile()){
-      JSONObject saved=new JSONObject(new String(read(file,128*1024),StandardCharsets.UTF_8));
-      cached=new GithubInfo(saved.getString("name"),saved.getString("owner"),saved.getString("avatar"),saved.getString("description"),saved.getLong("stars"),saved.getLong("loadedAt"));
-      githubInfoCache.put(url,cached);
+    GithubInfoGate gate=githubInfoGates.computeIfAbsent(url,key->new GithubInfoGate());
+    long observedGeneration=gate.generation;
+    synchronized(gate){
+      GithubInfo cached=loadGithubInfo(url);
+      /*
+       * A refresh that completed while this call waited is reused. A force call that starts
+       * after that refresh observes the new generation and therefore performs its own refresh;
+       * sequential force calls never collapse on a millisecond boundary.
+       */
+      if(cached!=null&&gate.generation!=observedGeneration)return cached;
+      if(!force&&cached!=null&&System.currentTimeMillis()-cached.loadedAt<10*60*1000L)return cached;
+      String identity=url.substring("https://github.com/".length());
+      JSONObject repository=new JSONObject(new String(transport.get("https://api.github.com/repos/"+identity,128*1024),StandardCharsets.UTF_8));
+      JSONObject owner=repository.getJSONObject("owner");
+      GithubInfo info=new GithubInfo(repository.optString("name",identity.substring(identity.indexOf('/')+1)),
+          owner.optString("login",identity.substring(0,identity.indexOf('/'))),
+          owner.optString("avatar_url",avatarUrl(identity)),repository.isNull("description")?"":repository.optString("description",""),
+          repository.optLong("stargazers_count",-1),System.currentTimeMillis());
+      githubInfoCache.put(url,info);
+      File file=githubInfoFile(url);
+      if(!file.getParentFile().isDirectory()&&!file.getParentFile().mkdirs())throw new IOException("无法创建 GitHub 信息缓存");
+      JSONObject saved=new JSONObject().put("name",info.name).put("owner",info.owner).put("avatar",info.avatar).put("description",info.description).put("stars",info.stars).put("loadedAt",info.loadedAt);
+      try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(StandardCharsets.UTF_8));}
+      gate.generation++;
+      return info;
     }
-    if(!force&&cached!=null&&System.currentTimeMillis()-cached.loadedAt<10*60*1000L)return cached;
-    String identity=url.substring("https://github.com/".length());
-    JSONObject repository=new JSONObject(new String(transport.get("https://api.github.com/repos/"+identity,128*1024),StandardCharsets.UTF_8));
-    JSONObject owner=repository.getJSONObject("owner");
-    GithubInfo info=new GithubInfo(repository.optString("name",identity.substring(identity.indexOf('/')+1)),
-        owner.optString("login",identity.substring(0,identity.indexOf('/'))),
-        owner.optString("avatar_url",avatarUrl(identity)),repository.isNull("description")?"":repository.optString("description",""),
-        repository.optLong("stargazers_count",-1),System.currentTimeMillis());
-    githubInfoCache.put(url,info);
-    if(!file.getParentFile().isDirectory()&&!file.getParentFile().mkdirs())throw new IOException("无法创建 GitHub 信息缓存");
-    JSONObject saved=new JSONObject().put("name",info.name).put("owner",info.owner).put("avatar",info.avatar).put("description",info.description).put("stars",info.stars).put("loadedAt",info.loadedAt);
-    try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(StandardCharsets.UTF_8));}
-    return info;
+  }
+  private GithubInfo loadGithubInfo(String url)throws Exception{
+    GithubInfo cached=githubInfoCache.get(url);
+    if(cached!=null)return cached;
+    File file=githubInfoFile(url);
+    if(!file.isFile())return null;
+    JSONObject saved=new JSONObject(new String(read(file,128*1024),StandardCharsets.UTF_8));
+    cached=new GithubInfo(saved.getString("name"),saved.getString("owner"),saved.getString("avatar"),saved.getString("description"),saved.getLong("stars"),saved.getLong("loadedAt"));
+    githubInfoCache.put(url,cached);
+    return cached;
+  }
+  private File githubInfoFile(String url)throws Exception{
+    return new File(new File(directory,"github-info"),cacheFile(url).getName());
   }
 
   synchronized void save(Document value)throws Exception{
@@ -255,6 +276,7 @@ final class MarketRepositoryClient {
 
   private File cacheFile(String raw)throws Exception{return new File(directory,MarketRepository.canonicalUrl(raw).substring("https://github.com/".length()).replace('/','_')+".json");}
   static byte[] httpGet(String raw,int limit)throws Exception{
+    if(GithubPublicTransport.supports(raw))return GithubPublicTransport.get(raw,limit);
     URL url=new URL(raw);if(!url.getProtocol().equals("https"))throw new IOException("仓库资源必须使用 HTTPS");
     HttpURLConnection connection=(HttpURLConnection)url.openConnection();connection.setConnectTimeout(12000);connection.setReadTimeout(20000);connection.setRequestProperty("User-Agent","LanzouPlus-Market");connection.setRequestProperty("Accept","application/vnd.github+json");
     try{int status=connection.getResponseCode();if(status!=200)throw new IOException("仓库读取失败（HTTP "+status+"）");try(InputStream input=connection.getInputStream()){return bytes(input,limit);}}finally{connection.disconnect();}

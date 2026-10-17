@@ -3,10 +3,13 @@ package cc.nkbr.lanzouplus;
 import android.net.Uri;
 import android.view.View;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import java.net.URI;
+import java.net.URLConnection;
+import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -48,6 +51,19 @@ final class MarketReadmeView {
     settings.setUseWideViewPort(true);
     settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
     view.setWebViewClient(new WebViewClient(){
+      @Override public WebResourceResponse shouldInterceptRequest(WebView web,WebResourceRequest request){
+        String url=request.getUrl().toString();
+        if(request.isForMainFrame()||!"GET".equals(request.getMethod())||!GithubPublicTransport.supports(url))return null;
+        try{
+          ByteArrayInputStream input=new ByteArrayInputStream(MarketRepositoryClient.httpGet(url,4*1024*1024));
+          String mime=URLConnection.guessContentTypeFromStream(input);
+          if(mime==null)mime=URLConnection.guessContentTypeFromName(request.getUrl().getPath());
+          return new WebResourceResponse(mime==null?"application/octet-stream":mime,null,input);
+        }catch(Exception error){
+          return new WebResourceResponse("text/plain","UTF-8",502,"Repository image unavailable",
+              java.util.Collections.emptyMap(),new ByteArrayInputStream(new byte[0]));
+        }
+      }
       @Override public boolean shouldOverrideUrlLoading(WebView web,WebResourceRequest request){
         if(!request.isForMainFrame())return false;
         Uri target=request.getUrl();

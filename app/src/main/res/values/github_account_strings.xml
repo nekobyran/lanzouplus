@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Public product OAuth application identifier. Enable Device Flow for this app. -->
+    <string name="github_oauth_client_id" translatable="false">Ov23li6GXUVr43k2o5uE</string>
+</resources>

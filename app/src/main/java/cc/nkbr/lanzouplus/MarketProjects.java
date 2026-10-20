@@ -43,11 +43,11 @@ final class MarketProjects implements MarketProjectEditor.Host {
     owner.pageKind = 6;
     owner.activeSource = null;
     owner.clearFolderTrail();
-    owner.systemBackAction = owner::showSources;
+    owner.systemBackAction = () -> owner.marketPages().showMarket(false);
     owner.primaryHeader("lzpmarket 仓库工程");
 
-    ImageButton back = owner.iconButton(R.drawable.ic_back, "返回列表");
-    back.setOnClickListener(v -> owner.showSources());
+    ImageButton back = owner.iconButton(R.drawable.ic_back, "返回市场");
+    back.setOnClickListener(v -> owner.marketPages().showMarket(false));
     owner.pageHeaderRow.addView(
         back, 0, new LinearLayout.LayoutParams(owner.dp(44), owner.dp(48)));
 
@@ -74,6 +74,20 @@ final class MarketProjects implements MarketProjectEditor.Host {
         if (files != null) {
           for (File file : files) projects.add(MarketProject.load(file));
         }
+        java.util.Map<String, String> associations = new java.util.HashMap<>();
+        try {
+          GithubAccountClient account = GithubAccountClient.production(owner);
+          GithubAccountClient.Profile profile = account.cachedProfile();
+          if (profile != null) {
+            for (MarketProject project : projects) {
+              GithubProjectPublisher.Association linked =
+                  GithubProjectPublisher.loadAssociation(owner, profile.login, project.id);
+              if (linked != null) associations.put(project.id, linked.repositoryUrl);
+            }
+          }
+        } catch (IOException ignored) {
+          // The local project list remains available while GitHub state is unavailable.
+        }
         owner.runOnUiThread(() -> {
           if (session != owner.navigationSession) return;
           if (projects.isEmpty()) {
@@ -85,22 +99,27 @@ final class MarketProjects implements MarketProjectEditor.Host {
             row.setPadding(owner.dp(10), owner.dp(8), owner.dp(8), owner.dp(8));
             String titleText = project.metadata.optString(
                 "title", project.metadata.optString("name"));
+            String repositoryUrl = project.metadata.optString(
+                "repositoryUrl", associations.getOrDefault(project.id, "")).trim();
             TextView title = owner.text(
                 titleText + "\n" + project.metadata.optString("version") + " · "
-                    + project.metadata.optString("publisher"),
+                    + project.metadata.optString("publisher")
+                    + (repositoryUrl.isEmpty() ? "" : "\n已绑定 GitHub 仓库"),
                 14,
                 owner.TEXT);
-            title.setMaxLines(2);
+            title.setMaxLines(3);
             title.setEllipsize(android.text.TextUtils.TruncateAt.END);
             row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
             ImageButton more = owner.iconButton(R.drawable.ic_more, "工程操作");
             row.addView(more, new LinearLayout.LayoutParams(owner.dp(48), owner.dp(48)));
             row.setClickable(true);
             row.setFocusable(true);
-            row.setContentDescription("打开仓库工程 " + titleText);
+            row.setContentDescription(
+                "打开仓库工程 " + titleText
+                    + (repositoryUrl.isEmpty() ? "" : "，已绑定 GitHub 仓库"));
             row.setOnClickListener(v -> edit(project));
-            more.setOnClickListener(v -> actions(project));
-            list.addView(row, new LinearLayout.LayoutParams(-1, owner.dp(72)));
+            more.setOnClickListener(v -> actions(project, repositoryUrl));
+            list.addView(row, new LinearLayout.LayoutParams(-1, owner.dp(82)));
           }
         });
       } catch (Exception error) {
@@ -140,25 +159,29 @@ final class MarketProjects implements MarketProjectEditor.Host {
     list.addView(account, params);
   }
 
-  private void actions(MarketProject project) {
+  private void actions(MarketProject project, String repositoryUrl) {
+    final java.util.List<String> labels = new ArrayList<>();
+    labels.add("编辑工程");
+    labels.add("发布或更新GitHub仓库");
+    if (!repositoryUrl.isEmpty()) labels.add("上传或更新市场资料");
+    labels.add("导出明文工程");
+    labels.add("创建标准仓库压缩包");
+    labels.add("删除工程");
     AlertDialog prompt = new AlertDialog.Builder(owner)
         .setTitle(project.metadata.optString("title"))
         .setItems(
-            new String[] {
-              "编辑工程",
-              "发布或更新GitHub仓库",
-              "导出明文工程",
-              "创建标准仓库压缩包",
-              "删除工程"
-            },
+            labels.toArray(new String[0]),
             (dialog, index) -> {
-              if (index == 0) {
+              String action = labels.get(index);
+              if ("编辑工程".equals(action)) {
                 edit(project);
-              } else if (index == 1) {
+              } else if ("发布或更新GitHub仓库".equals(action)) {
                 GithubProjectPublisher.publish(owner, project);
-              } else if (index == 2) {
+              } else if ("上传或更新市场资料".equals(action)) {
+                owner.marketPages().submitDialog(repositoryUrl);
+              } else if ("导出明文工程".equals(action)) {
                 export(project, false);
-              } else if (index == 3) {
+              } else if ("创建标准仓库压缩包".equals(action)) {
                 export(project, true);
               } else {
                 AlertDialog confirm = new AlertDialog.Builder(owner)

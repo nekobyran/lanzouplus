@@ -21,9 +21,38 @@ final class MarketRepositoryClient {
   static final int CACHE_LIMIT=SOURCE_LIMIT+README_LIMIT+METADATA_LIMIT+1024*1024;
   /** One catalog row: the canonical link plus the server's real snapshot state. */
   static final class CatalogEntry {
-    final String githubUrl,status,updatedAt,addedAt,description;
+    final String githubUrl,repositoryName,title,publisherName,description,version,versionMode;
+    final String status,updatedAt,addedAt;
     final long snapshotRevision;
-    CatalogEntry(String githubUrl,String status,long snapshotRevision,String updatedAt,String addedAt,String description){this.githubUrl=githubUrl;this.status=status;this.snapshotRevision=snapshotRevision;this.updatedAt=updatedAt;this.addedAt=addedAt;this.description=description;}
+    CatalogEntry(String githubUrl,String repositoryName,String title,String publisherName,
+        String description,String version,String versionMode,String status,long snapshotRevision,
+        String updatedAt,String addedAt){
+      this.githubUrl=githubUrl;this.repositoryName=repositoryName;this.title=title;
+      this.publisherName=publisherName;this.description=description;this.version=version;
+      this.versionMode=versionMode;this.status=status;this.snapshotRevision=snapshotRevision;
+      this.updatedAt=updatedAt;this.addedAt=addedAt;
+    }
+    static CatalogEntry parse(JSONObject value)throws Exception{
+      String url=MarketRepository.canonicalUrl(value.getString("githubUrl"));
+      String repositoryName=value.optString("repositoryName",url.substring(url.lastIndexOf('/')+1)).trim();
+      String title=value.optString("title",repositoryName).trim();
+      String publisherName=value.optString("publisherName",url.substring("https://github.com/".length(),url.lastIndexOf('/'))).trim();
+      String version=value.optString("version","").trim();
+      String mode=MarketRepository.isVersionMode(value.optString("versionMode",""))
+          ?value.optString("versionMode"):(version.isEmpty()?"":MarketRepository.detectedVersionMode(version));
+      return new CatalogEntry(url,repositoryName,title.isEmpty()?repositoryName:title,publisherName,
+          value.optString("description",""),version,mode==null?"":mode,value.optString("status"),
+          value.optLong("snapshotRevision",0),value.optString("updatedAt"),value.optString("addedAt"));
+    }
+    JSONObject json()throws Exception{
+      return new JSONObject().put("githubUrl",githubUrl).put("repositoryName",repositoryName)
+          .put("title",title).put("publisherName",publisherName).put("description",description)
+          .put("version",version).put("versionMode",versionMode).put("status",status)
+          .put("snapshotRevision",snapshotRevision).put("updatedAt",updatedAt).put("addedAt",addedAt);
+    }
+    String displayTitle(){return title==null||title.trim().isEmpty()?repositoryName:title.trim();}
+    String displayPublisher(){return publisherName==null?"":publisherName.trim();}
+    boolean hasVersion(){return !version.isEmpty()&&MarketRepository.isVersionMode(versionMode);}
   }
 
   /**
@@ -37,7 +66,7 @@ final class MarketRepositoryClient {
     final int offset,limit;
     Catalog(List<CatalogEntry> entries,long total,int offset,int limit){this.entries=entries;this.total=total;this.offset=offset;this.limit=limit;}
     List<String> urls(){List<String> out=new ArrayList<>();for(CatalogEntry entry:entries)out.add(entry.githubUrl);return out;}
-    String fingerprint(){StringBuilder out=new StringBuilder();for(CatalogEntry entry:entries)out.append(entry.githubUrl).append('\u0001').append(entry.snapshotRevision).append('\u0001').append(entry.updatedAt).append('\u0001').append(entry.status).append('\n');return out.toString();}
+    String fingerprint(){StringBuilder out=new StringBuilder();for(CatalogEntry entry:entries)out.append(entry.githubUrl).append('\u0001').append(entry.snapshotRevision).append('\u0001').append(entry.updatedAt).append('\u0001').append(entry.status).append('\u0001').append(entry.title).append('\u0001').append(entry.publisherName).append('\u0001').append(entry.description).append('\u0001').append(entry.version).append('\u0001').append(entry.versionMode).append('\n');return out.toString();}
   }
   interface Transport {
     byte[] get(String url,int limit)throws Exception;
@@ -226,6 +255,10 @@ final class MarketRepositoryClient {
     githubInfoCache.put(url,cached);
     return cached;
   }
+
+  GithubInfo cachedGithubInfo(String raw)throws Exception{
+    return loadGithubInfo(MarketRepository.canonicalUrl(raw));
+  }
   private File githubInfoFile(String url)throws Exception{
     return new File(new File(directory,"github-info"),cacheFile(url).getName());
   }
@@ -247,40 +280,91 @@ final class MarketRepositoryClient {
     JSONArray rows=value.getJSONArray("repositories");List<CatalogEntry> entries=new ArrayList<>();
     for(int i=0;i<rows.length();i++){
       JSONObject object=rows.getJSONObject(i);
-      entries.add(new CatalogEntry(MarketRepository.canonicalUrl(object.getString("githubUrl")),object.optString("status"),object.optLong("snapshotRevision",0),object.optString("updatedAt"),object.optString("addedAt"),object.optString("description")));
+      entries.add(CatalogEntry.parse(object));
     }
     return new Catalog(entries,value.optLong("total",entries.size()),value.optInt("offset",offset),value.optInt("limit",limit));
   }
 
-  static String submissionDescription(String raw)throws IOException{
-    String value=raw.trim();
-    if(value.isEmpty())throw new IOException("请填写仓库简介");
-    if(value.codePointCount(0,value.length())>30)throw new IOException("简介最多 30 字");
-    return value;
+  interface SubmissionProgress{void status(String message);}
+
+  static final class Submission{
+    final String githubUrl,title,repositoryName,publisherName,description,version,versionMode,operation;
+    final boolean submitted;
+    Submission(String githubUrl,String title,String repositoryName,String publisherName,
+        String description,String version,String versionMode,String operation,boolean submitted){
+      this.githubUrl=githubUrl;this.title=title;this.repositoryName=repositoryName;
+      this.publisherName=publisherName;this.description=description;this.version=version;
+      this.versionMode=versionMode;this.operation=operation;this.submitted=submitted;
+    }
+    boolean created(){return submitted&&"created".equals(operation);}
+    boolean updated(){return submitted&&"updated".equals(operation);}
+    boolean current(){return !submitted||"current".equals(operation);}
   }
 
-  String submit(String raw,String rawDescription)throws Exception{
-    String description=submissionDescription(rawDescription),url=MarketRepository.canonicalUrl(raw);
-    // Read every live catalog page before any repository validation or write request.
+  static String automaticSubmissionDescription(MarketRepository metadata){
+    String value=metadata.description==null?"":metadata.description.trim();
+    if(value.isEmpty())value=metadata.title.trim();
+    if(value.isEmpty())value=metadata.name;
+    if(value.codePointCount(0,value.length())<=30)return value;
+    return value.substring(0,value.offsetByCodePoints(0,30));
+  }
+
+  Submission upload(String raw,SubmissionProgress progress)throws Exception{
+    String url=MarketRepository.canonicalUrl(raw);
+    if(progress!=null)progress.status("正在更新市场清单并检查版本…");
+    CatalogEntry listed=null;
     for(int offset=0;;){
       Catalog page=catalog(offset,100);
-      for(CatalogEntry entry:page.entries)if(entry.githubUrl.equalsIgnoreCase(url))throw new IOException("该仓库已收录，无需重复上传");
+      for(CatalogEntry entry:page.entries)if(entry.githubUrl.equalsIgnoreCase(url)){listed=entry;break;}
+      if(listed!=null)break;
       offset+=page.entries.size();
       if(offset>=page.total)break;
       if(page.entries.isEmpty())throw new IOException("市场清单未读取完整，请重试");
     }
+    if(progress!=null)progress.status("正在读取 GitHub 工程资料…");
     String identity=url.substring("https://github.com/".length()),root=rawRoot(identity);
-    MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
+    MarketRepository metadata=new MarketRepository(new JSONObject(
+        new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
     metadata.validateSubmission(url);
-    String sourceJson=new String(MarketSourceCodec.decode(transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
+    String versionMode=MarketRepository.resolveVersionMode(metadata.versionMode,metadata.version);
+    String publisher=metadata.publisher.isEmpty()?ownerLogin(url):metadata.publisher;
+    String description=automaticSubmissionDescription(metadata);
+    if(listed!=null&&listed.hasVersion()){
+      if(MarketRepository.compareVersions(versionMode,metadata.version,listed.version)<=0){
+        return new Submission(url,metadata.title,metadata.name,publisher,description,
+            metadata.version,versionMode,"current",false);
+      }
+    }
+    if(progress!=null)progress.status("版本有更新，正在验证源与 README…");
+    String sourceJson=new String(MarketSourceCodec.decode(
+        transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
     if(LanzouCore.parseSourceDocument(sourceJson).isEmpty())throw new IOException("仓库至少需要一个有效源");
     String readme=new String(transport.get(root+metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
     if(readme.trim().isEmpty())throw new IOException("仓库 README 不能为空");
     if(!metadata.icon.isEmpty())transport.get(metadata.assetUrl(root,metadata.icon),2*1024*1024);
     if(!metadata.publisherAvatar.isEmpty())transport.get(metadata.assetUrl(root,metadata.publisherAvatar),2*1024*1024);
-    JSONObject preflight=transport.post(MARKET_ORIGIN+"/api/v1/repositories/preflight",new JSONObject().put("githubUrl",url));
+    if(progress!=null)progress.status("正在申请市场检测码…");
+    JSONObject preflight=transport.post(MARKET_ORIGIN+"/api/v1/repositories/preflight",
+        new JSONObject().put("githubUrl",url));
     String code=preflight.getString("verificationCode");
-    transport.post(MARKET_ORIGIN+"/api/v1/repositories",new JSONObject().put("githubUrl",url).put("verificationCode",code).put("description",description));return url;
+    if(progress!=null)progress.status(listed==null?"正在上传新市场资料…":"正在更新市场目录…");
+    JSONObject saved=transport.post(MARKET_ORIGIN+"/api/v1/repositories",
+        new JSONObject().put("githubUrl",url).put("verificationCode",code)
+            .put("description",description));
+    String operation=saved.optString("operation",saved.optBoolean("created")?"created":"updated");
+    if("current".equals(operation)){
+      return new Submission(url,metadata.title,metadata.name,publisher,description,
+          metadata.version,versionMode,"current",false);
+    }
+    return new Submission(url,saved.optString("title",metadata.title),
+        saved.optString("repositoryName",metadata.name),saved.optString("publisherName",publisher),
+        saved.optString("description",description),saved.optString("version",metadata.version),
+        saved.optString("versionMode",versionMode),operation,true);
+  }
+
+  private static String ownerLogin(String repositoryUrl){
+    String identity=repositoryUrl.substring("https://github.com/".length());
+    return identity.substring(0,identity.indexOf('/'));
   }
 
   private static JSONObject httpPost(String endpoint,JSONObject value)throws Exception{

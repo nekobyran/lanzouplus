@@ -165,7 +165,8 @@ final class SourceDestinationPopup {
     pathSearch.setImeOptions(EditorInfo.IME_ACTION_GO);
     searchRow.addView(pathSearch,new LinearLayout.LayoutParams(0,SharedPopupSurface.dp(host,48),1));
     Button chooseTyped=new Button(host);chooseTyped.setText("一键选择");chooseTyped.setTextSize(12);
-    chooseTyped.setTextColor(theme.accent);chooseTyped.setAllCaps(false);chooseTyped.setContentDescription("一键选择输入路径");
+    chooseTyped.setTextColor(theme.accent);chooseTyped.setAllCaps(false);
+    android.graphics.drawable.GradientDrawable chooseShape=SharedPopupSurface.solid(theme.surface,SharedPopupSurface.dp(host,14));chooseShape.setStroke(SharedPopupSurface.dp(host,1),theme.accent);chooseTyped.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(android.graphics.Color.argb(40,android.graphics.Color.red(theme.accent),android.graphics.Color.green(theme.accent),android.graphics.Color.blue(theme.accent))),chooseShape,SharedPopupSurface.solid(android.graphics.Color.WHITE,SharedPopupSurface.dp(host,14))));chooseTyped.setElevation(0);chooseTyped.setStateListAnimator(null);chooseTyped.setContentDescription("一键选择输入路径");
     searchRow.addView(chooseTyped,new LinearLayout.LayoutParams(-2,SharedPopupSurface.dp(host,48)));
     panel.addView(searchRow,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,52)));
 

@@ -11,6 +11,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -269,6 +270,15 @@ final class GithubProjectPublisher {
                         }));
             } catch (Exception failure) {
                 result = new Outcome("", 0, 0, safeMessage(failure), false, false);
+            }
+            if(result.refUpdated){
+                try{
+                    project.metadata.put("repositoryUrl",result.repositoryUrl);
+                    project.save(new File(new File(owner.getFilesDir(),"market-projects"),project.id+".json"));
+                }catch(Exception bindingFailure){
+                    result=new Outcome(result.repositoryUrl,result.preparedFiles,result.expectedFiles,
+                            "GitHub 已发布，但本机工程绑定保存失败，请重新打开工程确认",result.newRepository,true);
+                }
             }
             Outcome resultOnUi = result;
             owner.runOnUiThread(() -> {
@@ -605,8 +615,7 @@ final class GithubProjectPublisher {
         panel.addView(owner.text(message, 13, owner.TEXT),
                 new LinearLayout.LayoutParams(-1, -2));
         if (result.hasRepository()) {
-            Button copy = new Button(owner);
-            copy.setText("复制仓库地址");
+            Button copy = owner.button("复制仓库地址");
             copy.setOnClickListener(v -> {
                 ClipboardManager clipboard =
                         (ClipboardManager) owner.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -615,13 +624,11 @@ final class GithubProjectPublisher {
                 owner.showNotice("仓库地址已复制", false);
             });
             panel.addView(copy, new LinearLayout.LayoutParams(-1, -2));
-            Button open = new Button(owner);
-            open.setText("在浏览器打开仓库");
+            Button open = owner.button("在浏览器打开仓库");
             open.setOnClickListener(v -> GithubAccountUi.openBrowser(owner, result.repositoryUrl));
             panel.addView(open, new LinearLayout.LayoutParams(-1, -2));
             if (result.refUpdated) {
-                Button add = new Button(owner);
-                add.setText("添加为列表源（不提交市场）");
+                Button add = owner.button("添加为列表源（不提交市场）");
                 add.setOnClickListener(v -> addAsSource(owner, navigation, result.repositoryUrl));
                 panel.addView(add, new LinearLayout.LayoutParams(-1, -2));
             }

@@ -8,6 +8,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.*;
+import java.io.IOException;
 import java.util.*;
 
 /** The market is a full destination. GridView only binds visible repository cards. */
@@ -22,11 +23,12 @@ final class MarketCatalogView {
 
   private static final class Card {
     final String url;
+    MarketRepositoryClient.CatalogEntry entry;
     boolean loading;
     MarketRepositoryClient.Document document;
     MarketRepositoryClient.GithubInfo github;
     String error="";
-    Card(String url){this.url=url;}
+    Card(MarketRepositoryClient.CatalogEntry entry){this.entry=entry;url=entry.githubUrl;}
   }
   private static final class Holder {
     ImageView icon,avatar;
@@ -43,11 +45,15 @@ final class MarketCatalogView {
     grid.setAdapter(adapter);
     grid.setOnItemClickListener((parent,view,position,id)->showDetails(cards.get(position)));
   }
-  void render(List<String> urls){
+  void render(List<MarketRepositoryClient.CatalogEntry> entries){
     if(session!=owner.navigationSession||owner.pageKind!=5)return;
     Map<String,Card> before=new HashMap<>();for(Card card:cards)before.put(card.url,card);
     cards.clear();
-    for(String url:urls)cards.add(before.containsKey(url)?before.get(url):new Card(url));
+    for(MarketRepositoryClient.CatalogEntry entry:entries){
+      Card card=before.get(entry.githubUrl);
+      if(card==null)card=new Card(entry);else card.entry=entry;
+      cards.add(card);
+    }
     summary.setText(cards.isEmpty()?"市场暂无仓库，可上传 GitHub 仓库链接":"资源仓库 · "+cards.size()+" 个");
     adapter.notifyDataSetChanged();
   }
@@ -61,8 +67,12 @@ final class MarketCatalogView {
       MarketRepositoryClient.GithubInfo github=null;
       MarketRepositoryClient.Document document=null;
       String error="";
-      try{github=owner.core.marketRepositories().githubInfo(card.url,force);}catch(Exception failure){error=owner.friendlyError(failure);}
-      try{document=owner.core.marketRepositories().preview(card.url,force);}catch(Exception failure){if(error.isEmpty())error=owner.friendlyError(failure);}
+      try{github=owner.core.marketRepositories().cachedGithubInfo(card.url);}catch(Exception ignored){}
+      if(github==null||force)try{github=owner.core.marketRepositories().githubInfo(card.url,force);}catch(Exception failure){error=owner.friendlyError(failure);}
+      try{document=owner.core.marketRepositories().cached(card.url);}catch(Exception ignored){}
+      if(document==null||force||document.metadata.icon.isEmpty()){
+        try{document=owner.core.marketRepositories().preview(card.url,force);}catch(Exception failure){if(error.isEmpty())error=owner.friendlyError(failure);}
+      }
       MarketRepositoryClient.GithubInfo found=github;
       MarketRepositoryClient.Document preview=document;
       String warning=error;
@@ -113,14 +123,13 @@ final class MarketCatalogView {
         row.setTag(holder);
       }
       Card card=cards.get(position);
-      String identity=card.url.substring(card.url.lastIndexOf('/')+1);
-      holder.name.setText(card.github==null?identity:card.github.name);
-      String publisher=card.document!=null?card.document.sourcePublisher():card.github==null?card.url.substring("https://github.com/".length(),card.url.lastIndexOf('/')):card.github.owner;
+      holder.name.setText(card.entry.displayTitle());
+      String publisher=card.entry.displayPublisher();
+      if(publisher.isEmpty()&&card.github!=null)publisher=card.github.owner;
       holder.publisher.setText(publisher);
       holder.stars.setText(card.github==null||card.github.stars<0?"☆ —":"★ "+card.github.stars);
-      String description=card.github==null?"":card.github.description;
-      if(description.isEmpty()&&card.document!=null)description=card.document.metadata.description;
-      if(description.isEmpty())description=card.error.isEmpty()?"读取仓库简介中…":"信息暂时无法读取";
+      String description=card.entry.description;
+      if(description.isEmpty())description=card.error.isEmpty()?"暂无简介":"图标信息暂时无法读取";
       holder.description.setText(description);
       holder.icon.setTag(null);holder.avatar.setTag(null);holder.icon.setImageResource(R.drawable.ic_folder);
       holder.avatar.setImageResource(R.drawable.ic_globe);
@@ -142,14 +151,20 @@ final class MarketCatalogView {
     panel.setPadding(owner.dp(8),owner.dp(4),owner.dp(8),0);
     TextView status=owner.text("正在读取 GitHub README…",12,owner.MUTED);
     status.setPadding(owner.dp(12),0,owner.dp(12),owner.dp(8));
-    panel.addView(status,new LinearLayout.LayoutParams(-1,-2));
+    Button starButton=owner.toolbarTextButton("Star");
+    starButton.setTextSize(12);
+    starButton.setContentDescription("Star GitHub 仓库");
+    LinearLayout statusRow=new LinearLayout(owner);statusRow.setGravity(Gravity.CENTER_VERTICAL);
+    statusRow.addView(status,new LinearLayout.LayoutParams(0,-2,1));
+    statusRow.addView(starButton,new LinearLayout.LayoutParams(owner.dp(128),owner.dp(44)));
+    panel.addView(statusRow,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     FrameLayout frame=new FrameLayout(owner);
     ProgressBar progress=new ProgressBar(owner);
     FrameLayout.LayoutParams progressParams=new FrameLayout.LayoutParams(owner.dp(40),owner.dp(40),Gravity.CENTER);
     frame.addView(progress,progressParams);
     int height=Math.min(owner.dp(480),Math.max(owner.dp(96),owner.safeContentHeight()-owner.dp(190)));
     panel.addView(frame,new LinearLayout.LayoutParams(-1,height));
-    String name=card.github==null?card.url.substring(card.url.lastIndexOf('/')+1):card.github.name;
+    String name=card.entry.displayTitle();
     AlertDialog dialog=new AlertDialog.Builder(owner).setTitle(name)
         .setView(panel).setNeutralButton("关闭",null)
         .setNegativeButton("删除",null).setPositiveButton("下载",null).create();
@@ -157,9 +172,13 @@ final class MarketCatalogView {
     final Models.Source[] installed={null};
     final Button[] download={null},delete={null};
     final boolean[] busy={false};
+    final boolean[] starBusy={false};
+    final Boolean[] starred={null};
+    final long[] stars={card.github==null?-1:card.github.stars};
     final android.webkit.WebView[] web={null};
     dialog.setOnDismissListener(d->{if(web[0]!=null){web[0].stopLoading();web[0].destroy();web[0]=null;}});
     final Runnable[] updateButtons={null};
+    updateStarButton(starButton,starred[0],stars[0],starBusy[0]);
     updateButtons[0]=()->{
       if(download[0]==null||!dialog.isShowing())return;
       boolean has=installed[0]!=null;
@@ -209,6 +228,58 @@ final class MarketCatalogView {
         owner.showRounded(confirm);
         confirm.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(owner.darkMode?Color.rgb(255,180,171):Color.rgb(179,38,30));
       });
+      starButton.setOnClickListener(v->{
+        if(starBusy[0])return;
+        GithubAccountClient account=GithubAccountClient.production(owner);
+        starBusy[0]=true;updateStarButton(starButton,starred[0],stars[0],true);
+        owner.io.execute(()->{
+          try{
+            if(!account.hasUsableSession()){
+              owner.runOnUiThread(()->{
+                starBusy[0]=false;updateStarButton(starButton,starred[0],stars[0],false);
+                if(!dialog.isShowing())return;
+                owner.showNotice("请先登录 GitHub，再为仓库点亮 Star",false);
+                GithubAccountUi.signIn(owner,()->{
+                  owner.io.execute(()->{
+                    try{
+                      boolean known=account.starred(card.url);
+                      MarketRepositoryClient.GithubInfo refreshed=owner.core.marketRepositories().githubInfo(card.url,true);
+                      owner.runOnUiThread(()->{
+                        if(!dialog.isShowing())return;
+                        starred[0]=known;stars[0]=refreshed.stars;
+                        updateStarButton(starButton,starred[0],stars[0],false);
+                        starButton.setContentDescription("Star GitHub 仓库");
+                      });
+                    }catch(Exception failure){
+                      owner.runOnUiThread(()->{
+                        if(!dialog.isShowing())return;
+                        updateStarButton(starButton,null,stars[0],false);
+                        owner.showNotice("登录成功，但暂时无法读取 Star 状态",true);
+                      });
+                    }
+                  });
+                });
+              });
+              return;
+            }
+            boolean next=starred[0]==null||!starred[0];
+            account.setRepositoryStar(card.url,next);
+            MarketRepositoryClient.GithubInfo refreshed=owner.core.marketRepositories().githubInfo(card.url,true);
+            owner.runOnUiThread(()->{
+              if(!dialog.isShowing())return;
+              starred[0]=next;stars[0]=refreshed.stars;starBusy[0]=false;
+              updateStarButton(starButton,starred[0],stars[0],false);
+              owner.showNotice(next?"已 Star 此 GitHub 仓库":"已取消 Star",false);
+            });
+          }catch(Exception error){
+            owner.runOnUiThread(()->{
+              if(!dialog.isShowing())return;
+              starBusy[0]=false;updateStarButton(starButton,starred[0],stars[0],false);
+              owner.showNotice(error.getMessage()==null?"GitHub Star 操作失败":error.getMessage(),true);
+            });
+          }
+        });
+      });
     });
     owner.showRounded(dialog);
     owner.io.execute(()->{
@@ -218,10 +289,22 @@ final class MarketCatalogView {
         MarketRepositoryClient.GithubInfo info=card.github;
         if(info==null)try{info=owner.core.marketRepositories().githubInfo(card.url,force);}catch(Exception ignored){}
         MarketRepositoryClient.GithubInfo identity=info;
+        Boolean isStarred=null;boolean signedIn=false;
+        try{
+          GithubAccountClient account=GithubAccountClient.production(owner);
+          GithubAccountClient.Profile profile=account.cachedProfile();
+          signedIn=profile!=null&&account.hasUsableSession();
+          if(signedIn)isStarred=account.starred(card.url);
+        }catch(IOException ignored){}
+        Boolean knownStar=isStarred;boolean knownSignedIn=signedIn;
         owner.runOnUiThread(()->{
           if(!dialog.isShowing())return;
           document[0]=loaded;installed[0]=current;status.setText(loaded.sourcePublisher()+
-              (identity==null?"":" · ★ "+identity.stars)+" · "+loaded.metadata.version);
+              " · "+loaded.metadata.version);
+          if(identity!=null)stars[0]=identity.stars;
+          starred[0]=knownStar;
+          starButton.setContentDescription(knownSignedIn?"Star GitHub 仓库":"登录 GitHub 后 Star 仓库");
+          updateStarButton(starButton,starred[0],stars[0],false);
           frame.removeAllViews();
           web[0]=MarketReadmeView.create(owner,loaded.readme,loaded.rawRoot,loaded.githubUrl);
           frame.addView(web[0],
@@ -246,5 +329,20 @@ final class MarketCatalogView {
     try{return !document.metadata.versionMode.equals(source.repositoryVersionMode)||
         MarketRepository.compareVersions(document.metadata.versionMode,document.metadata.version,source.repositoryVersion)>0;
     }catch(Exception ignored){return false;}
+  }
+
+  private static void updateStarButton(
+      Button button, Boolean starred, long stars, boolean busy) {
+    String count = stars < 0 ? "" : " · " + stars;
+    if (busy) {
+      button.setText("处理中…");
+      button.setEnabled(false);
+    } else if (starred == null) {
+      button.setText("登录后 Star" + count);
+      button.setEnabled(true);
+    } else {
+      button.setText((starred ? "★ 已 Star" : "☆ Star") + count);
+      button.setEnabled(true);
+    }
   }
 }

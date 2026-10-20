@@ -86,4 +86,35 @@ final class MarketRepository {
     }
     return Integer.compare(left.length,right.length);
   }
+
+  /**
+   * Keeps a valid existing mode when the edited version still belongs to it,
+   * otherwise identifies the contract mode from the value itself.
+   */
+  static String resolveVersionMode(String requested,String version)throws IOException{
+    String value=version==null?"":version.trim();
+    String raw=requested==null?"":requested.trim();
+    if(isVersionMode(raw)&&matchesVersion(raw,value))return raw;
+    String detected=detectedVersionMode(value);
+    if(detected==null)throw new IOException("版本号需为 1.2.3、2026.10.18 或递增整数");
+    return detected;
+  }
+
+  static String detectedVersionMode(String version){
+    String value=version==null?"":version.trim();
+    if(value.matches("[0-9]+"))return "integer";
+    if(value.replace('-','.').replace('_','.')
+        .matches("[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}(?:\\.[0-9]+)?"))return "date";
+    if(value.matches("[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?"))
+      return "semantic";
+    return null;
+  }
+
+  static boolean isVersionMode(String mode){
+    return "semantic".equals(mode)||"date".equals(mode)||"integer".equals(mode);
+  }
+
+  static boolean matchesVersion(String mode,String value){
+    try{compareVersions(mode,value,value);return true;}catch(IOException invalid){return false;}
+  }
 }

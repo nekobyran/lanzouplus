@@ -12,9 +12,6 @@ import org.json.*;
 final class MarketPages {
   final MainActivity owner;
   MarketPages(MainActivity owner){this.owner=owner;}
-  void addSourcePageActions(){
-    ImageButton projects=owner.iconButton(R.drawable.ic_edit,"仓库工程");projects.setOnClickListener(v->showProjects());owner.pageHeaderRow.addView(projects,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
-  }
   void showRepository(Models.Source repository,boolean refresh){
     boolean entering=!repository.url.equals(owner.sourcePageRepository);if(owner.pageKind==1&&entering)owner.retainSourceListPage();if(entering)owner.selectedSourceCategories.clear();
     Runnable returnToSources=()->{if(!owner.restoreSourceListPage())owner.showSources();};
@@ -40,21 +37,23 @@ final class MarketPages {
   private void publishSources(int session,GridLayout grid,List<Models.Source> target,List<Models.Source> values){owner.runOnUiThread(()->{if(session!=owner.navigationSession||owner.sourceGrid!=grid)return;target.clear();target.addAll(values);owner.sourceDataRevision++;owner.rebuildCategoryMemberships(target);owner.renderSourceCategories(target);owner.renderSources(grid,target,owner.sourceFilter.getText().toString(),owner.sourceHeading);MainActivity.SourceListPageState restore=owner.pendingSourceListRestore;if(restore!=null){owner.pendingSourceListRestore=null;owner.restoreFolderScrollBeforeDraw(owner.pageScroll,restore.pageScroll.getScrollY());}});}
 
   void showMarket(boolean force){
-    owner.pageDirection=1;owner.primaryBase(4);owner.pageKind=5;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=owner::navigateHome;owner.primaryHeader("资源市场");
-    ImageButton submit=owner.iconButton(R.drawable.ic_add,"上传 GitHub 仓库链接");submit.setOnClickListener(v->submitDialog());owner.pageHeaderRow.addView(submit,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
+    owner.pageDirection=1;owner.primaryBase(4);owner.pageKind=5;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=owner::navigateHome;owner.primaryHeader("市场");
+    ImageButton submit=owner.iconButton(R.drawable.ic_add,"上传 GitHub 仓库链接");submit.setOnClickListener(v->submitDialog(null));owner.pageHeaderRow.addView(submit,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
+    ImageButton projects=owner.iconButton(R.drawable.ic_edit,"仓库工程");projects.setOnClickListener(v->showProjects());owner.pageHeaderRow.addView(projects,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
+    ImageButton management=owner.iconButton(R.drawable.ic_settings,"云盘文件管理");management.setOnClickListener(v->owner.cloudManagement().show());owner.pageHeaderRow.addView(management,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton reload=owner.iconButton(R.drawable.ic_refresh,"更新市场");reload.setOnClickListener(v->showMarket(true));owner.pageHeaderRow.addView(reload,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     TextView status=owner.text("正在读取市场…",13,owner.MUTED);owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(28)));
     GridView grid=new GridView(owner);owner.root.addView(grid,new LinearLayout.LayoutParams(-1,0,1));
     MarketCatalogView catalog=new MarketCatalogView(owner,grid,status,force);int session=owner.navigationSession;
     owner.io.execute(()->{try{
       File file=new File(owner.getFilesDir(),"market-index.json");MarketIndex cached=readIndex(file);
-      if(!cached.urls.isEmpty())owner.runOnUiThread(()->catalog.render(cached.urls));
-      List<String> latest=new ArrayList<>();StringBuilder fingerprint=new StringBuilder();
-      for(int offset=0;;offset+=50){MarketRepositoryClient.Catalog page=owner.core.marketRepositories().catalog(offset,50);latest.addAll(page.urls());fingerprint.append(page.fingerprint());if(page.entries.size()<50)break;}
+      if(!cached.entries.isEmpty())owner.runOnUiThread(()->catalog.render(cached.entries));
+      List<MarketRepositoryClient.CatalogEntry> latest=new ArrayList<>();StringBuilder fingerprint=new StringBuilder();
+      for(int offset=0;;offset+=50){MarketRepositoryClient.Catalog page=owner.core.marketRepositories().catalog(offset,50);latest.addAll(page.entries);fingerprint.append(page.fingerprint());if(page.entries.size()<50)break;}
       boolean auto=owner.getSharedPreferences("market",Context.MODE_PRIVATE).getBoolean("auto_update",true);
       String current=fingerprint.toString();
-      Runnable apply=()->{owner.io.execute(()->{try{JSONObject saved=new JSONObject().put("fingerprint",current).put("urls",new JSONArray(latest));try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));}}catch(Exception error){owner.runOnUiThread(()->owner.showNotice("市场缓存保存失败",true));}});catalog.render(latest);};
-      owner.runOnUiThread(()->{if(session!=owner.navigationSession)return;if(auto||force||cached.urls.isEmpty())apply.run();else if(!cached.fingerprint.equals(current)){AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("资源市场有更新").setMessage("已发现新的仓库目录，现在更新？").setNegativeButton("稍后",null).setPositiveButton("更新",(dialog,which)->apply.run()).create();owner.showRounded(prompt);}});
+      Runnable apply=()->{owner.io.execute(()->{try{JSONArray rows=new JSONArray();for(MarketRepositoryClient.CatalogEntry entry:latest)rows.put(entry.json());JSONObject saved=new JSONObject().put("fingerprint",current).put("repositories",rows);try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));}}catch(Exception error){owner.runOnUiThread(()->owner.showNotice("市场缓存保存失败",true));}});catalog.render(latest);};
+      owner.runOnUiThread(()->{if(session!=owner.navigationSession)return;if(auto||force||cached.entries.isEmpty())apply.run();else if(!cached.fingerprint.equals(current)){AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("市场有更新").setMessage("已发现新的仓库目录，现在更新？").setNegativeButton("稍后",null).setPositiveButton("更新",(dialog,which)->apply.run()).create();owner.showRounded(prompt);}});
     }catch(Exception error){owner.runOnUiThread(()->{if(session==owner.navigationSession){status.setText("市场暂时无法更新");owner.showNotice(owner.friendlyError(error),true);}});}});
   }
   /**
@@ -62,33 +61,49 @@ final class MarketPages {
    * server re-snapshot (every seven days) is visible even when the URL list is unchanged.
    */
   private static final class MarketIndex {
-    final String fingerprint;final List<String> urls;
-    MarketIndex(String fingerprint,List<String> urls){this.fingerprint=fingerprint;this.urls=urls;}
+    final String fingerprint;final List<MarketRepositoryClient.CatalogEntry> entries;
+    MarketIndex(String fingerprint,List<MarketRepositoryClient.CatalogEntry> entries){this.fingerprint=fingerprint;this.entries=entries;}
   }
   private MarketIndex readIndex(File file)throws Exception{
-    List<String> urls=new ArrayList<>();if(!file.isFile())return new MarketIndex("",urls);
+    List<MarketRepositoryClient.CatalogEntry> entries=new ArrayList<>();
+    if(!file.isFile())return new MarketIndex("",entries);
     String raw;try(InputStream input=new FileInputStream(file)){raw=new String(MarketRepositoryClient.bytes(input,512*1024),java.nio.charset.StandardCharsets.UTF_8);}
     JSONObject value=new JSONObject(raw);
-    JSONArray array=value.getJSONArray("urls");for(int i=0;i<array.length();i++)urls.add(array.getString(i));
-    return new MarketIndex(value.optString("fingerprint"),urls);
+    JSONArray array=value.optJSONArray("repositories");
+    if(array!=null)for(int i=0;i<array.length();i++)entries.add(MarketRepositoryClient.CatalogEntry.parse(array.getJSONObject(i)));
+    return new MarketIndex(value.optString("fingerprint"),entries);
   }
-  void submitDialog(){
+  void submitDialog(String initialUrl){
     LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(20),owner.dp(8),owner.dp(20),owner.dp(8));
-    EditText input=owner.sourceInput("https://github.com/发布者/lzpmarket-名称",android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);panel.addView(input,new LinearLayout.LayoutParams(-1,owner.dp(56)));
-    EditText description=owner.sourceInput("仓库简介（必填，最多 30 字）",android.text.InputType.TYPE_CLASS_TEXT);description.setContentDescription("仓库简介，最多30字");
-    description.setFilters(new android.text.InputFilter[]{(source,start,end,dest,dstart,dend)->{
-      String inserted=source.subSequence(start,end).toString(),before=dest.subSequence(0,dstart).toString(),after=dest.subSequence(dend,dest.length()).toString();
-      int available=30-before.codePointCount(0,before.length())-after.codePointCount(0,after.length());
-      if(inserted.codePointCount(0,inserted.length())<=available)return null;
-      return available<=0?"":inserted.substring(0,inserted.offsetByCodePoints(0,available));
-    }});panel.addView(description,new LinearLayout.LayoutParams(-1,owner.dp(56)));
-    TextView count=owner.text("0 / 30 字 · 上传前会更新市场并查重",12,owner.MUTED);panel.addView(count);
-    description.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){String value=s.toString();count.setText(value.codePointCount(0,value.length())+" / 30 字 · 上传前会更新市场并查重");}public void afterTextChanged(android.text.Editable e){}});
-    AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("检测并上传仓库链接").setView(panel).setNegativeButton("取消",null).setPositiveButton("检测并上传",null).create();int session=owner.navigationSession;
+    TextView help=owner.text("只需填写标准 GitHub 仓库链接。展示名称、仓库名、发布者和简介会从仓库自动读取。",12,owner.MUTED);
+    help.setPadding(0,0,0,owner.dp(8));panel.addView(help);
+    EditText input=owner.sourceInput("https://github.com/发布者/lzpmarket-名称",android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);
+    input.setContentDescription("GitHub 仓库链接");
+    if(initialUrl!=null&&!initialUrl.trim().isEmpty())input.setText(initialUrl.trim());
+    panel.addView(input,new LinearLayout.LayoutParams(-1,owner.dp(56)));
+    TextView status=owner.text("链接已收录时会比较远端版本，仅上传更高版本。",12,owner.MUTED);
+    status.setPadding(0,owner.dp(6),0,0);panel.addView(status);
+    AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("上传到市场").setView(panel).setNegativeButton("取消",null).setPositiveButton("检测并上传",null).create();int session=owner.navigationSession;
     prompt.setOnShowListener(dialog->prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
-      final String summary;try{summary=MarketRepositoryClient.submissionDescription(description.getText().toString());}catch(Exception error){description.setError(error.getMessage());return;}
-      Button action=prompt.getButton(AlertDialog.BUTTON_POSITIVE);action.setEnabled(false);action.setText("更新清单并检测…");final String link=input.getText().toString();
-      owner.io.execute(()->{try{owner.core.marketRepositories().submit(link,summary);owner.runOnUiThread(()->{if(owner.navigationSession!=session)return;prompt.dismiss();owner.showNotice("仓库与简介已提交市场",false);showMarket(true);});}catch(Exception error){owner.runOnUiThread(()->{if(owner.navigationSession!=session)return;action.setEnabled(true);action.setText("检测并上传");input.setError(owner.friendlyError(error));});}});
+      Button action=prompt.getButton(AlertDialog.BUTTON_POSITIVE);action.setEnabled(false);action.setText("处理中…");final String link=input.getText().toString();
+      owner.io.execute(()->{try{
+        MarketRepositoryClient.Submission result=owner.core.marketRepositories().upload(link,message->owner.runOnUiThread(()->{
+          if(owner.navigationSession==session&&prompt.isShowing())status.setText(message);
+        }));
+        owner.runOnUiThread(()->{
+          if(owner.navigationSession!=session)return;
+          prompt.dismiss();
+          String outcome=result.current()?"仓库已是最新版本，未重复提交":
+              result.created()?"市场资料已创建：":"市场资料已更新：";
+          owner.showNotice(outcome+result.title+" · "+result.version,false);
+          if(!result.current())showMarket(true);
+        });
+      }catch(Exception error){owner.runOnUiThread(()->{
+        if(owner.navigationSession!=session)return;
+        action.setEnabled(true);action.setText("检测并上传");
+        status.setText(owner.friendlyError(error));
+        input.setError(owner.friendlyError(error));
+      });}});
     }));owner.showRounded(prompt);
   }
   void showProjects(){new MarketProjects(owner).show();}

@@ -170,6 +170,7 @@ final class SharedPopupSurface {
       if (positive != null) positive.setTextColor(theme.accent);
       android.widget.Button neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
       if (neutral != null) neutral.setTextColor(theme.accent);
+      if(host instanceof MainActivity)AppButtons.styleDialogButtons((MainActivity)host,dialog);
       if (after != null) after.run();
       HistoryPopupNavigation.prepareEntrance(host,dialog);
     }

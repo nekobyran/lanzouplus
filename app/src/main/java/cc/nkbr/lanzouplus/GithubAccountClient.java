@@ -352,6 +352,32 @@ final class GithubAccountClient {
         return apiWithToken(method, path, payload, active.accessToken);
     }
 
+    /** Reads the authenticated user's Star state; GitHub answers 204 or 404 without JSON. */
+    boolean starred(String repositoryUrl) throws IOException {
+        String path = userStarPath(repositoryUrl);
+        Session active = sessionForRequest();
+        Response result = send("GET", API_URL + path, null, active.accessToken);
+        if (result.status == 204) return true;
+        if (result.status == 404) return false;
+        throw apiFailure(result);
+    }
+
+    /** Stars or unstars one public repository; success is the documented empty 204 response. */
+    void setRepositoryStar(String repositoryUrl, boolean starred) throws IOException {
+        String path = userStarPath(repositoryUrl);
+        Session active = sessionForRequest();
+        Response result = send(starred ? "PUT" : "DELETE", API_URL + path, null,
+                active.accessToken);
+        if (result.status == 204) return;
+        throw apiFailure(result);
+    }
+
+    private static String userStarPath(String repositoryUrl) throws IOException {
+        String identity = MarketRepository.canonicalUrl(repositoryUrl)
+                .substring("https://github.com/".length());
+        return "/user/starred/" + identity;
+    }
+
     private Session sessionForRequest() throws IOException {
         synchronized (SESSION_LOCK) {
             Session saved = storedSession();

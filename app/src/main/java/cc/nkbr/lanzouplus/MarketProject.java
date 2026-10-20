@@ -257,6 +257,8 @@ final class MarketProject {
             resolveAssets(reader);
         }
         JSONObject header = new JSONObject(metadata.toString());
+        // The repository link is a local project binding, not published metadata.
+        header.remove("repositoryUrl");
         header.put("sources", SOURCES_ENTRY);
         // Strict published validation runs after resolution: metadata images must now be
         // assets/<name> or HTTPS, so a leftover local path fails instead of shipping.

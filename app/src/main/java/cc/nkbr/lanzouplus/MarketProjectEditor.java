@@ -27,17 +27,8 @@ final class MarketProjectEditor {
     void failed(String message);
   }
 
-  private static final String[] MODE_VALUES = {"semantic", "date", "integer"};
-  private static final String[] MODE_LABELS = {
-    "语义化版本（主.次.修订）",
-    "日期版本（年.月.日）",
-    "整数版本（递增编号）"
-  };
-  private static final String[] MODE_HELP = {
-    "格式：1.2.3，可追加 -alpha.1 等预发布后缀。",
-    "格式：2026.10.17 或 2026-10-17，可追加修订号。",
-    "格式：只填写递增整数，例如 12。"
-  };
+  private static final String VERSION_HELP =
+      "自动识别 1.2.3、2026.10.18 或递增整数；预发布后缀仍沿用元数据合同。";
 
   private static Draft retainedDraft;
   private static java.lang.ref.WeakReference<MarketProjectEditor> activeEditor;
@@ -63,7 +54,7 @@ final class MarketProjectEditor {
       name = meta.optString("name", "lzpmarket-");
       title = meta.optString("title", "");
       version = meta.optString("version", "1.0.0");
-      versionMode = normalizedMode(meta.optString("versionMode", "semantic"));
+      versionMode = versionMode(meta.optString("versionMode", ""), version);
       publisher = meta.optString("publisher", "");
       description = meta.optString("description", "");
       icon = meta.optString("icon", "");
@@ -77,9 +68,7 @@ final class MarketProjectEditor {
   private final Draft draft;
   private EditText nameInput;
   private EditText versionInput;
-  private MainActivity.SearchCategoryPicker modePicker;
   private EditText iconInput;
-  private TextView modeHelp;
   private TextView pathSummary;
   private Button choosePathsButton;
   private Button saveButton;
@@ -180,14 +169,6 @@ final class MarketProjectEditor {
         "版本号",
         InputType.TYPE_CLASS_TEXT,
         draft.version);
-    int selectedMode = modeIndex(draft.versionMode);
-    modeHelp = helperText(MODE_HELP[selectedMode]);
-    modeHelp.setPadding(owner.dp(2), owner.dp(4), owner.dp(2), owner.dp(2));
-    modePicker = owner.new SearchCategoryPicker(java.util.Arrays.asList(MODE_LABELS), MODE_LABELS[selectedMode], label -> {
-      int index = java.util.Arrays.asList(MODE_LABELS).indexOf(label);
-      draft.versionMode = MODE_VALUES[index];
-      modeHelp.setText(MODE_HELP[index]);
-    });
     TextView publisherSummary = helperText("登录 GitHub 后自动读取名称和头像，发布时使用当前账号。");
     try {
       GithubAccountClient.Profile profile = GithubAccountClient.production(owner).cachedProfile();
@@ -220,11 +201,9 @@ final class MarketProjectEditor {
         field("仓库名称", "市场上传时需使用 lzpmarket-名称。", nameInput, 54),
         field("展示名称", "留空时使用仓库名称。", titleInput, 54),
         wide);
-    addPair(
-        content,
-        field("版本号", "按所选模式填写版本号。", versionInput, 54),
-        field("版本模式", "", modePicker.view(), 54, modeHelp),
-        wide);
+    content.addView(
+        field("版本号", VERSION_HELP, versionInput, 54),
+        new LinearLayout.LayoutParams(-1, -2));
     addPair(
         content,
         field("发布者（GitHub 账号）", "无需手动填写名称和头像。", publisherSummary, -2),
@@ -280,7 +259,11 @@ final class MarketProjectEditor {
 
     watch(nameInput, value -> draft.name = value);
     watch(titleInput, value -> draft.title = value);
-    watch(versionInput, value -> draft.version = value);
+    watch(versionInput, value -> {
+      draft.version = value;
+      String mode = versionMode(draft.versionMode, value);
+      if (mode != null) draft.versionMode = mode;
+    });
     watch(descriptionInput, value -> draft.description = value);
     watch(iconInput, value -> draft.icon = value);
     watch(readmeInput, value -> draft.readme = value);
@@ -371,11 +354,15 @@ final class MarketProjectEditor {
       versionInput.requestFocus();
       return;
     }
-    if (!versionMatches(draft.versionMode, version)) {
-      versionInput.setError(MODE_HELP[modeIndex(draft.versionMode)]);
+    String resolvedMode;
+    try {
+      resolvedMode = MarketRepository.resolveVersionMode(draft.versionMode, version);
+    } catch (java.io.IOException invalid) {
+      versionInput.setError(VERSION_HELP);
       versionInput.requestFocus();
       return;
     }
+    draft.versionMode = resolvedMode;
     if (draft.original == null && draft.paths.isEmpty()) {
       owner.showNotice("请先选择打包源路径", true);
       choosePathsButton.requestFocus();
@@ -452,15 +439,6 @@ final class MarketProjectEditor {
   }
 
   private LinearLayout field(String label, String helper, View control, int height) {
-    return field(label, helper, control, height, null);
-  }
-
-  private LinearLayout field(
-      String label,
-      String helper,
-      View control,
-      int height,
-      TextView extraHelp) {
     LinearLayout group = new LinearLayout(owner);
     group.setOrientation(LinearLayout.VERTICAL);
     group.setPadding(0, 0, 0, owner.dp(14));
@@ -475,9 +453,6 @@ final class MarketProjectEditor {
       TextView hint = helperText(helper);
       hint.setPadding(owner.dp(2), owner.dp(4), owner.dp(2), 0);
       group.addView(hint, new LinearLayout.LayoutParams(-1, -2));
-    }
-    if (extraHelp != null) {
-      group.addView(extraHelp, new LinearLayout.LayoutParams(-1, -2));
     }
     return group;
   }
@@ -519,10 +494,8 @@ final class MarketProjectEditor {
   }
 
   private Button primaryButton(String label) {
-    Button button = new Button(owner);
-    button.setText(label);
+    Button button = owner.toolbarTextButton(label);
     button.setTextSize(14);
-    button.setAllCaps(false);
     button.setTextColor(owner.BG);
     button.setBackground(owner.filterRipple(owner.solidShape(owner.PRIMARY, 16)));
     button.setContentDescription(label);
@@ -545,24 +518,11 @@ final class MarketProjectEditor {
     });
   }
 
-  private static String normalizedMode(String raw) {
-    for (String value : MODE_VALUES) if (value.equals(raw)) return value;
-    return "semantic";
-  }
-
-  private static int modeIndex(String raw) {
-    String value = normalizedMode(raw);
-    for (int i = 0; i < MODE_VALUES.length; i++) if (MODE_VALUES[i].equals(value)) return i;
-    return 0;
-  }
-
-  private static boolean versionMatches(String mode, String value) {
-    if ("integer".equals(mode)) return value.matches("[0-9]+");
-    if ("date".equals(mode)) {
-      return value.replace('-', '.').replace('_', '.')
-          .matches("[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}(?:\\.[0-9]+)?");
+  private static String versionMode(String requested, String version) {
+    try {
+      return MarketRepository.resolveVersionMode(requested, version);
+    } catch (java.io.IOException invalid) {
+      return null;
     }
-    return value.matches(
-        "[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?");
   }
 }

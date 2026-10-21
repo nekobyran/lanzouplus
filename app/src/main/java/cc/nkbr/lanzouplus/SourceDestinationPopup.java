@@ -512,12 +512,12 @@ final class SourceDestinationPopup {
     return page;
   }
 
-  /** The rounded, accent outlined button used by 一键选择 and the page controls. */
+  /** Highlighted text actions used by 一键选择 and the popup's page controls. */
   static Button textButton(Activity host,String text,SharedPopupSurface.Theme theme){
     Button button=new Button(host);button.setText(text);button.setTextSize(12);
-    button.setTextColor(theme.accent);button.setAllCaps(false);
-    android.graphics.drawable.GradientDrawable shape=SharedPopupSurface.solid(theme.surface,SharedPopupSurface.dp(host,14));
-    shape.setStroke(SharedPopupSurface.dp(host,1),theme.accent);
+    button.setTextColor(new android.content.res.ColorStateList(
+        new int[][]{new int[]{-android.R.attr.state_enabled},new int[0]},new int[]{theme.muted,theme.accent}));button.setAllCaps(false);
+    android.graphics.drawable.GradientDrawable shape=SharedPopupSurface.solid(android.graphics.Color.TRANSPARENT,SharedPopupSurface.dp(host,14));
     button.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(
         android.graphics.Color.argb(40,android.graphics.Color.red(theme.accent),android.graphics.Color.green(theme.accent),android.graphics.Color.blue(theme.accent))),
         shape,SharedPopupSurface.solid(android.graphics.Color.WHITE,SharedPopupSurface.dp(host,14))));

@@ -339,8 +339,7 @@ final class MarketRepositoryClient {
     String sourceJson=new String(MarketSourceCodec.decode(
         transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
     if(LanzouCore.parseSourceDocument(sourceJson).isEmpty())throw new IOException("仓库至少需要一个有效源");
-    String readme=new String(transport.get(root+metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
-    if(readme.trim().isEmpty())throw new IOException("仓库 README 不能为空");
+    transport.get(root+metadata.readme,README_LIMIT);
     if(!metadata.icon.isEmpty())transport.get(metadata.assetUrl(root,metadata.icon),2*1024*1024);
     if(!metadata.publisherAvatar.isEmpty())transport.get(metadata.assetUrl(root,metadata.publisherAvatar),2*1024*1024);
     if(progress!=null)progress.status("正在申请市场检测码…");
@@ -370,11 +369,24 @@ final class MarketRepositoryClient {
   private static JSONObject httpPost(String endpoint,JSONObject value)throws Exception{
     HttpURLConnection connection=(HttpURLConnection)new URL(endpoint).openConnection();
     connection.setConnectTimeout(12000);connection.setReadTimeout(30000);connection.setRequestMethod("POST");connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json; charset=utf-8");
+    connection.setRequestProperty("User-Agent","LanzouPlus-Market");connection.setRequestProperty("Accept","application/json");
     try{
       byte[] body=value.toString().getBytes(StandardCharsets.UTF_8);connection.setFixedLengthStreamingMode(body.length);
       try(OutputStream output=connection.getOutputStream()){output.write(body);}
-      int status=connection.getResponseCode();if(status<200||status>=300)throw new IOException("市场收录校验失败（HTTP "+status+"）");try(InputStream input=connection.getInputStream()){return new JSONObject(new String(bytes(input,64*1024),StandardCharsets.UTF_8));}
+      int status=connection.getResponseCode();
+      if(status<200||status>=300){try(InputStream input=connection.getErrorStream()){
+        throw submissionFailure(status,input==null?new byte[0]:bytes(input,64*1024));
+      }}
+      try(InputStream input=connection.getInputStream()){return new JSONObject(new String(bytes(input,64*1024),StandardCharsets.UTF_8));}
     }finally{connection.disconnect();}
+  }
+
+  static IOException submissionFailure(int status,byte[] response){
+    String detail="";
+    try{JSONObject error=new JSONObject(new String(response,StandardCharsets.UTF_8)).optJSONObject("error");
+      if(error!=null)detail=error.optString("message").trim();
+    }catch(JSONException ignored){}
+    return new IOException("无法上传市场（HTTP "+status+"）"+(detail.isEmpty()?"，请稍后重试":"："+detail));
   }
 
   private File cacheFile(String raw)throws Exception{return new File(directory,MarketRepository.canonicalUrl(raw).substring("https://github.com/".length()).replace('/','_')+".json");}

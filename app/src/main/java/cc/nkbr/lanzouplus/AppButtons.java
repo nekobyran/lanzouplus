@@ -65,17 +65,17 @@ final class AppButtons {
     return button;
   }
 
-  /** Applies role-specific Material emphasis to the platform dialog action strip. */
+  /** Dialog actions use highlighted text on the dialog surface, with no filled container. */
   static void styleDialogButtons(MainActivity owner, AlertDialog dialog) {
-    Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-    if (negative != null) apply(owner, negative, Role.TEXT);
-    Button neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
-    if (neutral != null) apply(owner, neutral, Role.OUTLINED);
-    Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-    if (positive != null) {
-      CharSequence label = positive.getText();
-      apply(owner, positive, destructive(label) ? Role.DESTRUCTIVE : Role.PRIMARY);
-      positive.setMinWidth(size(owner, 72));
+    for (int which : new int[]{AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL,
+        AlertDialog.BUTTON_POSITIVE}) {
+      Button button = dialog.getButton(which);
+      if (button == null) continue;
+      apply(owner, button, Role.TEXT);
+      if (destructive(button.getText())) {
+        button.setTextColor(colored(alpha(owner.MUTED, .62f),
+            textColor(owner, Role.DESTRUCTIVE)));
+      }
     }
   }
 

@@ -264,6 +264,15 @@ final class MarketProject {
         // assets/<name> or HTTPS, so a leftover local path fails instead of shipping.
         new MarketRepository(header);
         String readmePath = new MarketRepository(header).readme;
+        String publishedReadme = readme;
+        if (publishedReadme.trim().isEmpty()) {
+            String title = header.optString("title").trim();
+            if (title.isEmpty()) title = header.getString("name");
+            publishedReadme = "# " + title + "\n\n";
+            String description = header.optString("description").trim();
+            if (!description.isEmpty()) publishedReadme += description + "\n\n";
+            publishedReadme += "版本：" + header.getString("version") + "\n";
+        }
         byte[] ciphertext = MarketSourceCodec.encode(sourceJson.getBytes(StandardCharsets.UTF_8));
 
         ByteArrayOutputStream buffer = new ByteArrayOutputStream(Math.max(4096, ciphertext.length + 2048));
@@ -271,7 +280,7 @@ final class MarketProject {
             zip.setLevel(Deflater.BEST_COMPRESSION);
             put(zip, METADATA_ENTRY, header.toString(2).getBytes(StandardCharsets.UTF_8));
             put(zip, SOURCES_ENTRY, ciphertext);
-            put(zip, readmePath, readme.getBytes(StandardCharsets.UTF_8));
+            put(zip, readmePath, publishedReadme.getBytes(StandardCharsets.UTF_8));
             for (Asset asset : assets.values()) {
                 put(zip, ASSET_DIR + asset.name, asset.bytes);
             }

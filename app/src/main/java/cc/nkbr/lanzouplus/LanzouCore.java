@@ -679,15 +679,60 @@ final class LanzouCore {
   private static boolean directShareNeedsLanzouxMirror(String html){String value=html==null?"":html.toLowerCase(Locale.ROOT);if(value.contains("acw_sc__v2")||value.contains("aliyun_waf_")||value.contains("captchav2"))return true;return directTransferHref(html).isEmpty()&&value.contains("<html")&&!value.contains("ajaxm.php")&&!value.contains("downprocess");}
     private static List<String> lanzouxDirectMirrors(String raw){ArrayList<String> out=new ArrayList<>();try{URL url=new URL(raw);String host=url.getHost();if(host==null||!LANZOU_HOST.matcher(host).matches())return out;String file=url.getFile();LinkedHashSet<String> origins=new LinkedHashSet<>();origins.add(url.getProtocol()+"://"+host.toLowerCase(Locale.ROOT));Collections.addAll(origins,LANZOU_BASE_ORIGINS);for(String origin:origins)out.add(new URL(new URL(origin),file).toString());}catch(Exception ignored){}return out;}
 
+  private static String stripJsComments(String text){
+    if(text==null||text.isEmpty())return"";
+    Matcher scripts=parsePattern("(?is)<script\\b[^>]*>(.*?)</script\\s*>").matcher(text);
+    if(scripts.find()){
+      StringBuilder javascript=new StringBuilder();
+      do{javascript.append(scripts.group(1)).append('\n');}while(scripts.find());
+      text=javascript.toString();
+    }
+    StringBuilder out=new StringBuilder(text.length());
+    boolean inSingleQuote=false,inDoubleQuote=false,inBacktick=false,inLineComment=false,inBlockComment=false;
+    int len=text.length();
+    for(int i=0;i<len;i++){
+      char c=text.charAt(i);
+      if(inLineComment){
+        if(c=='\r'||c=='\n'){inLineComment=false;out.append(c);}
+      }else if(inBlockComment){
+        if(c=='*'&&i+1<len&&text.charAt(i+1)=='/'){inBlockComment=false;out.append(' ');i++;}
+      }else if(inSingleQuote){
+        out.append(c);
+        if(c=='\\' && i+1<len)out.append(text.charAt(++i));
+        else if(c=='\'')inSingleQuote=false;
+      }else if(inDoubleQuote){
+        out.append(c);
+        if(c=='\\' && i+1<len)out.append(text.charAt(++i));
+        else if(c=='"')inDoubleQuote=false;
+      }else if(inBacktick){
+        out.append(c);
+        if(c=='\\' && i+1<len)out.append(text.charAt(++i));
+        else if(c=='`')inBacktick=false;
+      }else{
+        if(c=='/'&&i+1<len){
+          char next=text.charAt(i+1);
+          boolean isUrlSlash=i>0&&text.charAt(i-1)==':';
+          if(next=='/'&&!isUrlSlash){inLineComment=true;i++;continue;}
+          else if(next=='*'){inBlockComment=true;i++;continue;}
+        }
+        if(c=='\'')inSingleQuote=true;
+        else if(c=='"')inDoubleQuote=true;
+        else if(c=='`')inBacktick=true;
+        out.append(c);
+      }
+    }
+    return out.toString();
+  }
+
   private static Map<String,String> legacyDownprocessFields(String html){
-    LinkedHashMap<String,String> best=new LinkedHashMap<>();int bestLength=-1;String source=html==null?"":html;
+    LinkedHashMap<String,String> best=new LinkedHashMap<>();int bestLength=-1;String source=stripJsComments(html);
     Matcher objects=parsePattern("(?is)data\\s*[:=]\\s*\\{([^}]+)\\}").matcher(source);
     while(objects.find()){
       String body=objects.group(1);LinkedHashMap<String,String> fields=new LinkedHashMap<>();
       Matcher pairs=parsePattern("['\"]?([A-Za-z0-9_]+)['\"]?\\s*:\\s*([^,}]+)").matcher(body);
       while(pairs.find())fields.put(pairs.group(1),legacyJsValue(source,pairs.group(2)));
       if(!"downprocess".equals(fields.get("action")))continue;
-      if(body.length()>bestLength){best=fields;bestLength=body.length();}
+      if(best.isEmpty()||body.length()>=bestLength){best=fields;bestLength=body.length();}
     }
     if(best.isEmpty()){
       String encoded=cap(source,"(?is)data\\s*:\\s*['\"](action=downprocess&[^'\"]+)");
@@ -701,15 +746,28 @@ final class LanzouCore {
     if((value.startsWith("'")&&value.endsWith("'"))||(value.startsWith("\"")&&value.endsWith("\"")))return unescape(value.substring(1,value.length()-1));
     if(NUMERIC_LITERAL.matcher(value).matches())return value;
     if(!JS_IDENTIFIER.matcher(value).matches())return"";
-    String quoted=cap(html,"(?is)(?:(?:var|let|const)\\s+)?"+Pattern.quote(value)+"\\s*=\\s*['\"]([^'\"]*)['\"]");
-    if(!quoted.isEmpty())return quoted;
-    return cap(html,"(?is)(?:(?:var|let|const)\\s+)?"+Pattern.quote(value)+"\\s*=\\s*([0-9]+)\\s*[;,]");
+    String source=html;
+    Matcher matcher=parsePattern("(?is)(?:\\b(?:var|let|const)\\s+)?(?<![A-Za-z0-9_$])"
+        +Pattern.quote(value)+"\\s*=\\s*(?!=)(?:'([^']*)'|\"([^\"]*)\"|([0-9]+))").matcher(source);
+    String lastMatch=null;
+    while(matcher.find()){
+      if(matcher.group(1)!=null)lastMatch=unescape(matcher.group(1));
+      else if(matcher.group(2)!=null)lastMatch=unescape(matcher.group(2));
+      else if(matcher.group(3)!=null)lastMatch=matcher.group(3);
+    }
+    if(lastMatch!=null)return lastMatch;
+    return"";
   }
 
   private static String legacyAjaxEndpoint(String html){
-    String value=cap(html,"(?is)url[ \t\r\n]*:[ \t\r\n]*['\"]([^'\"]*(?:ajaxm|ajaxfile|ajax)[.]php(?:[?][^'\"]*)?)['\"]");
-    if(!value.isEmpty())return value;
-    return cap(html,"(?is)['\"]([^'\"]*(?:ajaxm|ajaxfile|ajax)[.]php(?:[?][^'\"]*)?)['\"]");
+    String source=stripJsComments(html);
+    Matcher matcher=parsePattern("(?is)url[ \\t\\r\\n]*:[ \\t\\r\\n]*['\"]([^'\"]*(?:ajaxm|ajaxfile|ajax)[.]php(?:[?][^'\"]*)?)['\"]").matcher(source);
+    String last="";
+    while(matcher.find())last=unescape(matcher.group(1).trim());
+    if(!last.isEmpty())return last;
+    matcher=parsePattern("(?is)['\"]([^'\"]*(?:ajaxm|ajaxfile|ajax)[.]php(?:[?][^'\"]*)?)['\"]").matcher(source);
+    while(matcher.find())last=unescape(matcher.group(1).trim());
+    return last;
   }
 
   private static boolean directExchangePending(JSONObject data){String info=data.optString("inf").trim();if(DIRECT_TERMINAL_INFO.matcher(info).find())return false;if(data.optInt("zt")==1)return!data.optString("url").startsWith("http");return info.isEmpty()||info.equals("0")||info.contains("稍后")||info.contains("验证")||info.contains("处理中")||info.contains("等待");}

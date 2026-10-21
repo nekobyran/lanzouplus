@@ -36,6 +36,9 @@ import java.util.Set;
  * single source of truth.</p>
  */
 final class SourceDestinationPopup {
+  /** Direct children rendered per page in every level of the destination tree. */
+  static final int PATH_PAGE_SIZE=50;
+  private static final String ROOT_PAGE_KEY="@roots",SEARCH_PAGE_KEY="@search";
   private SourceDestinationPopup() {}
 
   /** Everything the picker needs from its host; all calls happen on the host thread. */
@@ -164,9 +167,7 @@ final class SourceDestinationPopup {
     pathSearch.setHint("搜索路径名称，或输入完整路径");pathSearch.setContentDescription("搜索或输入已有路径");
     pathSearch.setImeOptions(EditorInfo.IME_ACTION_GO);
     searchRow.addView(pathSearch,new LinearLayout.LayoutParams(0,SharedPopupSurface.dp(host,48),1));
-    Button chooseTyped=new Button(host);chooseTyped.setText("一键选择");chooseTyped.setTextSize(12);
-    chooseTyped.setTextColor(theme.accent);chooseTyped.setAllCaps(false);
-    android.graphics.drawable.GradientDrawable chooseShape=SharedPopupSurface.solid(theme.surface,SharedPopupSurface.dp(host,14));chooseShape.setStroke(SharedPopupSurface.dp(host,1),theme.accent);chooseTyped.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(android.graphics.Color.argb(40,android.graphics.Color.red(theme.accent),android.graphics.Color.green(theme.accent),android.graphics.Color.blue(theme.accent))),chooseShape,SharedPopupSurface.solid(android.graphics.Color.WHITE,SharedPopupSurface.dp(host,14))));chooseTyped.setElevation(0);chooseTyped.setStateListAnimator(null);chooseTyped.setContentDescription("一键选择输入路径");
+    Button chooseTyped=textButton(host,"一键选择",theme);chooseTyped.setContentDescription("一键选择输入路径");
     searchRow.addView(chooseTyped,new LinearLayout.LayoutParams(-2,SharedPopupSurface.dp(host,48)));
     panel.addView(searchRow,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,52)));
 
@@ -192,6 +193,8 @@ final class SourceDestinationPopup {
     dialog.setOwnerActivity(host);
     final Button[] submit = {null};
     final Runnable[] update = {null}, render = {null};
+    final Map<String,Integer> pages=new LinkedHashMap<>();
+    final Map<String,List<Models.SourceMember>> folderCache=new LinkedHashMap<>();
     final List<Destination> searchPaths=searchablePaths(catalog,available);
     update[0] = () -> {
       summary.setText("已选 " + selected.size() + " 个路径");
@@ -210,19 +213,29 @@ final class SourceDestinationPopup {
       String query=pathSearch.getText().toString();
       if(!query.trim().isEmpty()){
         List<Destination> matches=matchingPaths(searchPaths,query);
-        for(Destination destination:matches){
-          View row=destinationRow(host,theme,destination,selected,()->{
-            selected.put(destination.key(),destination);current[0]=destination;
-            path.setText("当前路径："+destination.path);update[0].run();render[0].run();
-          },update[0],containsAll(destination,sources));
-          if(row instanceof LinearLayout){View label=((LinearLayout)row).getChildAt(2);if(label instanceof TextView)((TextView)label).setText(destination.path);}
-          row.setContentDescription("选择已有路径 "+destination.path);
-          choices.addView(row,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,50)));
-        }
-        if(matches.isEmpty())choices.addView(SharedPopupSurface.label(host,"没有匹配的已有路径",13,theme.muted));
+        final Runnable[] drawSearch={null};
+        drawSearch[0]=()->{
+          choices.removeAllViews();
+          int total=matches.size();
+          int page=pageFor(pages,SEARCH_PAGE_KEY,total);
+          int start=Math.min(total,page*PATH_PAGE_SIZE),end=Math.min(total,start+PATH_PAGE_SIZE);
+          for(int index=start;index<end;index++){
+            Destination destination=matches.get(index);
+            View row=destinationRow(host,theme,destination,selected,()->{
+              selected.put(destination.key(),destination);current[0]=destination;
+              path.setText("当前路径："+destination.path);update[0].run();render[0].run();
+            },update[0],containsAll(destination,sources));
+            if(row instanceof LinearLayout){View label=((LinearLayout)row).getChildAt(2);if(label instanceof TextView)((TextView)label).setText(destination.path);}
+            row.setContentDescription("选择已有路径 "+destination.path);
+            choices.addView(row,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,50)));
+          }
+          if(matches.isEmpty())choices.addView(SharedPopupSurface.label(host,"没有匹配的已有路径",13,theme.muted));
+          else if(total>PATH_PAGE_SIZE)choices.addView(pagerRow(host,theme,pages,SEARCH_PAGE_KEY,total,drawSearch[0]),new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,48)));
+        };
+        drawSearch[0].run();
         update[0].run();return;
       }
-      tree[0]=new DestinationTree(host,theme,catalog,available,sources,selected,expanded,focus,update[0]);
+      tree[0]=new DestinationTree(host,theme,catalog,available,sources,selected,expanded,focus,update[0],pages,folderCache);
       tree[0].roots(choices);
       focus.accept(current[0]);update[0].run();
     };
@@ -239,11 +252,11 @@ final class SourceDestinationPopup {
     };
     chooseTyped.setOnClickListener(v->chooseInput.run());
     pathSearch.setOnEditorActionListener((v,action,event)->{if(action==EditorInfo.IME_ACTION_GO){chooseInput.run();return true;}return false;});
-    pathSearch.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){pathSearch.setError(null);render[0].run();}public void afterTextChanged(android.text.Editable e){}});
+    pathSearch.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){pathSearch.setError(null);pages.remove(SEARCH_PAGE_KEY);render[0].run();}public void afterTextChanged(android.text.Editable e){}});
     createFolder.setOnClickListener(v -> {
       Destination here = current[0];
       if (here == null || here.categoryOnly()) return;
-      createFolderDialog(host, catalog, theme, here, ()->{searchPaths.clear();searchPaths.addAll(searchablePaths(catalog,available));render[0].run();});
+      createFolderDialog(host, catalog, theme, here, ()->{searchPaths.clear();searchPaths.addAll(searchablePaths(catalog,available));folderCache.clear();render[0].run();});
     });
     if(selection!=null)createFolder.setVisibility(View.GONE);
 
@@ -355,30 +368,40 @@ final class SourceDestinationPopup {
     final Activity host;final SharedPopupSurface.Theme theme;final Catalog catalog;
     final List<Models.Source> available,adding;final Map<String,Destination> selected;
     final Set<String> expanded;final java.util.function.Consumer<Destination> focus;final Runnable changed;
+    final Map<String,Integer> pages;final Map<String,List<Models.SourceMember>> folderCache;
     final Map<String,Branch> branches=new LinkedHashMap<>();
     DestinationTree(Activity host,SharedPopupSurface.Theme theme,Catalog catalog,List<Models.Source> available,
         List<Models.Source> adding,Map<String,Destination> selected,Set<String> expanded,
-        java.util.function.Consumer<Destination> focus,Runnable changed){
+        java.util.function.Consumer<Destination> focus,Runnable changed,
+        Map<String,Integer> pages,Map<String,List<Models.SourceMember>> folderCache){
       this.host=host;this.theme=theme;this.catalog=catalog;this.available=available;this.adding=adding;
       this.selected=selected;this.expanded=expanded;this.focus=focus;this.changed=changed;
+      this.pages=pages;this.folderCache=folderCache;
     }
     void roots(LinearLayout area){
+      List<Destination> list=new ArrayList<>();
       if(catalog.includeSourcePaths()){
-        for(Models.Source source:available)if(source.repositoryUrl.isEmpty())add(area,new Destination("全部",source,"",source.title),null);
-        return;
+        for(Models.Source source:available)if(source.repositoryUrl.isEmpty())list.add(new Destination("全部",source,"",source.title));
+      }else{
+        list.add(new Destination("全部",null,"","全部"));
+        for(Map.Entry<String,Set<String>> category:catalog.categories().entrySet())
+          list.add(new Destination(category.getKey(),category.getValue(),category.getKey()));
       }
-      add(area,new Destination("全部",null,"","全部"),null);
-      for(Map.Entry<String,Set<String>> category:catalog.categories().entrySet())
-        add(area,new Destination(category.getKey(),category.getValue(),category.getKey()),null);
+      renderPage(area,ROOT_PAGE_KEY,list,null,null);
     }
     void add(LinearLayout area,Destination destination,Destination parent){
-      Branch branch=new Branch(destination,parent);branches.put(destination.treeKey(),branch);
+      String key=destination.treeKey();
+      forget(key);
+      Branch branch=new Branch(destination,parent);branches.put(key,branch);
+      Branch owner=parent==null?null:branches.get(parent.treeKey());
+      if(owner!=null)owner.mounted.add(key);
       area.addView(branch.container,new LinearLayout.LayoutParams(-1,-2));
-      if(expanded.contains(destination.treeKey()))branch.setOpen(true,false);
+      if(expanded.contains(key))branch.setOpen(true,false);
     }
     void children(LinearLayout area,Destination here){
       if(here.categoryOnly()){
         Set<String> ids=here.category.equals("全部")?null:catalog.categories().get(here.category);
+        List<Destination> list=new ArrayList<>();
         for(Models.Source source:available){
           // A repository container owns its cached children (they carry a repositoryUrl). At the
           // "全部" root they would also appear as a second, top-level copy of the same source, so
@@ -386,23 +409,61 @@ final class SourceDestinationPopup {
           if(here.category.equals("全部")&&!source.repositoryUrl.isEmpty())continue;
           if(!catalog.includeSourcePaths()&&!MainActivity.compositeSource(source)||ids!=null&&!ids.contains(LanzouCore.sourceId(source)))continue;
           String title=source.title.isEmpty()?"自建目录":source.title;
-          add(area,new Destination(here.category,source,"",here.path+" › "+title),here);
+          list.add(new Destination(here.category,source,"",here.path+" › "+title));
         }
-      }else{
-        TextView loading=SharedPopupSurface.label(host,"正在读取路径…",12,theme.muted);area.addView(loading);
-        catalog.loadFolderPaths(here.composite,here.nodeId,here.category,members->host.runOnUiThread(()->{
-          area.removeAllViews();for(Models.SourceMember member:members)add(area,new Destination(here.category,catalog.pathSource(here.composite,member),catalog.pathNodeId(here.composite,member),here.path+" › "+member.title),here);
-          if(area.getChildCount()==0){TextView empty=SharedPopupSurface.label(host,"此位置没有下级目录",12,theme.muted);area.addView(empty);}
-        }));
+        renderPage(area,here.treeKey(),list,here,"此位置没有下级自建目录");
+        return;
       }
-      if(area.getChildCount()==0){
-        TextView empty=SharedPopupSurface.label(host,"此位置没有下级自建目录",12,theme.muted);
-        empty.setGravity(Gravity.CENTER);area.addView(empty,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,44)));
+      String key=here.treeKey();
+      List<Models.SourceMember> cached=folderCache.get(key);
+      if(cached!=null){renderMembers(area,here,cached);return;}
+      area.removeAllViews();
+      TextView loading=SharedPopupSurface.label(host,"正在读取路径…",12,theme.muted);area.addView(loading);
+      catalog.loadFolderPaths(here.composite,here.nodeId,here.category,members->host.runOnUiThread(()->{
+        List<Models.SourceMember> copy=new ArrayList<>(members==null?Collections.emptyList():members);
+        folderCache.put(key,copy);
+        if(area.getParent()==null)return;
+        if(!expanded.contains(key)){area.removeAllViews();return;}
+        renderMembers(area,here,copy);
+      }));
+    }
+    void renderMembers(LinearLayout area,Destination here,List<Models.SourceMember> members){
+      List<Destination> list=new ArrayList<>();
+      for(Models.SourceMember member:members)
+        list.add(new Destination(here.category,catalog.pathSource(here.composite,member),catalog.pathNodeId(here.composite,member),here.path+" › "+member.title));
+      renderPage(area,here.treeKey(),list,here,"此位置没有下级目录");
+    }
+    void renderPage(LinearLayout area,String pageKey,List<Destination> items,Destination parent,String emptyText){
+      area.removeAllViews();
+      if(parent==null)branches.clear();else forgetChildren(parent);
+      int total=items.size();
+      int page=pageFor(pages,pageKey,total);
+      int start=Math.min(total,page*PATH_PAGE_SIZE),end=Math.min(total,start+PATH_PAGE_SIZE);
+      for(int index=start;index<end;index++)add(area,items.get(index),parent);
+      if(total==0){
+        if(emptyText!=null){
+          TextView empty=SharedPopupSurface.label(host,emptyText,12,theme.muted);
+          empty.setGravity(Gravity.CENTER);area.addView(empty,new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,44)));
+        }
+        return;
       }
+      if(total>PATH_PAGE_SIZE)
+        area.addView(pagerRow(host,theme,pages,pageKey,total,()->renderPage(area,pageKey,items,parent,emptyText)),new LinearLayout.LayoutParams(-1,SharedPopupSurface.dp(host,48)));
+    }
+    void forget(String key){
+      Branch branch=branches.remove(key);if(branch==null)return;
+      for(String child:new ArrayList<>(branch.mounted))forget(child);
+      branch.mounted.clear();
+    }
+    void forgetChildren(Destination parent){
+      Branch branch=parent==null?null:branches.get(parent.treeKey());if(branch==null)return;
+      for(String child:new ArrayList<>(branch.mounted))forget(child);
+      branch.mounted.clear();
     }
     void collapse(Destination destination){Branch branch=branches.get(destination.treeKey());if(branch!=null)branch.setOpen(false,true);}
     final class Branch {
       final Destination destination,parent;final LinearLayout container,children;final ImageButton arrow;
+      final Set<String> mounted=new LinkedHashSet<>();
       boolean open,loaded;android.animation.ValueAnimator animation;
       Branch(Destination destination,Destination parent){
         this.destination=destination;this.parent=parent;
@@ -417,7 +478,7 @@ final class SourceDestinationPopup {
       void setOpen(boolean value,boolean animate){
         open=value;if(open)expanded.add(destination.treeKey());else expanded.remove(destination.treeKey());
         if(animate)focus.accept(open?destination:parent);
-        if(open&&!loaded){loaded=true;DestinationTree.this.children(children,destination);}
+        if(open&&(!loaded||children.getChildCount()==0)){loaded=true;DestinationTree.this.children(children,destination);}
         if(animation!=null)animation.cancel();arrow.animate().cancel();
         arrow.setContentDescription((open?"收起 ":"进入 ")+destination.name());
         boolean motion=animate&&HistoryPopupNavigation.motionEnabled(host)&&container.getWidth()>0;
@@ -437,6 +498,60 @@ final class SourceDestinationPopup {
         arrow.animate().rotation(open?0f:-90f).setDuration(180).start();animation.start();
       }
     }
+  }
+
+  private static int pageCount(int total){return Math.max(1,(total+PATH_PAGE_SIZE-1)/PATH_PAGE_SIZE);}
+
+  /** Clamps the stored page for one tree key so a shorter list never leaves an empty page. */
+  private static int pageFor(Map<String,Integer> pages,String key,int total){
+    int count=pageCount(total);
+    int page=pages.containsKey(key)?pages.get(key):0;
+    if(page<0)page=0;
+    if(page>=count)page=count-1;
+    pages.put(key,page);
+    return page;
+  }
+
+  /** The rounded, accent outlined button used by 一键选择 and the page controls. */
+  static Button textButton(Activity host,String text,SharedPopupSurface.Theme theme){
+    Button button=new Button(host);button.setText(text);button.setTextSize(12);
+    button.setTextColor(theme.accent);button.setAllCaps(false);
+    android.graphics.drawable.GradientDrawable shape=SharedPopupSurface.solid(theme.surface,SharedPopupSurface.dp(host,14));
+    shape.setStroke(SharedPopupSurface.dp(host,1),theme.accent);
+    button.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(
+        android.graphics.Color.argb(40,android.graphics.Color.red(theme.accent),android.graphics.Color.green(theme.accent),android.graphics.Color.blue(theme.accent))),
+        shape,SharedPopupSurface.solid(android.graphics.Color.WHITE,SharedPopupSurface.dp(host,14))));
+    button.setElevation(0);button.setStateListAnimator(null);
+    return button;
+  }
+
+  /** One page strip; it is only built when the level has more than one page. */
+  private static View pagerRow(Activity host,SharedPopupSurface.Theme theme,Map<String,Integer> pages,String key,int total,Runnable rerender){
+    int count=pageCount(total),page=pageFor(pages,key,total);
+    LinearLayout bar=new LinearLayout(host);bar.setGravity(Gravity.CENTER_VERTICAL);
+    bar.setPadding(SharedPopupSurface.dp(host,4),0,SharedPopupSurface.dp(host,4),0);
+    Button previous=textButton(host,"上一页",theme);previous.setEnabled(page>0);previous.setContentDescription("上一页");
+    Button next=textButton(host,"下一页",theme);next.setEnabled(page+1<count);next.setContentDescription("下一页");
+    previous.setAlpha(previous.isEnabled()?1f:0.38f);next.setAlpha(next.isEnabled()?1f:0.38f);
+    insetShape(host,previous);insetShape(host,next);
+    String labelText="第 "+(page+1)+" / "+count+" 页";
+    TextView label=SharedPopupSurface.label(host,labelText,12,theme.muted);
+    label.setGravity(Gravity.CENTER);
+    label.setContentDescription(labelText+"，共 "+total+" 项");
+    previous.setOnClickListener(v->{pages.put(key,page-1);rerender.run();});
+    next.setOnClickListener(v->{pages.put(key,page+1);rerender.run();});
+    bar.addView(previous,new LinearLayout.LayoutParams(-2,SharedPopupSurface.dp(host,48)));
+    bar.addView(label,new LinearLayout.LayoutParams(0,SharedPopupSurface.dp(host,44),1));
+    bar.addView(next,new LinearLayout.LayoutParams(-2,SharedPopupSurface.dp(host,48)));
+    return bar;
+  }
+
+  /** Keeps the 44dp outlined shape inside a 48dp touch target. */
+  private static void insetShape(Activity host,Button button){
+    android.graphics.drawable.Drawable shape=button.getBackground();
+    if(shape==null)return;
+    int inset=SharedPopupSurface.dp(host,2);
+    button.setBackground(new android.graphics.drawable.InsetDrawable(shape,0,inset,0,inset));
   }
 
   private static View destinationRow(Activity host, SharedPopupSurface.Theme theme, final Destination destination,

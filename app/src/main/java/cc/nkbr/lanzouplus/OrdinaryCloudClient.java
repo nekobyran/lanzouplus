@@ -169,6 +169,14 @@ final class OrdinaryCloudClient {
     return ensureLoggedIn(name);
   }
 
+  /**
+   * Verifies one stored account through a throwaway client.
+   * The shared instance keeps its active session, cookie jar and current account untouched.
+   */
+  LoginState verifyAccount(String account)throws CloudFilesClient.CloudException{
+    return new OrdinaryCloudClient(context).ensureLoggedIn(account);
+  }
+
   void clearLogin(){
     synchronized(vaultLock){clearStoredLogin();}
   }
@@ -401,7 +409,7 @@ final class OrdinaryCloudClient {
       Set<String> visited=new HashSet<>();
       createdId=copyFolderRecursive(item.id,item.name,target,0,visited,root,counts,bytes);
     }else{
-      copyFile(item.id,item.name,target,root,counts,bytes);
+      createdId=copyFile(item.id,item.name,target,root,counts,bytes);
     }
     return new CloudFilesClient.CopyResult(item.id,createdId,target,counts[0],counts[1],bytes[0]);
   }
@@ -423,7 +431,7 @@ final class OrdinaryCloudClient {
     return newId;
   }
 
-  private void copyFile(String sourceId,String name,String targetId,File tempRoot,int[] counts,long[] bytes)
+  private String copyFile(String sourceId,String name,String targetId,File tempRoot,int[] counts,long[] bytes)
       throws CloudFilesClient.CloudException{
     safeName(name);
     File work=new File(tempRoot,"copy-"+sourceId+"-"+UUID.randomUUID().toString());
@@ -441,6 +449,7 @@ final class OrdinaryCloudClient {
       }catch(CloudFilesClient.CloudException ignored){}
       counts[0]++;
       bytes[0]+=downloaded.bytesDownloaded;
+      return uploaded.id;
     }finally{
       deleteQuietly(temp);
       deleteQuietly(work);
@@ -713,7 +722,7 @@ final class OrdinaryCloudClient {
     Matcher uid=Pattern.compile("uid=([^'\"&;\\s]+)").matcher(html);
     if(!uid.find())
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_SESSION_EXPIRED,"登录已过期");
-    String vei=lastVariable(html,"vei");
+    String vei=jsDataFields(html).getOrDefault("vei","");
     if(vei.isEmpty())
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"登录页面缺少 vei");
     session.uid=uid.group(1);
@@ -834,7 +843,7 @@ final class OrdinaryCloudClient {
       ShareRecord record=shareRecord(item.id,item.folder);
       String direct="";
       if(!item.folder){
-        try{direct=resolveDirectUrl(record.url,record.password);}catch(CloudFilesClient.CloudException ignored){}
+        try{direct=resolveDownload(record.url,record.password).url;}catch(CloudFilesClient.CloudException ignored){}
       }
       String mode="";
       int parts=0;
@@ -976,12 +985,12 @@ final class OrdinaryCloudClient {
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NETWORK,"无法创建下载目录");
     if(target.exists())
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"目标文件已存在");
-    String direct=resolveDirectUrl(share.url,share.password);
+    LanzouCore.DirectLink direct=resolveDownload(share.url,share.password);
     File part=new File(target.getAbsolutePath()+".part");
     deleteQuietly(part);
     long downloaded;
     try{
-      downloaded=downloadToFile(direct,part,"down_ip=1");
+      downloaded=downloadToFile(direct,part,share.url);
     }catch(CloudFilesClient.CloudException error){
       deleteQuietly(part);
       throw error;
@@ -1011,97 +1020,12 @@ final class OrdinaryCloudClient {
         unwrapped.unwrapped?written:downloaded,unwrapped.unwrapped,unwrapped.originalName);
   }
 
-  private String resolveDirectUrl(String shareUrl,String password)throws CloudFilesClient.CloudException{
-    Response first=get(shareUrl,"",true);
-    if(first.text!=null&&(first.text.contains("文件不存在")||first.text.contains("取消分享")))
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NOT_FOUND,"分享文件不存在或已取消");
-    String iframe=iframePath(first.text);
-    String pageUrl=shareUrl;
-    String pageHtml=first.text;
-    if(iframe!=null&&!iframe.isEmpty()){
-      try{
-        pageUrl=new URI(shareUrl).resolve(iframe).toString();
-      }catch(Exception error){
-        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载页地址无效",error);
-      }
-      pageHtml=get(pageUrl,"",true).text;
-    }
-    String parameterSource=pageHtml!=null&&(pageHtml.contains("pwdload")||pageHtml.contains("passwddiv"))
-        ?firstNonEmpty(functionBlock(pageHtml,"down_p"),pageHtml):pageHtml;
-    Map<String,String> fields=downloadPageFields(parameterSource,pageHtml);
-    if(password!=null&&!password.isEmpty())fields.put("p",password);
-    String ajax=firstNonEmpty(ajaxEndpoint(parameterSource),ajaxEndpoint(pageHtml),
-        ajaxEndpoint(first.text),fnAjaxEndpoint(parameterSource),fnAjaxEndpoint(pageHtml));
-    if(ajax.isEmpty()){
-      String fileId=ajaxFileId(pageHtml);
-      if(fileId.isEmpty())fileId=ajaxFileId(first.text);
-      if(!fileId.isEmpty())ajax="/ajaxm.php?file="+fileId;
-    }
-    if(ajax.isEmpty())
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载页缺少 AJAX 地址");
-    String ajaxUrl;
-    try{
-      ajaxUrl=new URI(pageUrl).resolve(ajax).toString();
-    }catch(Exception error){
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载接口地址无效",error);
-    }
-    Response ajaxResponse=postForm(ajaxUrl,"",fields,pageUrl,true);
-    JSONObject value=parseJson(ajaxResponse.text);
-    String domain=value.optString("dom","");
-    String path=value.optString("url","");
-    if(domain.isEmpty()||path.isEmpty())
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载接口缺少地址");
-    String downloadBase=downloadBase(domain,pageUrl);
-    String intermediate;
-    if(path.startsWith("//")){
-      try{intermediate=new URI(pageUrl).resolve(path).toString();}
-      catch(Exception error){throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载文件地址无效",error);}
-    }else if(path.contains("://")){
-      intermediate=path;
-    }else{
-      intermediate=downloadBase+"/"+path.replaceFirst("^/+","");
-    }
-    Response redirected=getWithCookie(intermediate,"down_ip=1",false,downloadBase);
-    if(redirected.status>=300&&redirected.status<400){
-      String location=redirected.location;
-      if(location==null||location.isEmpty())
-        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载重定向缺少 Location");
-      return resolveHttp(intermediate,location);
-    }
-    Map<String,String> secondary=jsDataFields(redirected.text);
-    secondary.put("el","2");
-    sleepSecondary();
-    Response verified=postForm(downloadBase+"/ajax.php","down_ip=1",secondary,intermediate,true);
-    JSONObject confirmed=parseJson(verified.text);
-    String direct=confirmed.optString("url","");
-    if(direct.isEmpty())
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"二次下载验证缺少直链");
-    URI uri;
-    try{uri=new URI(direct);}catch(Exception error){
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"二次下载验证返回了无效地址",error);
-    }
-    if(uri.getHost()==null||(!"http".equalsIgnoreCase(uri.getScheme())&&!"https".equalsIgnoreCase(uri.getScheme())))
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"二次下载验证返回了不受信任的地址");
-    return direct;
-  }
-
-  private static String downloadBase(String domain,String pageUrl)throws CloudFilesClient.CloudException{
-    String raw=domain==null?"":domain.trim();
-    if(raw.isEmpty())
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载接口缺少有效域名");
-    try{
-      URI base;
-      if(raw.startsWith("//"))base=new URI(pageUrl).resolve(raw);
-      else if(raw.contains("://"))base=new URI(raw);
-      else base=new URI(new URI(pageUrl).getScheme()+"://"+raw);
-      String host=base.getHost();
-      if(host==null||(!"http".equalsIgnoreCase(base.getScheme())&&!"https".equalsIgnoreCase(base.getScheme())))
-        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载接口域名不受信任");
-      return new URI(base.getScheme(),null,host,base.getPort(),"/file",null,null).toString()
-          .replaceFirst("/file$/","/file");
-    }catch(CloudFilesClient.CloudException error){throw error;
-    }catch(Exception error){
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载接口域名无效",error);
+  private LanzouCore.DirectLink resolveDownload(String shareUrl,String password)
+      throws CloudFilesClient.CloudException{
+    try{return new LanzouCore(context).resolveDirect(shareUrl,password);}
+    catch(Exception error){
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,
+          "下载链接解析失败："+sanitize(error.getMessage()),error);
     }
   }
 
@@ -1116,79 +1040,6 @@ final class OrdinaryCloudClient {
     }catch(Exception error){
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载重定向地址无效",error);
     }
-  }
-
-  private static void sleepSecondary()throws CloudFilesClient.CloudException{
-    long deadline=System.currentTimeMillis()+3300L;
-    while(System.currentTimeMillis()<deadline){
-      try{Thread.sleep(Math.min(200L,deadline-System.currentTimeMillis()));}
-      catch(InterruptedException error){Thread.currentThread().interrupt();
-        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NETWORK,"操作已中断",error);}
-    }
-  }
-
-  private static String iframePath(String html){
-    if(html==null)return "";
-    Matcher matcher=Pattern.compile("(?is)<iframe[^>]+src=['\"]([^'\"]*/fn(?:\\?|/)[^'\"]*)").matcher(html);
-    if(matcher.find())return matcher.group(1);
-    matcher=Pattern.compile("(?is)(?:href|src)=['\"]([^'\"]*/tp/[^'\"]+)").matcher(html);
-    return matcher.find()?matcher.group(1):"";
-  }
-
-  private static String ajaxFileId(String html){
-    if(html==null)return "";
-    Matcher matcher=Pattern.compile("ajax(?:file|m)\\.php\\?file=(\\d+)").matcher(html);
-    return matcher.find()?matcher.group(1):"";
-  }
-
-  private static String ajaxEndpoint(String html){
-    if(html==null)return "";
-    String endpoint="(?:ajax|ajaxm|ajaxfile|filemoreajax|foldermoreajax)\\.php(?:\\?[^'\"\\s]*)?";
-    Matcher matcher=Pattern.compile("(?is)url\\s*:\\s*['\"]([^'\"]*"+endpoint+")").matcher(html);
-    if(matcher.find())return matcher.group(1);
-    matcher=Pattern.compile("(?is)['\"]([^'\"]*"+endpoint+")['\"]").matcher(html);
-    return matcher.find()?matcher.group(1):"";
-  }
-
-  private static String fnAjaxEndpoint(String html){
-    if(html==null)return "";
-    Matcher matcher=Pattern.compile(
-        "(?is)var\\s+domain[12]\\s*=\\s*['\"]([^'\"]*(?:ajaxfile|ajaxm)\\.php\\?file=\\d+[^'\"]*)['\"]")
-        .matcher(html);
-    return matcher.find()?matcher.group(1):"";
-  }
-
-  private static Map<String,String> downloadPageFields(String html,String context)
-      throws CloudFilesClient.CloudException{
-    Map<String,String> fn=fnDownprocessFields(context);
-    if(fn==null)fn=fnDownprocessFields(html);
-    if(fn!=null)return fn;
-    try{
-      Map<String,String> fields=jsDataFields(html);
-      if(!fields.isEmpty())return fields;
-    }catch(CloudFilesClient.CloudException ignored){}
-    Map<String,String> legacy=legacyDownprocessFields(context);
-    if(legacy==null)legacy=legacyDownprocessFields(html);
-    if(legacy!=null)return legacy;
-    throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"下载页缺少下载参数");
-  }
-
-  private static Map<String,String> fnDownprocessFields(String html){
-    if(html==null)return null;
-    String sign=lastVariable(html,"wp_sign");
-    if(sign.isEmpty())return null;
-    String ajaxdata=lastVariable(html,"ajaxdata");
-    Map<String,String> fields=new LinkedHashMap<>();
-    fields.put("action","downprocess");
-    fields.put("sign",sign);
-    fields.put("websign","2");
-    fields.put("kd","1");
-    fields.put("ves","1");
-    if(!ajaxdata.isEmpty()){
-      fields.put("websignkey",ajaxdata);
-      fields.put("signs",ajaxdata);
-    }
-    return fields;
   }
 
   private static Map<String,String> jsDataFields(String html)throws CloudFilesClient.CloudException{
@@ -1214,22 +1065,6 @@ final class OrdinaryCloudClient {
     if(result.isEmpty())
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"页面下载参数为空");
     return result;
-  }
-
-  private static Map<String,String> legacyDownprocessFields(String html){
-    if(html==null)return null;
-    Matcher block=Pattern.compile("(?is)function\\s+downprocess\\s*\\([^)]*\\)\\s*\\{").matcher(html);
-    if(!block.find())return null;
-    String body=functionBlock(html,"downprocess");
-    if(body==null)return null;
-    Map<String,String> fields=new LinkedHashMap<>();
-    for(String key:new String[]{"sign","ves","websign","websignkey","kd","signs"}){
-      String value=lastVariable(body,key);
-      if(!value.isEmpty())fields.put(key,value);
-    }
-    if(fields.isEmpty())return null;
-    fields.put("action","downprocess");
-    return fields;
   }
 
   CloudFilesClient.UploadResult upload(String folderId,String path,CloudFilesClient.UploadOptions options)
@@ -1637,9 +1472,9 @@ final class OrdinaryCloudClient {
     postMultipart(url,"",fields,field,file,file.getName(),mime,"https://pc.woozooo.com/");
   }
 
-  private long downloadToFile(String url,File destination,String cookie)
+  private long downloadToFile(LanzouCore.DirectLink direct,File destination,String referer)
       throws CloudFilesClient.CloudException{
-    String current=url;
+    String current=direct.url;
     for(int hop=0;hop<=MAX_REDIRECTS;hop++){
       HttpURLConnection connection=null;
       try{
@@ -1647,9 +1482,9 @@ final class OrdinaryCloudClient {
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(60_000);
-        connection.setRequestProperty("User-Agent",userAgent());
-        connection.setRequestProperty("Referer","https://pc.woozooo.com/");
-        if(cookie!=null&&!cookie.isEmpty())connection.setRequestProperty("Cookie",cookie);
+        connection.setRequestProperty("User-Agent",direct.requestUserAgent);
+        connection.setRequestProperty("Referer",referer);
+        if(direct.cookie!=null&&!direct.cookie.isEmpty())connection.setRequestProperty("Cookie",direct.cookie);
         int status=connection.getResponseCode();
         if(status>=300&&status<400){
           String location=connection.getHeaderField("Location");
@@ -2051,47 +1886,6 @@ final class OrdinaryCloudClient {
     String last="";
     while(matcher.find())if(!matcher.group(1).trim().isEmpty())last=matcher.group(1).trim();
     return last;
-  }
-
-  private static String functionBlock(String html,String name){
-    if(html==null)return null;
-    Matcher found=Pattern.compile("(?is)function\\s+"+Pattern.quote(name)+"\\s*\\([^)]*\\)\\s*\\{")
-        .matcher(html);
-    if(!found.find())return null;
-    int depth=1;
-    int index=found.end();
-    char quote=0;
-    boolean line=false,block=false;
-    while(index<html.length()){
-      char current=html.charAt(index);
-      char next=index+1<html.length()?html.charAt(index+1):0;
-      if(line){
-        if(current=='\n'||current=='\r')line=false;
-        index++;
-        continue;
-      }
-      if(block){
-        if(current=='*'&&next=='/'){block=false;index+=2;}
-        else index++;
-        continue;
-      }
-      if(quote!=0){
-        if(current=='\\'){index+=2;continue;}
-        if(current==quote)quote=0;
-        index++;
-        continue;
-      }
-      if(current=='/'&&next=='/'){line=true;index+=2;continue;}
-      if(current=='/'&&next=='*'){block=true;index+=2;continue;}
-      if(current=='\''||current=='"'||current=='`'){quote=current;index++;continue;}
-      if(current=='{')depth++;
-      else if(current=='}'){
-        depth--;
-        if(depth==0)return html.substring(found.start(),index+1);
-      }
-      index++;
-    }
-    return null;
   }
 
   private static String sanitize(String message){

@@ -40,32 +40,42 @@ final class CloudManagement {
     owner.pageDirection=1;owner.base();owner.pageKind=7;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=this::back;
     owner.primaryHeader("管理");controls.clear();
     ImageButton back=owner.iconButton(R.drawable.ic_back,"返回市场");back.setOnClickListener(v->owner.marketPages().showMarket(false));owner.pageHeaderRow.addView(back,0,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
-    ImageButton accounts=owner.iconButton(R.drawable.ic_sources,"切换或登录云盘账号");accounts.setOnClickListener(v->accounts());owner.pageHeaderRow.addView(accounts);controls.add(accounts);
+    ImageButton accountSettings=owner.iconButton(R.drawable.ic_settings,"云盘账号设置");accountSettings.setOnClickListener(v->owner.openCloudAccountSettings());owner.pageHeaderRow.addView(accountSettings);controls.add(accountSettings);
     ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
     LinearLayout providers=new LinearLayout(owner);
+    providers.setGravity(Gravity.CENTER_VERTICAL);
     for(CloudFilesClient.Provider value:CloudFilesClient.Provider.values()){
-      Button button=value==provider?AppButtons.primary(owner,value==CloudFilesClient.Provider.ORDINARY?"蓝奏云":"蓝奏云优享版"):owner.button(value==CloudFilesClient.Provider.ORDINARY?"蓝奏云":"蓝奏云优享版");
-      button.setContentDescription("管理"+(value==CloudFilesClient.Provider.ORDINARY?"普通蓝奏云":"蓝奏云优享版"));
-      button.setOnClickListener(v->{if(busy||provider==value)return;provider=value;folderIds.clear();folderNames.clear();items.clear();selected.clear();query="";page=0;owner.getSharedPreferences("cloud_management",0).edit().putBoolean("premium",value==CloudFilesClient.Provider.PREMIUM).apply();show();});
-      LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,owner.dp(48),1);params.setMargins(owner.dp(3),0,owner.dp(3),0);providers.addView(button,params);controls.add(button);
+      String label=value==CloudFilesClient.Provider.ORDINARY?"普通蓝奏云":"蓝奏云优享版";
+      View tab=owner.underlineFilter(label,value==provider,()->{
+        if(busy||provider==value)return;
+        provider=value;folderIds.clear();folderNames.clear();items.clear();selected.clear();query="";page=0;
+        owner.getSharedPreferences("cloud_management",0).edit().putBoolean("premium",value==CloudFilesClient.Provider.PREMIUM).apply();
+        show();
+      });
+      providers.addView(tab,new LinearLayout.LayoutParams(-2,owner.dp(46)));
+      controls.add(tab);
     }
-    owner.root.addView(providers);
+    HorizontalScrollView providerScroll=new HorizontalScrollView(owner);
+    providerScroll.setHorizontalScrollBarEnabled(false);
+    providerScroll.addView(providers);
+    owner.root.addView(providerScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     boolean landscape=owner.getResources().getConfiguration().orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE;
     HorizontalScrollView pathScroll=new HorizontalScrollView(owner);pathScroll.setHorizontalScrollBarEnabled(false);breadcrumbs=new LinearLayout(owner);pathScroll.addView(breadcrumbs);renderBreadcrumbs();
-    
+
     EditText filter=owner.sourceInput("搜索当前文件夹",android.text.InputType.TYPE_CLASS_TEXT);filter.setSingleLine(true);filter.setText(query);
-    if(landscape){LinearLayout navigation=new LinearLayout(owner);navigation.addView(pathScroll,new LinearLayout.LayoutParams(0,owner.dp(48),1));navigation.addView(filter,new LinearLayout.LayoutParams(0,owner.dp(48),1));owner.root.addView(navigation);}else{owner.root.addView(pathScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));owner.root.addView(filter,new LinearLayout.LayoutParams(-1,owner.dp(48)));}
+    owner.root.addView(pathScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));
+    owner.root.addView(filter,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     filter.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int b,int c){}public void afterTextChanged(Editable e){}public void onTextChanged(CharSequence s,int a,int b,int c){query=s.toString();if(adapter!=null)adapter.notifyDataSetChanged();}});
     LinearLayout actions=new LinearLayout(owner);actions.setGravity(Gravity.CENTER_VERTICAL);
     ImageButton add=owner.iconButton(R.drawable.ic_add,"新建文件夹");add.setOnClickListener(v->createFolder());actions.addView(add);controls.add(add);
     ImageButton upload=owner.iconButton(R.drawable.ic_folder,"上传文件或文件夹");upload.setOnClickListener(v->uploadMenu());actions.addView(upload);controls.add(upload);
     selection=owner.text("长按项目多选",12,owner.MUTED);actions.addView(selection,new LinearLayout.LayoutParams(0,owner.dp(48),1));
-    Button selectedActions=owner.toolbarTextButton("所选项目");selectedActions.setOnClickListener(v->selectionMenu());actions.addView(selectedActions);controls.add(selectedActions);owner.root.addView(actions);
+    Button selectedActions=owner.toolbarTextButton("所选项目");selectedActions.setOnClickListener(v->selectionMenu());actions.addView(selectedActions);controls.add(selectedActions);owner.root.addView(actions,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     status=landscape?selection:owner.text("",12,owner.MUTED);status.setMaxLines(2);if(!landscape)owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(44)));
     list=new ListView(owner);list.setDivider(new android.graphics.drawable.ColorDrawable(owner.DIV));list.setDividerHeight(owner.dp(1));adapter=new FileAdapter();list.setAdapter(adapter);
     android.widget.FrameLayout body=new android.widget.FrameLayout(owner);body.addView(list,new android.widget.FrameLayout.LayoutParams(-1,-1));
-    LinearLayout empty=new LinearLayout(owner);empty.setOrientation(LinearLayout.VERTICAL);empty.setGravity(Gravity.CENTER);empty.addView(owner.text("此目录暂无项目，或需要先登录云盘账号",13,owner.MUTED));
-    Button loginAction=owner.button("登录云盘账号");loginAction.setOnClickListener(v->login());empty.addView(loginAction,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(loginAction);body.addView(empty,new android.widget.FrameLayout.LayoutParams(-1,-1));list.setEmptyView(empty);owner.root.addView(body,new LinearLayout.LayoutParams(-1,0,1));
+    LinearLayout empty=new LinearLayout(owner);empty.setOrientation(LinearLayout.VERTICAL);empty.setGravity(Gravity.CENTER);empty.addView(owner.text("此目录暂无项目；未登录时请前往设置添加账号",13,owner.MUTED));
+    Button loginAction=owner.button("前往设置登录");loginAction.setOnClickListener(v->owner.openCloudAccountSettings());empty.addView(loginAction,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(loginAction);body.addView(empty,new android.widget.FrameLayout.LayoutParams(-1,-1));list.setEmptyView(empty);owner.root.addView(body,new LinearLayout.LayoutParams(-1,0,1));
     list.setOnItemClickListener((p,v,position,id)->{if(busy)return;CloudFilesClient.CloudItem item=adapter.visible().get(position);if(!selected.isEmpty()){toggle(item);return;}if(item.folder){folderIds.add(item.id);folderNames.add(item.name);load(false);}else itemMenu(item);});
     list.setOnItemLongClickListener((p,v,position,id)->{if(busy)return true;toggle(adapter.visible().get(position));return true;});
     more=owner.button("加载下一页");more.setOnClickListener(v->load(true));owner.root.addView(more,new LinearLayout.LayoutParams(-1,owner.dp(48)));controls.add(more);
@@ -96,9 +106,6 @@ final class CloudManagement {
   }
   private void toggle(CloudFilesClient.CloudItem item){if(!selected.add(item.id))selected.remove(item.id);update();}
   private List<CloudFilesClient.CloudItem> selectedItems(){List<CloudFilesClient.CloudItem> out=new ArrayList<>();for(CloudFilesClient.CloudItem item:items)if(selected.contains(item.id))out.add(item);return out;}
-  private void accounts(){work(null,()->{List<String> names=client.accountNames(provider);String current=client.currentAccountName(provider);owner.runOnUiThread(()->{if(owner.pageKind!=7)return;String[] labels=new String[names.size()+1];for(int i=0;i<names.size();i++)labels[i]=names.get(i)+(names.get(i).equals(current)?" · 当前":"");labels[names.size()]="登录其他账号";AlertDialog dialog=new AlertDialog.Builder(owner).setTitle("云盘账号").setItems(labels,(d,which)->{if(which==names.size())login();else accountActions(names.get(which));}).setNegativeButton("关闭",null).create();owner.showRounded(dialog);});return "";},false);}
-  private void accountActions(String name){AlertDialog dialog=new AlertDialog.Builder(owner).setTitle(name).setItems(new String[]{"切换到此账号","移除此账号"},(d,which)->{if(which==0)work("账号已切换",()->{client.selectAccount(provider,name);folderIds.clear();folderNames.clear();return "";},true);else confirm("移除账号？","只移除本机登录信息，不删除云端文件。",()->work("账号已移除",()->{client.removeAccount(provider,name);items.clear();folderIds.clear();folderNames.clear();return "";},true));}).setNegativeButton("取消",null).create();owner.showRounded(dialog);}
-  private void login(){LinearLayout panel=panel();EditText account=input(panel,"账号",false),password=input(panel,"密码",true);AlertDialog dialog=new AlertDialog.Builder(owner).setTitle(provider==CloudFilesClient.Provider.PREMIUM?"登录蓝奏云优享版":"登录蓝奏云").setView(panel).setNegativeButton("取消",null).setPositiveButton("登录",null).create();owner.showRounded(dialog);dialog.getButton(-1).setOnClickListener(v->{String name=account.getText().toString().trim(),secret=password.getText().toString();if(name.isEmpty()||secret.isEmpty()){account.setError("请输入账号和密码");return;}password.setText("");dialog.dismiss();work("登录成功",()->{client.login(provider,name,secret);items.clear();folderIds.clear();folderNames.clear();return "";},true);});}
   private void createFolder(){LinearLayout panel=panel();EditText name=input(panel,"文件夹名称",false),description=input(panel,"文件夹简介（可选）",false);AlertDialog dialog=new AlertDialog.Builder(owner).setTitle("新建文件夹").setView(panel).setNegativeButton("取消",null).setPositiveButton("创建",null).create();owner.showRounded(dialog);dialog.getButton(-1).setOnClickListener(v->{String title=name.getText().toString().trim();if(title.isEmpty()){name.setError("请输入名称");return;}String detail=description.getText().toString();dialog.dismiss();String parent=folder();work("文件夹已创建",()->{client.createFolder(parent,title,detail);return "";},true);});}
   private void itemMenu(CloudFilesClient.CloudItem item){
     List<String> labels=new ArrayList<>(Arrays.asList("分享","下载","重命名","移动","复制","设置密码","编辑简介","加入列表源","删除"));

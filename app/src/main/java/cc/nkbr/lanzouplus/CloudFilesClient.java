@@ -338,6 +338,9 @@ final class CloudFilesClient {
 
   Provider provider(){return selection;}
 
+  /** The single premium client used by this process, shared with the settings and file pages. */
+  PremiumCloudClient premiumClient(){return premium;}
+
   void selectProvider(Provider provider){
     if(provider!=null)selection=provider;
   }
@@ -377,6 +380,24 @@ final class CloudFilesClient {
       }
     }
     OrdinaryCloudClient.LoginState state=ordinary.loginAndRemember(account,password);
+    return new LoginState(state.configured,state.loggedIn,false,state.userId);
+  }
+
+  /**
+   * Checks one stored account without changing the current account or the provider selection.
+   * Premium reuses the shared session cache; ordinary probes through a private client so the
+   * shared cookie jar and active session keep serving background downloads and saves.
+   */
+  LoginState verifyAccount(Provider provider,String account)throws CloudException{
+    if(provider==Provider.PREMIUM){
+      try{
+        PremiumCloudClient.LoginState state=premium.ensureLoggedIn(account);
+        return new LoginState(state.configured,state.loggedIn,state.premium,state.userId);
+      }catch(PremiumCloudClient.CloudException error){
+        throw translate(error);
+      }
+    }
+    OrdinaryCloudClient.LoginState state=ordinary.verifyAccount(account);
     return new LoginState(state.configured,state.loggedIn,false,state.userId);
   }
 

@@ -1,5 +1,7 @@
 package cc.nkbr.lanzouplus;
 
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.view.*;
 import android.widget.*;
 import java.util.*;
@@ -89,14 +91,32 @@ final class SettingsTabs {
         add(body,owner.buildUnifiedSliderPanel(owner.buildAdbInstallThreadSettings()));
         addRow(body,owner.settingsAction(R.drawable.ic_folder,owner.getString(R.string.settings_storage_permission),v->OnboardingFlow.requestStoragePermission(owner)));
         addRow(body,owner.settingsAction(R.drawable.ic_download,owner.getString(R.string.settings_battery_permission),v->OnboardingFlow.requestBatteryPermission(owner)));break;
-      default:
-        addRow(body,owner.settingsAction(R.drawable.ic_refresh,owner.getString(R.string.settings_update_channel)+" · "+(OnboardingFlow.selectedChannel(owner)==UpdateChannel.TEST?"Test":"Stable"),v->owner.showUpdateChannelDialog()));
+      default: {
+        String channel=OnboardingFlow.selectedChannel(owner)==UpdateChannel.TEST?"测试版":"稳定版";
+        addRow(body,valueRow(R.drawable.ic_refresh,owner.getString(R.string.settings_update_channel),channel,"更新通道，当前 "+channel+"，点击选择",v->owner.showUpdateChannelDialog()));
         addRow(body,owner.settingsAction(R.drawable.ic_refresh,"检查更新",v->owner.checkForUpdates(true)));
         addRow(body,owner.settingsAction(R.drawable.ic_copy,"关于软件",v->owner.showSoftwareDetailsDialog(false)));
+        addRow(body,valueRow(R.drawable.ic_delete_file,"清理范围",owner.cacheCleanupScopeLabel(),"清理范围，当前 "+owner.cacheCleanupScopeLabel(),v->owner.showCacheCleanupScopeDialog()));
         addRow(body,owner.settingsAction(R.drawable.ic_delete_file,"清理缓存",v->owner.showCacheCleanupDialog()));break;
+      }
     }
     ScrollView scroll=new ScrollView(owner);scroll.setFillViewport(true);scroll.setContentDescription("设置 · "+name);scroll.addView(body);return scroll;
   }
   private void add(LinearLayout body,View child){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=owner.dp(12);body.addView(child,params);}
   private void addRow(LinearLayout body,View child){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,owner.settingsRowHeight());params.bottomMargin=owner.dp(12);body.addView(child,params);}
+  private LinearLayout valueRow(int icon,String title,String value,String description,View.OnClickListener click){
+    LinearLayout row=owner.settingsRowShell();
+    row.setBackground(owner.filterRipple(new ColorDrawable(Color.TRANSPARENT)));
+    row.setClickable(true);
+    row.setFocusable(true);
+    row.setContentDescription(description);
+    row.setOnClickListener(click);
+    row.addView(owner.settingsLeadingIcon(icon),owner.settingsIconBox());
+    row.addView(owner.settingsRowTitle(title),new LinearLayout.LayoutParams(0,-1,1));
+    TextView current=owner.text(value,13,owner.PRIMARY);
+    current.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);
+    current.setPadding(owner.dp(12),0,owner.dp(4),0);
+    row.addView(current,new LinearLayout.LayoutParams(-2,-1));
+    return row;
+  }
 }

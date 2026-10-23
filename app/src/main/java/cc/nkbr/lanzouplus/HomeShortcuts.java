@@ -321,19 +321,11 @@ final class HomeShortcuts {
   }
 
   private void choose(HomeShortcutStore.Entry replacing,int targetSlot){
-    HomeShortcutPicker.choose(owner,picked->{
-      int existing=indexOf(picked.id);
-      if(replacing==null){
-        boolean placed=store.addAt(picked,targetSlot);
-        refresh();
-        if(!placed)owner.showNotice("这个位置已被占用，请重试",true);
-        else owner.showNotice(existing>=0?"快捷项目已移动到所选位置":"已添加快捷项目",false);
-        return;
-      }
-      int index=indexOf(replacing.id);
-      boolean replaced=store.replace(index,picked);
+    HomeShortcutPicker.choose(owner,store.load(),replacing,picked->{
+      if(replacing!=null){boolean replacement=false;for(HomeShortcutStore.Entry entry:picked.entries)if(entry.id.equals(replacing.id)||indexOf(entry.id)<0){replacement=true;break;}if(!replacement){owner.showNotice("请选择一个新的快捷项目",true);return;}}
+      store.applySelection(picked.entries,picked.editableIds,targetSlot);
       refresh();
-      owner.showNotice(replaced?"快捷项目已替换":existing>=0?"这个项目已在快捷栏中":"原快捷项目已不存在",!replaced);
+      owner.showNotice("快捷项目已保存",false);
     });
   }
 

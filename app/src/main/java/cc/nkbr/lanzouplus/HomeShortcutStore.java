@@ -118,6 +118,22 @@ final class HomeShortcutStore {
     values.set(index,entry);persistSorted(values);return true;
   }
 
+  /** Apply one confirmed selection without moving shortcuts outside its edited scope. */
+  synchronized void applySelection(List<Entry> selected,java.util.Set<String> editableIds,int anchorSlot){
+    java.util.LinkedHashMap<String,Entry> chosen=new java.util.LinkedHashMap<>();
+    for(Entry entry:selected)if(entry!=null&&!entry.id.isEmpty())chosen.put(entry.id,entry);
+    List<Entry> values=load();
+    values.removeIf(entry->editableIds.contains(entry.id)&&!chosen.containsKey(entry.id));
+    int next=Math.max(0,anchorSlot);
+    for(Entry entry:chosen.values()){
+      int retained=-1;
+      for(int i=0;i<values.size();i++)if(values.get(i).id.equals(entry.id)){retained=i;break;}
+      if(retained>=0){entry.slot=values.get(retained).slot;values.set(retained,entry);}
+      else{while(occupied(values,next))next++;entry.slot=next++;values.add(entry);}
+    }
+    persistSorted(values);
+  }
+
   synchronized void remove(int index){
     List<Entry> values=load();
     if(index<0||index>=values.size())return;

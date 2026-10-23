@@ -229,6 +229,8 @@ final class MarketProjects implements MarketProjectEditor.Host {
     final String draftAvatar = draft.publisherAvatar.trim();
     final String draftReadme = draft.readme;
     final String draftMode = draft.versionMode;
+    final boolean linkMode = draft.linkMode;
+    final String draftLinks = draft.links;
     final MarketProject existing = draft.original;
     final List<SourceDestinationPopup.Destination> paths = new ArrayList<>(draft.paths);
     final String existingCategoriesJson =
@@ -241,7 +243,7 @@ final class MarketProjects implements MarketProjectEditor.Host {
         JSONArray existingCategories = existingCategoriesJson.isEmpty()
             ? new JSONArray()
             : new JSONArray(existingCategoriesJson);
-        if (existing == null && paths.isEmpty()) {
+        if (!linkMode && existing == null && paths.isEmpty()) {
           throw new IOException("请先选择打包路径");
         }
         JSONObject metadata = new JSONObject()
@@ -258,7 +260,12 @@ final class MarketProjects implements MarketProjectEditor.Host {
             .put("sources", "sources.lzp")
             .put("categories", existingCategories);
 
-        String sources = paths.isEmpty()
+        String sources = linkMode ? MarketProjectInput.resolve(draftLinks, link -> {
+              Models.Source source = owner.core.resolveProjectSource(link);
+              return source.kind == Models.SOURCE_REPOSITORY
+                  ? owner.core.repositorySources(source, false)
+                  : java.util.Collections.singletonList(source);
+            }) : paths.isEmpty()
             ? existing.sourceJson
             : LanzouCore.sourceDocument(
                 SourcePathCatalog.selectedSources(owner.core, paths)).toString();
@@ -274,7 +281,12 @@ final class MarketProjects implements MarketProjectEditor.Host {
           project.sourceJson = sources;
           project.readme = draftReadme;
         }
-        if (!paths.isEmpty()) {
+        if (linkMode) {
+          while (project.sourcePaths.length() > 0) project.sourcePaths.remove(0);
+          for (String link : MarketProjectInput.links(draftLinks)) {
+            project.addSourcePath(new JSONObject().put("link", link).toString());
+          }
+        } else if (!paths.isEmpty()) {
           while (project.sourcePaths.length() > 0) project.sourcePaths.remove(0);
           for (SourceDestinationPopup.Destination path : paths) {
             project.addSourcePath(

@@ -76,7 +76,7 @@ final class CategoryEditor {
     String rawId=LanzouCore.sourceId(source),repositoryUrl=source.repositoryUrl,memberId=found.id;
     show(owner,"分类 · "+item.title,found.categories,true,values->{
       Models.Source updated=owner.core.updateMemberCategories(rawId,repositoryUrl,memberId,values);
-      owner.runOnUiThread(()->{MainActivity.copySource(updated,source);owner.applyLocalSourceSearch(owner.currentSourceQuery);});
+      owner.runOnUiThread(()->{MainActivity.copySource(updated,source);if(owner.pageKind==1&&owner.inlineSourcePage!=null&&owner.inlineSourcePage.collection())owner.inlineSourcePage.refreshCurrent();else owner.applyLocalSourceSearch(owner.currentSourceQuery);});
     });
   }
 

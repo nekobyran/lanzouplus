@@ -13,29 +13,8 @@ final class MarketPages {
   final MainActivity owner;
   MarketPages(MainActivity owner){this.owner=owner;}
   void showRepository(Models.Source repository,boolean refresh){
-    boolean entering=!repository.url.equals(owner.sourcePageRepository);if(owner.pageKind==1&&entering)owner.retainSourceListPage();if(entering)owner.selectedSourceCategories.clear();
-    Runnable returnToSources=()->{if(!owner.restoreSourceListPage())owner.showSources();};
-    SourceSecondaryPage.Identity identity=SourceSecondaryPage.begin(owner,repository,1,returnToSources,()->showRepository(repository,true));
-    owner.activeSource=null;owner.clearFolderTrail();owner.sourcePageRepository=repository.url;owner.sourcePageRebuildAction=()->showRepository(repository,false);owner.systemBackAction=returnToSources;
-    owner.activeSourceCategory="全部";TextView info=identity.text;ImageView repoIcon=identity.icon,publisherAvatar=identity.avatar;
-    List<Models.Source> sources=new ArrayList<>();owner.sourcePageSources=sources;owner.sourceGrid=new GridLayout(owner);GridLayout grid=owner.sourceGrid;
-    owner.sourceFilter=owner.pageSearch(query->owner.queueSourceListFilter(sources,query,owner.sourceHeading));owner.sourceHeading=owner.text("正在读取仓库…",12,owner.MUTED);owner.root.addView(owner.sourceHeading);owner.addSourceCategoryBar(sources);
-    ScrollView scroll=new ScrollView(owner);owner.pageScroll=scroll;scroll.addView(grid);owner.root.addView(owner.draggableList(scroll,grid,"拖动仓库列表"),new LinearLayout.LayoutParams(-1,0,1));int session=owner.navigationSession;
-    owner.io.execute(()->{
-      try{List<Models.Source> cached=owner.core.cachedRepositorySources(repository);if(!cached.isEmpty())publishSources(session,grid,sources,cached);
-        List<Models.Source> latest=owner.core.repositorySources(repository,refresh);publishSources(session,grid,sources,latest);
-        publishRepositoryHeader(session,info,repoIcon,publisherAvatar,repository);
-      }catch(Exception error){owner.runOnUiThread(()->{if(session==owner.navigationSession){owner.showNotice("仓库读取失败："+owner.friendlyError(error),true);if(sources.isEmpty())owner.sourceHeading.setText("读取失败，可点右上角重试");}});}
-    });
+    InlineSourcePage.open(owner,repository,refresh);
   }
-  /** After a read (including a manual check) the header shows the repository's newest metadata. */
-  private void publishRepositoryHeader(int session,TextView info,ImageView repoIcon,ImageView avatar,Models.Source repository){
-    MarketRepositoryClient.Document document;try{document=owner.core.marketRepositories().cached(repository.url);}catch(Exception error){return;}if(document==null)return;
-    Models.Source fresh;try{fresh=document.source();}catch(Exception error){return;}
-    final String iconUrl=fresh.iconUrl,avatarUrl=fresh.avatarUrl;owner.runOnUiThread(()->{if(session!=owner.navigationSession)return;SourceSecondaryPage.update(owner,new SourceSecondaryPage.Identity(repoIcon,avatar,info),fresh.title,fresh.publisher,fresh.repositoryVersion,fresh.description,iconUrl,avatarUrl);});
-  }
-  private void publishSources(int session,GridLayout grid,List<Models.Source> target,List<Models.Source> values){owner.runOnUiThread(()->{if(session!=owner.navigationSession||owner.sourceGrid!=grid)return;target.clear();target.addAll(values);owner.sourceDataRevision++;owner.rebuildCategoryMemberships(target);owner.renderSourceCategories(target);owner.renderSources(grid,target,owner.sourceFilter.getText().toString(),owner.sourceHeading);MainActivity.SourceListPageState restore=owner.pendingSourceListRestore;if(restore!=null){owner.pendingSourceListRestore=null;owner.restoreFolderScrollBeforeDraw(owner.pageScroll,restore.pageScroll.getScrollY());}});}
-
   void showMarket(boolean force){
     owner.pageDirection=1;owner.primaryBase(4);owner.pageKind=5;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=owner::navigateHome;owner.primaryHeader("市场");
     ImageButton submit=owner.iconButton(R.drawable.ic_add,"上传 GitHub 仓库链接");submit.setOnClickListener(v->submitDialog(null));owner.pageHeaderRow.addView(submit,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
@@ -43,8 +22,16 @@ final class MarketPages {
     ImageButton management=owner.iconButton(R.drawable.ic_settings,"云盘文件管理");management.setOnClickListener(v->owner.cloudManagement().show());owner.pageHeaderRow.addView(management,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton reload=owner.iconButton(R.drawable.ic_refresh,"更新市场");reload.setOnClickListener(v->showMarket(true));owner.pageHeaderRow.addView(reload,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     TextView status=owner.text("正在读取市场…",13,owner.MUTED);owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(28)));
+    EditText search=owner.sourceInput("搜索标题、简介、发布者或仓库名",android.text.InputType.TYPE_CLASS_TEXT);
+    search.setSingleLine(true);search.setContentDescription("市场本地搜索");
+    owner.root.addView(search,new LinearLayout.LayoutParams(-1,owner.dp(52)));
     GridView grid=new GridView(owner);owner.root.addView(grid,new LinearLayout.LayoutParams(-1,0,1));
     MarketCatalogView catalog=new MarketCatalogView(owner,grid,status,force);int session=owner.navigationSession;
+    search.addTextChangedListener(new android.text.TextWatcher(){
+      public void beforeTextChanged(CharSequence s,int start,int count,int after){}
+      public void onTextChanged(CharSequence s,int start,int before,int count){catalog.filter(s.toString());}
+      public void afterTextChanged(android.text.Editable value){}
+    });
     owner.io.execute(()->{try{
       File file=new File(owner.getFilesDir(),"market-index.json");MarketIndex cached=readIndex(file);
       if(!cached.entries.isEmpty())owner.runOnUiThread(()->catalog.render(cached.entries));

@@ -17,6 +17,8 @@ final class MarketCatalogView {
   private final GridView grid;
   private final TextView summary;
   private final List<Card> cards=new ArrayList<>();
+  private final List<Card> visible=new ArrayList<>();
+  private String query="";
   private final CatalogAdapter adapter=new CatalogAdapter();
   private final int session;
   private final boolean force;
@@ -43,7 +45,7 @@ final class MarketCatalogView {
     grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
     grid.setClipToPadding(false);
     grid.setAdapter(adapter);
-    grid.setOnItemClickListener((parent,view,position,id)->showDetails(cards.get(position)));
+    grid.setOnItemClickListener((parent,view,position,id)->showDetails(visible.get(position)));
   }
   void render(List<MarketRepositoryClient.CatalogEntry> entries){
     if(session!=owner.navigationSession||owner.pageKind!=5)return;
@@ -54,8 +56,24 @@ final class MarketCatalogView {
       if(card==null)card=new Card(entry);else card.entry=entry;
       cards.add(card);
     }
-    summary.setText(cards.isEmpty()?"市场暂无仓库，可上传 GitHub 仓库链接":"资源仓库 · "+cards.size()+" 个");
+    filter(query);
+  }
+  void filter(String value){
+    query=value.trim().toLowerCase(Locale.ROOT);visible.clear();
+    List<Card> matches=new ArrayList<>(cards);
+    Map<Card,Integer> ranks=new IdentityHashMap<>();
+    for(Card card:cards)ranks.put(card,searchRank(card.entry,query));
+    matches.removeIf(card->ranks.get(card)<0);
+    matches.sort(Comparator.comparingInt(ranks::get));visible.addAll(matches);
+    summary.setText(cards.isEmpty()?"市场暂无仓库，可上传 GitHub 仓库链接":query.isEmpty()?"资源仓库 · "+cards.size()+" 个":"本地匹配 · "+visible.size()+" / "+cards.size()+" 个");
     adapter.notifyDataSetChanged();
+  }
+  static int searchRank(MarketRepositoryClient.CatalogEntry entry,String query){
+    if(query.isEmpty())return 0;
+    int best=Integer.MAX_VALUE;
+    String[] fields={entry.displayTitle(),entry.repositoryName,entry.description,entry.displayPublisher(),entry.githubUrl,entry.version};
+    for(String field:fields){int rank=LanzouCore.matchRank(field,query,true);if(rank>=0)best=Math.min(best,rank);}
+    return best==Integer.MAX_VALUE?-1:best;
   }
   int columns(){return owner.getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE?4:2;}
   void columnsChanged(){grid.setNumColumns(columns());}
@@ -83,8 +101,8 @@ final class MarketCatalogView {
     });
   }
   private final class CatalogAdapter extends BaseAdapter {
-    @Override public int getCount(){return cards.size();}
-    @Override public Object getItem(int position){return cards.get(position);}
+    @Override public int getCount(){return visible.size();}
+    @Override public Object getItem(int position){return visible.get(position);}
     @Override public long getItemId(int position){return position;}
     @Override public View getView(int position,View convertView,ViewGroup parent){
       Holder holder;
@@ -122,7 +140,7 @@ final class MarketCatalogView {
         holder.description.setMinHeight(owner.dp(59));row.addView(holder.description,new LinearLayout.LayoutParams(-1,-2));
         row.setTag(holder);
       }
-      Card card=cards.get(position);
+      Card card=visible.get(position);
       holder.name.setText(card.entry.displayTitle());
       String publisher=card.entry.displayPublisher();
       if(publisher.isEmpty()&&card.github!=null)publisher=card.github.owner;
@@ -284,8 +302,15 @@ final class MarketCatalogView {
     owner.showRounded(dialog);
     owner.io.execute(()->{
       try{
-        MarketRepositoryClient.Document loaded=owner.core.marketRepositories().readme(card.url,true);
+        MarketRepositoryClient.Document loaded=owner.core.marketRepositories().readme(card.url,false);
         Models.Source current=findInstalled(card.url);
+        owner.runOnUiThread(()->{
+          if(!dialog.isShowing())return;
+          document[0]=loaded;installed[0]=current;
+          status.setText(loaded.sourcePublisher()+" · "+loaded.metadata.version);
+          frame.removeAllViews();web[0]=MarketReadmeView.create(owner,loaded.readme,loaded.rawRoot,loaded.githubUrl);
+          frame.addView(web[0],new FrameLayout.LayoutParams(-1,-1));updateButtons[0].run();
+        });
         MarketRepositoryClient.GithubInfo info=card.github;
         if(info==null)try{info=owner.core.marketRepositories().githubInfo(card.url,force);}catch(Exception ignored){}
         MarketRepositoryClient.GithubInfo identity=info;
@@ -305,10 +330,6 @@ final class MarketCatalogView {
           starred[0]=knownStar;
           starButton.setContentDescription(knownSignedIn?"Star GitHub 仓库":"登录 GitHub 后 Star 仓库");
           updateStarButton(starButton,starred[0],stars[0],false);
-          frame.removeAllViews();
-          web[0]=MarketReadmeView.create(owner,loaded.readme,loaded.rawRoot,loaded.githubUrl);
-          frame.addView(web[0],
-              new FrameLayout.LayoutParams(-1,-1));
           updateButtons[0].run();
         });
       }catch(Exception error){

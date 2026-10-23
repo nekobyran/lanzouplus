@@ -174,7 +174,6 @@ final class OnboardingFlow {
     changing=true;
     previous.animate().cancel();
     previous.animate().alpha(0f).setDuration(110)
-        .translationX(-direction*dp(20))
         .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
         .withEndAction(()->{if(active&&shellView==previous)show.run();}).start();
   }
@@ -381,8 +380,8 @@ final class OnboardingFlow {
     view.animate().cancel();
     if(!activity.motionEnabled()){view.setAlpha(1f);view.setTranslationX(0f);return;}
     view.setAlpha(0f);
-    view.setTranslationX(direction*dp(28));
-    view.animate().alpha(1f).translationX(0f).setStartDelay(delay).setDuration(230)
+    view.setTranslationX(0f);
+    view.animate().alpha(1f).setStartDelay(delay).setDuration(230)
         .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
   }
 

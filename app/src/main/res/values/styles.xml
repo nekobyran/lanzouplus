@@ -1,1 +1,6 @@
-<resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:windowActionModeOverlay">true</item><item name="android:colorAccent">#6750A4</item><item name="android:navigationBarColor">#FFFBFE</item><item name="android:statusBarColor">#FFFBFE</item><item name="android:windowLightStatusBar">true</item></style></resources>
+<resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"><item name="android:windowAnimationStyle">@style/PageFadeAnimation</item><item name="android:fontFamily">sans</item><item name="android:windowActionModeOverlay">true</item><item name="android:colorAccent">#6750A4</item><item name="android:navigationBarColor">#FFFBFE</item><item name="android:statusBarColor">#FFFBFE</item><item name="android:windowLightStatusBar">true</item></style><style name="PageFadeAnimation" parent="@android:style/Animation.Activity">
+<item name="android:activityOpenEnterAnimation">@android:anim/fade_in</item>
+<item name="android:activityOpenExitAnimation">@android:anim/fade_out</item>
+<item name="android:activityCloseEnterAnimation">@android:anim/fade_in</item>
+<item name="android:activityCloseExitAnimation">@android:anim/fade_out</item>
+</style></resources>

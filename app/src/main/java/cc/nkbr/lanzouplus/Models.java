@@ -62,6 +62,7 @@ final class Models {
     boolean recursiveFolders;
     /** Directory fuzzy match: exact contains first, then ordered subsequence. API search ignores it. */
     boolean fuzzyMatching;
+    int fuzzyLevel=2;
     /** Legacy single-mode view; modeMask is authoritative for multi-select search backends. */
     int mode=MODE_MIXED,modeMask=MASK_ALL;
     int maxPages;
@@ -99,6 +100,8 @@ final class Models {
       fuzzyMatching=value;
       return this;
     }
+    SearchOptions withFuzzyLevel(int value){fuzzyLevel=Math.max(1,Math.min(3,value));return this;}
+    int matchingLevel(){return fuzzyMatching?fuzzyLevel:0;}
     SearchOptions withScopeSources(Collection<Source> values){scopeSources.clear();scopeSources.addAll(values);return this;}
 
     static int normalizeModeMask(int value){int mask=value&MASK_ALL;return mask==0?MASK_DIRECTORY:mask;}
@@ -118,7 +121,7 @@ final class Models {
       // maxPages is a caller-supplied, explicit bound. It is never clamped to an
       // arbitrary ceiling: 0 means "until the last page" and any positive value
       // is honored exactly as given.
-      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,maxPages)).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching).withScopeSources(scopeSources);
+      return new SearchOptions(Math.max(0,concurrency),sourceSlice,untilLastPage,Math.max(0,maxPages)).withRecursiveFolders(recursiveFolders).withModeMask(mask).withFuzzyMatching((mask&MASK_DIRECTORY)!=0&&fuzzyMatching).withFuzzyLevel(fuzzyLevel).withScopeSources(scopeSources);
     }
   }
   interface Progress {

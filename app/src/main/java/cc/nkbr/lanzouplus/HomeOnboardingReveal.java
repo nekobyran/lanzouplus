@@ -4,7 +4,6 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
-import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Rect;
@@ -28,8 +27,7 @@ final class HomeOnboardingReveal {
   static final String CONSUMED_KEY="home_reveal_v188_consumed";
   private static final String CAPTION_PLACEHOLDER="开始资源探索之旅";
   private static final String SEARCH_PLACEHOLDER="搜索一下";
-  private static final int RISE_MS=320,ALIGN_MS=240,CAPTION_MS=360,MORPH_MS=580,ASSEMBLE_MS=260;
-  private static final int ICON_EXIT_DP=56,TITLE_OFFSET_DP=26,TITLE_RISE_DP=96,NAV_RISE_DP=76,MAX_LAYOUT_ATTEMPTS=6;
+  private static final int MAX_LAYOUT_ATTEMPTS=6;
 
   private final MainActivity owner;
   private final FrameLayout stage;
@@ -155,90 +153,26 @@ final class HomeOnboardingReveal {
       settle(true);
       return;
     }
-    Rect searchRect=boundsIn(stage,search);
     Rect titleRect=boundsIn(stage,titleAnchor);
 
-    title.setTranslationX(-owner.dp(TITLE_OFFSET_DP));
-    title.setTranslationY(owner.dp(TITLE_RISE_DP));
-    icon.setTranslationX(-owner.dp(TITLE_OFFSET_DP));
-    icon.setTranslationY(owner.dp(TITLE_RISE_DP));
-    if(nav!=null)nav.setTranslationY(owner.dp(NAV_RISE_DP));
-
     int pillWidth=Math.max(owner.dp(180),Math.round(caption.getPaint().measureText(CAPTION_PLACEHOLDER))+owner.dp(36));
-    int pillHeight=owner.dp(40);
-    final int startLeft=Math.round(titleRect.left+titleRect.width()/2f-pillWidth/2f);
-    final int startTop=titleRect.bottom+owner.dp(12);
-    setCaptionBounds(startLeft,startTop,pillWidth,pillHeight);
-
-    AnimatorSet rise=new AnimatorSet();
-    rise.playTogether(ObjectAnimator.ofFloat(title,View.TRANSLATION_Y,owner.dp(TITLE_RISE_DP),0f),
-        ObjectAnimator.ofFloat(title,View.ALPHA,0f,1f),
-        ObjectAnimator.ofFloat(icon,View.TRANSLATION_Y,owner.dp(TITLE_RISE_DP),0f),
-        ObjectAnimator.ofFloat(icon,View.ALPHA,0f,1f));
-    rise.setDuration(RISE_MS);
-    rise.setInterpolator(new DecelerateInterpolator());
-
-    AnimatorSet align=new AnimatorSet();
-    align.playTogether(ObjectAnimator.ofFloat(title,View.TRANSLATION_X,-owner.dp(TITLE_OFFSET_DP),0f),
-        ObjectAnimator.ofFloat(icon,View.TRANSLATION_X,-owner.dp(TITLE_OFFSET_DP),-owner.dp(ICON_EXIT_DP)),
-        ObjectAnimator.ofFloat(icon,View.ALPHA,1f,0f));
-    align.setDuration(ALIGN_MS);
-    align.setInterpolator(new DecelerateInterpolator());
-
-    ObjectAnimator greeting=ObjectAnimator.ofFloat(pill,View.ALPHA,0f,1f,1f);
-    greeting.setDuration(CAPTION_MS);
-
-    AnimatorSet assemble=new AnimatorSet();
-    List<Animator> assembly=new ArrayList<Animator>();
-    assembly.add(ObjectAnimator.ofFloat(icon,View.TRANSLATION_X,-owner.dp(ICON_EXIT_DP),0f));
-    assembly.add(ObjectAnimator.ofFloat(icon,View.ALPHA,0f,1f));
+    setCaptionBounds(Math.round(titleRect.left+titleRect.width()/2f-pillWidth/2f),titleRect.bottom+owner.dp(12),pillWidth,owner.dp(40));
+    AnimatorSet reveal=new AnimatorSet();
+    reveal.playTogether(ObjectAnimator.ofFloat(title,View.ALPHA,0f,1f),ObjectAnimator.ofFloat(icon,View.ALPHA,0f,1f));
+    reveal.setDuration(190);
+    ObjectAnimator greeting=ObjectAnimator.ofFloat(pill,View.ALPHA,0f,1f,0f);greeting.setDuration(300);
+    AnimatorSet home=new AnimatorSet();List<Animator> assembly=new ArrayList<>();
+    assembly.add(ObjectAnimator.ofFloat(search,View.ALPHA,0f,1f));
     if(category!=null)assembly.add(ObjectAnimator.ofFloat(category,View.ALPHA,0f,1f));
     if(recommendations!=null)assembly.add(ObjectAnimator.ofFloat(recommendations,View.ALPHA,0f,1f));
-    if(nav!=null)assembly.add(ObjectAnimator.ofFloat(nav,View.TRANSLATION_Y,owner.dp(NAV_RISE_DP),0f));
     if(nav!=null)assembly.add(ObjectAnimator.ofFloat(nav,View.ALPHA,0f,1f));
-    assemble.playTogether(assembly);
-    assemble.setDuration(ASSEMBLE_MS);
-    assemble.setInterpolator(new DecelerateInterpolator());
-
-    timeline.playSequentially(phase(rise,"title-rise"),phase(align,"title-align-icon-exit"),
-        phase(greeting,"exploration-caption"),
-        phase(morph(searchRect,startLeft,startTop,pillWidth,pillHeight),"search-morph"),
-        phase(assemble,"home-assemble"));
+    home.playTogether(assembly);home.setDuration(190);
+    timeline.playSequentially(phase(reveal,"title-fade"),phase(greeting,"exploration-caption"),phase(home,"home-fade"));
     timeline.addListener(new AnimatorListenerAdapter(){
       @Override public void onAnimationEnd(Animator animation){settle(true);}
       @Override public void onAnimationCancel(Animator animation){settle(true);}
     });
     timeline.start();
-  }
-
-  private ValueAnimator morph(Rect searchRect,int startLeft,int startTop,int startWidth,int startHeight){
-    final float startRadius=owner.dp(20),endRadius=owner.dp(26),stroke=owner.dp(1);
-    final int endLeft=searchRect.left,endTop=searchRect.top,endWidth=searchRect.width(),endHeight=searchRect.height();
-    final int surface=owner.SURFACE;
-    ValueAnimator morph=ValueAnimator.ofFloat(0f,1f);
-    morph.addUpdateListener(frame->{
-      if(finished)return;
-      float value=((Float)frame.getAnimatedValue()).floatValue();
-      setCaptionBounds(Math.round(startLeft+(endLeft-startLeft)*value),
-          Math.round(startTop+(endTop-startTop)*value),
-          Math.round(startWidth+(endWidth-startWidth)*value),
-          Math.round(startHeight+(endHeight-startHeight)*value));
-      captionShape.setCornerRadius(startRadius+(endRadius-startRadius)*value);
-      captionShape.setColor(Color.argb(Math.round(255*value),Color.red(surface),Color.green(surface),Color.blue(surface)));
-      captionShape.setStroke(Math.round(stroke*value),owner.DIV);
-      caption.setAlpha(Math.max(0f,1f-value/.4f));
-      hint.setAlpha(Math.min(1f,Math.max(0f,(value-.4f)/.6f)));
-      hint.setPadding(owner.search.getPaddingLeft(),owner.search.getPaddingTop(),
-          Math.round(owner.search.getPaddingRight()*value),owner.search.getPaddingBottom());
-    });
-    morph.addListener(new AnimatorListenerAdapter(){
-      @Override public void onAnimationEnd(Animator animation){
-        if(!finished){search.setAlpha(1f);pill.setAlpha(0f);}
-      }
-    });
-    morph.setDuration(MORPH_MS);
-    morph.setInterpolator(new DecelerateInterpolator());
-    return morph;
   }
 
   private void setCaptionBounds(int left,int top,int width,int height){

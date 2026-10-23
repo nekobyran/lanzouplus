@@ -32,6 +32,15 @@ import org.commonmark.renderer.html.HtmlRenderer;
 
 /** Repository Markdown stays local; only its images and explicitly opened links use the network. */
 final class MarketReadmeView {
+  private static final java.util.Map<String,byte[]> SESSION_IMAGES=new java.util.concurrent.ConcurrentHashMap<>();
+  private static final java.util.Map<String,Object> IMAGE_LOCKS=new java.util.concurrent.ConcurrentHashMap<>();
+  static byte[] imageBytes(String url)throws Exception{
+    synchronized(IMAGE_LOCKS.computeIfAbsent(url,key->new Object())){
+      byte[] bytes=SESSION_IMAGES.get(url);
+      if(bytes==null){bytes=MarketRepositoryClient.httpGet(url,4*1024*1024);SESSION_IMAGES.put(url,bytes);}
+      return bytes;
+    }
+  }
   private static final Pattern GITHUB_HTML_IMAGE=Pattern.compile(
       "(?i)(<img\\b[^>]*?\\bsrc\\s*=\\s*[\"']?)https://github\\.com/([^/\"'<>]+/[^/\"'<>]+)/(?:blob|raw)/");
   private static final List<Extension> EXTENSIONS=Arrays.asList(
@@ -53,9 +62,9 @@ final class MarketReadmeView {
     view.setWebViewClient(new WebViewClient(){
       @Override public WebResourceResponse shouldInterceptRequest(WebView web,WebResourceRequest request){
         String url=request.getUrl().toString();
-        if(request.isForMainFrame()||!"GET".equals(request.getMethod())||!GithubPublicTransport.supports(url))return null;
+        if(request.isForMainFrame()||!"GET".equals(request.getMethod())||!"https".equalsIgnoreCase(request.getUrl().getScheme()))return null;
         try{
-          ByteArrayInputStream input=new ByteArrayInputStream(MarketRepositoryClient.httpGet(url,4*1024*1024));
+          ByteArrayInputStream input=new ByteArrayInputStream(imageBytes(url));
           String mime=URLConnection.guessContentTypeFromStream(input);
           if(mime==null)mime=URLConnection.guessContentTypeFromName(request.getUrl().getPath());
           return new WebResourceResponse(mime==null?"application/octet-stream":mime,null,input);

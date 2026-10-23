@@ -105,11 +105,14 @@ final class MarketRepositoryClient {
   }
   private final File directory;
   private final Transport transport;
+  private static final Map<String,Map<String,Document>> SESSION_READMES=new ConcurrentHashMap<>();
+  private static final Map<String,Object> README_LOCKS=new ConcurrentHashMap<>();
+  private final Map<String,Document> sessionReadmes;
   private final Map<String,Object> repositoryLocks=new ConcurrentHashMap<>();
   private final Map<String,Document> memory=new HashMap<>();
   private final Map<String,Long> modified=new HashMap<>();
   MarketRepositoryClient(File directory){this(directory,MarketRepositoryClient::httpGet);}
-  MarketRepositoryClient(File directory,Transport transport){this.directory=directory;this.transport=transport;}
+  MarketRepositoryClient(File directory,Transport transport){this.directory=directory;this.transport=transport;sessionReadmes=SESSION_READMES.computeIfAbsent(directory.getAbsolutePath(),key->new ConcurrentHashMap<>());}
 
   synchronized Document cached(String raw)throws Exception{
     File file=cacheFile(raw);if(!file.isFile())return null;
@@ -138,12 +141,14 @@ final class MarketRepositoryClient {
   }
   /** Detail reads README without downloading the encrypted source or replacing an installed snapshot. */
   Document readme(String raw,boolean force)throws Exception{
-    String url=MarketRepository.canonicalUrl(raw);synchronized(repositoryLocks.computeIfAbsent(url,key->new Object())){
+    String url=MarketRepository.canonicalUrl(raw);synchronized(README_LOCKS.computeIfAbsent(directory.getAbsolutePath()+"\n"+url,key->new Object())){
+      Document remembered=sessionReadmes.get(url);
+      if(!force&&remembered!=null)return remembered;
       Document cached=cached(url),preview=previewLocked(url,force);
-      if(!force&&!preview.readme.isEmpty())return preview;
       String readme=new String(transport.get(preview.rawRoot+preview.metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
       Document result=new Document(url,preview.rawRoot,preview.ownerAvatar,preview.metadata,preview.sourceJson,readme,preview.sourcesLoaded,preview.checkedAt);
       if(cached==null||!cached.sourcesLoaded||preview.sourcesLoaded)save(result);
+      sessionReadmes.put(url,result);
       return result;
     }
   }
@@ -187,7 +192,7 @@ final class MarketRepositoryClient {
       sourcesLoaded=true;
     }
     Document result=new Document(url,root,avatarUrl(identity),metadata,sourceJson,readme,sourcesLoaded,System.currentTimeMillis());
-    save(result);return result;
+    save(result);sessionReadmes.put(url,result);return result;
   }
   /** True when the freshly read metadata describes a version above the cached snapshot. */
   private static boolean upstreamAhead(MarketRepository fresh,MarketRepository cached)throws Exception{

@@ -44,6 +44,8 @@ final class MarketProjectEditor {
     String icon;
     String publisherAvatar;
     String readme;
+    String links;
+    boolean linkMode;
     int scrollY;
     boolean saving;
     final List<SourceDestinationPopup.Destination> paths = new ArrayList<>();
@@ -60,6 +62,8 @@ final class MarketProjectEditor {
       icon = meta.optString("icon", "");
       publisherAvatar = meta.optString("publisherAvatar", "");
       readme = original == null ? "" : original.readme;
+      links = MarketProjectInput.savedLinks(original);
+      linkMode = !links.isEmpty();
     }
   }
 
@@ -69,6 +73,7 @@ final class MarketProjectEditor {
   private EditText nameInput;
   private EditText versionInput;
   private EditText iconInput;
+  private EditText linksInput;
   private TextView pathSummary;
   private Button choosePathsButton;
   private Button saveButton;
@@ -229,7 +234,25 @@ final class MarketProjectEditor {
     choosePathsButton.setOnClickListener(v -> choosePaths());
     LinearLayout pathsField = field("打包源路径", "", pathSummary, -2);
     pathsField.addView(choosePathsButton, new LinearLayout.LayoutParams(-2, owner.dp(48)));
+    TextView inputType = owner.uaDropdownView(draft.linkMode ? "链接" : "路径");
+    inputType.setContentDescription("选择打包源类型，路径或链接");
+    content.addView(field("打包源类型", "选择本机路径，或直接填写源链接。", inputType, 50), new LinearLayout.LayoutParams(-1,-2));
+    linksInput = multilineField("每行一个链接，可附提取码；支持蓝奏云、GitHub 标准仓库或网站", "打包源链接", 3, 6, draft.links);
+    LinearLayout linksField = field("打包源链接", "保存时解析链接并封装到工程，不添加到本机列表。", linksInput, -2);
+    Runnable inputMode = () -> {
+      inputType.setText(draft.linkMode ? "链接" : "路径");
+      pathsField.setVisibility(draft.linkMode ? View.GONE : View.VISIBLE);
+      linksField.setVisibility(draft.linkMode ? View.VISIBLE : View.GONE);
+    };
+    inputType.setOnClickListener(v -> {
+      android.app.AlertDialog picker = new android.app.AlertDialog.Builder(owner).setTitle("打包源类型")
+          .setItems(new String[]{"路径", "链接"}, (dialog, which) -> { draft.linkMode = which == 1; inputMode.run(); }).create();
+      owner.showRounded(picker);
+    });
     content.addView(pathsField, new LinearLayout.LayoutParams(-1, -2));
+    content.addView(linksField, new LinearLayout.LayoutParams(-1, -2));
+    watch(linksInput, value -> draft.links = value);
+    inputMode.run();
     refreshPathSummary();
 
     LinearLayout actions = new LinearLayout(owner);
@@ -363,7 +386,12 @@ final class MarketProjectEditor {
       return;
     }
     draft.versionMode = resolvedMode;
-    if (draft.original == null && draft.paths.isEmpty()) {
+    if (draft.linkMode && draft.links.trim().isEmpty()) {
+      linksInput.setError("请输入打包源链接");
+      linksInput.requestFocus();
+      return;
+    }
+    if (!draft.linkMode && draft.original == null && draft.paths.isEmpty()) {
       owner.showNotice("请先选择打包源路径", true);
       choosePathsButton.requestFocus();
       return;

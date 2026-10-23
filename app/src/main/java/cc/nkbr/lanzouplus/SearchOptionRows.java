@@ -10,18 +10,8 @@ final class SearchOptionRows {
     LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);
     panel.addView(row(owner,"模糊匹配",FUZZY,values,0,changed));
     panel.addView(row(owner,"递归搜索",new String[]{"关闭","开启"},values,1,changed));
-    panel.setTag("search-option-rows");adapt(owner,panel);
+    panel.setTag("search-option-rows");
     return panel;
-  }
-  private static void adapt(MainActivity owner,LinearLayout panel){
-    boolean wide=owner.getResources().getConfiguration().orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE;
-    panel.setOrientation(wide?LinearLayout.HORIZONTAL:LinearLayout.VERTICAL);
-    for(int i=0;i<panel.getChildCount();i++)panel.getChildAt(i).setLayoutParams(wide?new LinearLayout.LayoutParams(0,owner.dp(44),1):new LinearLayout.LayoutParams(-1,owner.dp(44)));
-  }
-  static void reflow(MainActivity owner){
-    if(owner.root==null)return;
-    android.view.View view=owner.root.findViewWithTag("search-option-rows");
-    if(view instanceof LinearLayout)adapt(owner,(LinearLayout)view);
   }
   private static LinearLayout row(MainActivity owner,String title,String[] choices,int[] values,int slot,Runnable changed){
     LinearLayout row=new LinearLayout(owner);row.setGravity(Gravity.CENTER_VERTICAL);
@@ -38,15 +28,5 @@ final class SearchOptionRows {
     row.addView(value,new LinearLayout.LayoutParams(0,owner.dp(44),1));
     row.addView(right,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(44)));render.run();
     return row;
-  }
-  static void install(MainActivity owner){
-    int[] values={owner.sessionSearchFuzzyMatching?owner.sessionSearchFuzzyLevel:0,owner.sessionSearchRecursiveFolders?1:0};
-    owner.root.addView(create(owner,values,()->{
-      owner.applySearchChoices(values);owner.persistSearchSettings();
-      if(owner.pageKind==1&&owner.sourcePageSources!=null){
-        owner.sourceDataRevision++;
-        owner.renderSources(owner.sourceGrid,owner.sourcePageSources,owner.sourceFilter.getText().toString(),owner.sourceHeading);
-      }else if(owner.activeSource!=null)owner.queueCurrentSourceSearch(owner.currentSourceQuery);
-    }),new LinearLayout.LayoutParams(-1,-2));
   }
 }

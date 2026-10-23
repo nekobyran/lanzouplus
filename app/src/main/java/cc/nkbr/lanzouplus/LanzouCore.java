@@ -904,7 +904,7 @@ final class LanzouCore {
     if(raw.getBytes(StandardCharsets.UTF_8).length>RULE_LIMIT)throw new IOException("源文件超过 8 MiB");
     JSONObject document=new JSONObject(raw);if(document.getInt("version")!=2)throw new IOException("仅支持 v2 源文件");
     JSONArray rows=document.getJSONArray("sources");List<Models.Source> out=new ArrayList<>();Set<String> ids=new HashSet<>();
-    for(int i=0;i<rows.length();i++){Models.Source source=sourceFromJson(rows.getJSONObject(i));if(!ids.add(sourceId(source)))throw new IOException("源身份重复");out.add(source);}return out;
+    for(int i=0;i<rows.length();i++){Models.Source source=sourceFromJson(rows.getJSONObject(i));if(!ids.add(sourceId(source)))throw new IOException("源身份重复");out.add(source);}SourceAncestry.link(out);return out;
   }
 
   String exportSourceRules(boolean staticRepositories)throws Exception{
@@ -1665,7 +1665,7 @@ final class LanzouCore {
   List<Models.Source> childDirectorySources(String parentId)throws IOException{List<Models.Source> out=new ArrayList<>();if(parentId==null||parentId.isEmpty())return out;for(Models.Source source:sources())if(source.childDirectory&&parentId.equals(source.parentId))out.add(copySource(source));return out;}
 
   /** Returns the stored child source for a folder row when the catalog knows it, else a transient source bound to the row real url. */
-  Models.Source nestedChildSource(Models.Source parent,Models.Item item)throws IOException{Models.Source known=catalogChildSource(parent,item);if(known!=null)return known;if(parent==null||item==null||!item.folder)return null;String url=firstNonEmpty(item.shareUrl,item.url),identity=redactedFolderIdentity(url);if(identity.isEmpty()&&url.isEmpty())return null;Models.Source child=new Models.Source();child.id=identity.isEmpty()?url:identity;child.url=child.originUrl=child.id;child.parentId=sourceId(parent);child.title=firstNonEmpty(item.title,child.id);child.password=item.password==null?"":item.password;child.description=item.description==null?"":item.description;child.searchable=parent.searchable;child.childDirectory=true;child.originPath=firstNonEmpty(parent.originPath,parent.title).isEmpty()?child.title:firstNonEmpty(parent.originPath,parent.title)+" / "+child.title;child.repositoryUrl=parent.repositoryUrl;return child;}
+  Models.Source nestedChildSource(Models.Source parent,Models.Item item)throws IOException{Models.Source known=catalogChildSource(parent,item);if(known!=null)return known;if(parent==null||item==null||!item.folder)return null;String url=firstNonEmpty(item.shareUrl,item.url),identity=redactedFolderIdentity(url);if(identity.isEmpty()&&url.isEmpty())return null;Models.Source child=new Models.Source();child.id=identity.isEmpty()?url:identity;child.url=child.id;child.originUrl=parent.url;child.parentId=sourceId(parent);child.title=firstNonEmpty(item.title,child.id);child.password=item.password==null?"":item.password;child.description=item.description==null?"":item.description;child.searchable=parent.searchable;child.childDirectory=true;child.originPath=firstNonEmpty(parent.originPath,parent.title).isEmpty()?child.title:firstNonEmpty(parent.originPath,parent.title)+" / "+child.title;child.repositoryUrl=parent.repositoryUrl;return child;}
 
   void clearWebMetadataCache(){context.getSharedPreferences(WEB_SOURCE_META_PREFS,Context.MODE_PRIVATE).edit().clear().apply();}
 

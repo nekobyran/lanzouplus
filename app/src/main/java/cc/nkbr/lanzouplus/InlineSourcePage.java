@@ -174,6 +174,11 @@ final class InlineSourcePage {
   }
   void reflow(){if(shell==owner.root)renderPath();}
   private void back(){go(levels.size()-2);}
+  boolean navigateTo(Models.Source source){
+    String id=MainActivity.sourceKey(source);
+    for(int i=0;i<levels.size();i++)if(levels.get(i).source!=null&&id.equals(MainActivity.sourceKey(levels.get(i).source))){go(i);return true;}
+    return false;
+  }
   private void go(int depth){
     if(depth<0||depth>=levels.size()-1)return;
     request++;capture();while(levels.size()>depth+1)levels.remove(levels.size()-1);

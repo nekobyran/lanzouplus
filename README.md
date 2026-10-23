@@ -8,7 +8,7 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 ## 正式版本
 
-- 当前版本：`1.9.4alpha`
+- 当前版本：`1.9.5alpha`
 - 包名：`cc.nkbr.lanzouplus`
 - 最低系统：Android 7.0（API 24）
 - 正式下载：[lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -93,7 +93,7 @@ This public repository contains only the **empty-source edition with no home rec
 
 ### Release
 
-- Version: `1.9.4alpha`
+- Version: `1.9.5alpha`
 - Package: `cc.nkbr.lanzouplus`
 - Minimum Android: 7.0 (API 24)
 - Official page and download: [lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)

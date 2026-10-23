@@ -352,6 +352,35 @@ final class GithubAccountClient {
         return apiWithToken(method, path, payload, active.accessToken);
     }
 
+    /** Repository enumeration uses the same official, account-bound transport as publishing. */
+    JSONArray apiArrayForAccount(String expectedLogin, String path) throws IOException {
+        if (!path.startsWith("/") || path.startsWith("//") || path.contains("://")) {
+            throw new IOException("不合法的 GitHub API 路径");
+        }
+        Session active = sessionForRequest();
+        if (!active.profile.login.equalsIgnoreCase(expectedLogin)) {
+            throw new IOException("GitHub 登录账号已切换，工程查找已停止");
+        }
+        Response response = send("GET", API_URL + path, null, active.accessToken);
+        if (response.status < 200 || response.status >= 300) throw apiFailure(response);
+        try { return new JSONArray(response.body); }
+        catch (JSONException malformed) { throw new IOException("GitHub 仓库列表格式不正确"); }
+    }
+
+    interface AccountAction { void run() throws Exception; }
+
+    /** The short local commit and account changes share a lock; network reads stay outside. */
+    void whileSignedIn(String expectedLogin, AccountAction action) throws Exception {
+        synchronized (SESSION_LOCK) {
+            Session current = storedSession();
+            if (current == null || !current.profile.login.equalsIgnoreCase(expectedLogin)
+                    || !hasUsableSession()) {
+                throw new IOException("GitHub 账号已退出或切换，工程载入已停止");
+            }
+            action.run();
+        }
+    }
+
     /** Reads the authenticated user's Star state; GitHub answers 204 or 404 without JSON. */
     boolean starred(String repositoryUrl) throws IOException {
         String path = userStarPath(repositoryUrl);

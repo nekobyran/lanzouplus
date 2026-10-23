@@ -549,8 +549,97 @@ final class PremiumCloudClient {
       try{direct=downloadRedirect(token,state.userId,item.id);}catch(CloudException ignored){}
     }
     String resource=premiumResource(shareUrl,code);
+    String mode="";
+    int parts=0;
+    String links="";
+    if(item.folder){
+      try{
+        String rawDesc=currentFolderDescription(token,item);
+        OrdinaryCloudClient.FragmentManifest manifest=OrdinaryCloudClient.FragmentManifest.parse(rawDesc);
+        if(manifest!=null){
+          links=premiumFragmentShareLinks(token,item.id,manifest);
+          mode=manifest.mode;
+          parts=manifest.partCount;
+        }
+      }catch(CloudFilesClient.CloudException error){
+        throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+      }
+    }
+    String rawDesc=item.folder?currentFolderDescription(token,item):item.description;
+    String desc=item.folder?OrdinaryCloudClient.visibleDescription(rawDesc):rawDesc;
     return new CloudFilesClient.ShareInfo(item.id,item.folder,item.name,shareUrl,code,
-        item.description,direct,resource,false,"",0,"");
+        desc,direct,resource,parts>0,mode,parts,links);
+  }
+
+  private String currentFolderDescription(String token,CloudFilesClient.CloudItem item)throws CloudException{
+    if(item==null||!item.folder)return item==null?"":item.description;
+    java.util.ArrayDeque<String> queue=new java.util.ArrayDeque<>();
+    queue.add("0");
+    Set<String> visited=new HashSet<>();
+    while(!queue.isEmpty()){
+      String current=queue.poll();
+      if(!visited.add(current))continue;
+      for(CloudFilesClient.CloudItem child:premiumAll(token,current)){
+        if(child.folder){
+          if(child.id.equals(item.id))return child.description;
+          queue.add(child.id);
+        }
+      }
+    }
+    return item.description;
+  }
+
+  private String premiumFragmentShareLinks(String token,String folderId,OrdinaryCloudClient.FragmentManifest manifest)
+      throws CloudException{
+    Map<Integer,String> childFolderIds=new LinkedHashMap<>();
+    for(CloudFilesClient.CloudItem child:premiumAll(token,premiumFolder(folderId))){
+      if(!child.folder)continue;
+      try{
+        int index=Integer.parseInt(child.name);
+        if(index>0&&index<=manifest.partCount){
+          if(childFolderIds.put(index,child.id)!=null)
+            throw new CloudException(ERROR_PROTOCOL,"分片目录存在重复数字子目录");
+        }
+      }catch(NumberFormatException ignored){}
+    }
+    if(childFolderIds.size()!=manifest.partCount)
+      throw new CloudException(ERROR_PROTOCOL,"分片目录缺少数字子目录");
+    List<String> links=new ArrayList<>();
+    for(int index=1;index<=manifest.partCount;index++){
+      String childId=childFolderIds.get(index);
+      String expected;
+      try{expected=manifest.uploadFileName(index);}
+      catch(CloudFilesClient.CloudException error){throw new CloudException(ERROR_PROTOCOL,error.getMessage());}
+      String fileId="";
+      for(CloudFilesClient.CloudItem partItem:premiumAll(token,premiumFolder(childId))){
+        if(!partItem.folder&&expected.equals(partItem.name)){
+          fileId=partItem.id;
+          break;
+        }
+      }
+      if(fileId.isEmpty())
+        throw new CloudException(ERROR_PROTOCOL,"分片子目录 "+index+" 中未找到 "+expected);
+      String partShareUrl=premiumShareUrl(token,fileId,false);
+      try{
+        links.add(manifest.partUri(index,partShareUrl));
+      }catch(CloudFilesClient.CloudException error){
+        throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+      }
+    }
+    return OrdinaryCloudClient.joinLines(links);
+  }
+
+  private String premiumShareUrl(String token,String id,boolean folder)throws CloudException{
+    JSONObject existing=existingShare(token,id,folder);
+    CloudFilesClient.CloudItem target=new CloudFilesClient.CloudItem(id,"",folder,0,"","",false,0,"",false,"");
+    JSONObject body=shareBody(target,existing,"");
+    ApiReply reply=request("POST","/proved/share/url",body,token);
+    requireSuccess(reply,"创建分享失败");
+    String shareUrl=firstNonEmpty(reply.root.optString("shareUrl",""),
+        reply.root.optJSONObject("data")==null?"":reply.root.optJSONObject("data").optString("shareUrl",""));
+    if(shareUrl.isEmpty())throw new CloudException(ERROR_PROTOCOL,"优享分享响应缺少真实分享地址");
+    if(!trustedPremiumShare(shareUrl))throw new CloudException(ERROR_PROTOCOL,"优享分享地址不是官方分享");
+    return shareUrl;
   }
 
   private JSONObject existingShare(String token,String id,boolean folder)throws CloudException{
@@ -577,6 +666,8 @@ final class PremiumCloudClient {
     JSONObject body=new JSONObject();
     try{
       body.put("fileIds",item.folder?"":item.id).put("folderIds",item.folder?item.id:"");
+      if(previous!=null)for(String key:new String[]{"fileIds","folderIds"})
+        if(previous.has(key))body.put(key,previous.get(key));
       String existingCode=previous==null?"":previous.optString("code","");
       String use=code==null||code.isEmpty()?existingCode:code;
       if(!use.isEmpty()&&(use.length()!=4||!use.matches("[A-Za-z0-9]{4}")))
@@ -613,6 +704,16 @@ final class PremiumCloudClient {
       throw new CloudException(ERROR_PROTOCOL,"简介过长或包含非法字符");
     String account=requiredCurrentAccount();
     String token=tokenFor(account);
+    if(item.folder){
+      try{
+        String currentDesc=currentFolderDescription(token,item);
+        value=OrdinaryCloudClient.preserveFragmentDescription(currentDesc,value);
+      }catch(CloudFilesClient.CloudException error){
+        throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+      }
+      if(value.length()>4000)
+        throw new CloudException(ERROR_PROTOCOL,"简介与分片标记合并后过长");
+    }
     JSONObject body=new JSONObject();
     try{
       if(item.folder)body.put("folderDesc",value).put("folderId",item.id).put("folderName",item.name);
@@ -625,11 +726,20 @@ final class PremiumCloudClient {
   CloudFilesClient.ManagedDescription cloudDescription(CloudFilesClient.CloudItem item)
       throws CloudException{
     if(item==null)throw new CloudException(ERROR_PROTOCOL,"请选择文件或文件夹");
-    return new CloudFilesClient.ManagedDescription(item.id,item.folder,item.name,item.description);
+    String desc=item.description;
+    if(item.folder){
+      try{
+        String token=tokenFor(requiredCurrentAccount());
+        desc=currentFolderDescription(token,item);
+      }catch(Exception ignored){}
+      desc=OrdinaryCloudClient.visibleDescription(desc);
+    }
+    return new CloudFilesClient.ManagedDescription(item.id,item.folder,item.name,desc);
   }
 
   CloudFilesClient.UploadResult cloudUpload(String folderId,String path,CloudFilesClient.UploadOptions options)
       throws CloudException{
+    if(options!=null&&options.compatibilityWrap)throw new CloudException(ERROR_PROTOCOL,"优享版上传不使用普通版兼容包装");
     String account=requiredCurrentAccount();
     String token=tokenFor(account);
     LoginState state=ensureLoggedIn(account);
@@ -637,9 +747,96 @@ final class PremiumCloudClient {
     return premiumUpload(token,uploadAccount,premiumFolder(folderId),path);
   }
 
+  CloudFilesClient.UploadResult cloudUploadFragmented(String folderId,String path,
+                                                       CloudFilesClient.UploadOptions options)
+      throws CloudException{
+    if(folderId==null||folderId.trim().isEmpty())
+      throw new CloudException(ERROR_PROTOCOL,"folderId 不能为空");
+    if(options==null)options=CloudFilesClient.UploadOptions.defaults();
+    File source=new File(path);
+    if(!source.isFile())
+      throw new CloudException(ERROR_PROTOCOL,"分片上传源必须是普通文件");
+    if(source.length()==0)
+      throw new CloudException(ERROR_PROTOCOL,"空文件不能执行分片上传");
+    String account=requiredCurrentAccount();
+    String token=tokenFor(account);
+    LoginState state=ensureLoggedIn(account);
+    String uploadAccount=state.account.isEmpty()?account:state.account;
+    String parent=premiumFolder(folderId);
+    File tempRoot=new File(context.getCacheDir(),"premium-fragments/"+UUID.randomUUID().toString());
+    if(!tempRoot.mkdirs()&&!tempRoot.isDirectory())
+      throw new CloudException(ERROR_NETWORK,"无法创建分片临时目录");
+    try{
+      String mode="archive_volume".equalsIgnoreCase(options.fragmentMode)
+          ?"archive_volume":"byte_split";
+      boolean archiveInput=false;
+      File splitSource=source;
+      if("archive_volume".equals(mode)){
+        int kind;
+        try{
+          kind=OrdinaryCloudClient.archiveKind(source);
+        }catch(CloudFilesClient.CloudException error){
+          throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+        }
+        archiveInput=kind!=0;
+        splitSource=new File(tempRoot,"volume-source.zip");
+        try{
+          OrdinaryCloudClient.buildVolumeArchive(source,splitSource,archiveInput);
+        }catch(CloudFilesClient.CloudException error){
+          throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+        }
+      }
+      long splitBytes=splitSource.length();
+      if(splitBytes==0)
+        throw new CloudException(ERROR_PROTOCOL,"待分片数据不足以生成分片");
+      int partCount;
+      try{
+        partCount=options.plannedFragmentCount(splitBytes,0L);
+      }catch(CloudFilesClient.CloudException error){
+        throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+      }
+      OrdinaryCloudClient.FragmentManifest manifest=new OrdinaryCloudClient.FragmentManifest(
+          mode,source.getName(),source.length(),partCount,OrdinaryCloudClient.binaryWidth(partCount),archiveInput);
+      List<File> pieces;
+      try{
+        pieces=OrdinaryCloudClient.splitFile(splitSource,tempRoot,manifest);
+      }catch(CloudFilesClient.CloudException error){
+        throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+      }
+      String rootId=cloudCreateFolder(parent,manifest.originalName,"");
+      List<String> links=new ArrayList<>();
+      for(int index=0;index<pieces.size();index++){
+        int part=index+1;
+        String childId=cloudCreateFolder(rootId,Integer.toString(part),"");
+        CloudFilesClient.UploadResult uploaded=premiumUpload(token,uploadAccount,childId,
+            pieces.get(index).getAbsolutePath());
+        String shareUrl=premiumShareUrl(token,uploaded.id,false);
+        try{
+          links.add(manifest.partUri(part,shareUrl));
+        }catch(CloudFilesClient.CloudException error){
+          throw new CloudException(ERROR_PROTOCOL,error.getMessage());
+        }
+      }
+      JSONObject descBody=new JSONObject();
+      try{
+        descBody.put("folderDesc",manifest.descriptionMarker())
+            .put("folderId",rootId)
+            .put("folderName",manifest.originalName);
+      }catch(Exception impossible){throw new CloudException(ERROR_PROTOCOL,"分片描述更新参数无效");}
+      requireSuccess(request("POST","/proved/file/folder/edit",descBody,token),"设置分片标记失败");
+      String external=OrdinaryCloudClient.joinLines(links);
+      return new CloudFilesClient.UploadResult(rootId,folderId,manifest.originalName,
+          manifest.originalName,OrdinaryCloudClient.sumLengths(pieces),false,mode,manifest.partCount,
+          manifest.binaryWidth,external);
+    }finally{
+      OrdinaryCloudClient.deleteTree(tempRoot);
+    }
+  }
+
   CloudFilesClient.DirectoryUploadResult cloudUploadDirectory(String folderId,String path,
                                                               CloudFilesClient.UploadOptions options)
       throws CloudException{
+    if(options!=null&&options.compatibilityWrap)throw new CloudException(ERROR_PROTOCOL,"优享版上传不使用普通版兼容包装");
     File source=new File(path);
     if(!source.isDirectory())throw new CloudException(ERROR_PROTOCOL,"目录上传源必须是文件夹");
     String account=requiredCurrentAccount();
@@ -720,30 +917,31 @@ final class PremiumCloudClient {
     String created="";
     if(item.folder){
       ensureNotPremiumDescendant(token,item.id,target);
-      created=copyPremiumFolder(token,uploadAccount,state.userId,item.id,item.name,target,temp,0,
+      created=copyPremiumFolder(token,uploadAccount,state.userId,item,target,temp,0,
           new HashSet<>(),counts,bytes);
     }else{
-      copyPremiumFile(token,uploadAccount,state.userId,item,target,temp,counts,bytes);
+      created=copyPremiumFile(token,uploadAccount,state.userId,item,target,temp,counts,bytes);
     }
     return new CloudFilesClient.CopyResult(item.id,created,target,counts[0],counts[1],bytes[0]);
   }
 
-  private String copyPremiumFolder(String token,String account,String userId,String sourceId,
-                                   String name,String target,File temp,int depth,Set<String> visited,
+  private String copyPremiumFolder(String token,String account,String userId,CloudFilesClient.CloudItem source,
+                                   String target,File temp,int depth,Set<String> visited,
                                    int[] counts,long[] bytes)throws CloudException{
+    String sourceId=source.id;
     if(depth>64||!visited.add(sourceId))throw new CloudException(ERROR_PROTOCOL,"目录层级过深或存在循环");
-    String created=cloudCreateFolder(target,name,"");
+    String created=cloudCreateFolder(target,source.name,source.description);
     counts[1]++;
     for(CloudFilesClient.CloudItem child:premiumAll(token,premiumFolder(sourceId))){
       if(child.folder)
-        copyPremiumFolder(token,account,userId,child.id,child.name,created,temp,depth+1,visited,counts,bytes);
+        copyPremiumFolder(token,account,userId,child,created,temp,depth+1,visited,counts,bytes);
       else copyPremiumFile(token,account,userId,child,created,temp,counts,bytes);
     }
     visited.remove(sourceId);
     return created;
   }
 
-  private void copyPremiumFile(String token,String account,String userId,CloudFilesClient.CloudItem item,
+  private String copyPremiumFile(String token,String account,String userId,CloudFilesClient.CloudItem item,
                                String target,File temp,int[] counts,long[] bytes)throws CloudException{
     File directory=new File(temp,"copy-"+item.id+"-"+UUID.randomUUID().toString());
     if(!directory.mkdirs()&&!directory.isDirectory())
@@ -759,6 +957,7 @@ final class PremiumCloudClient {
       requireSuccess(request("POST","/proved/file/edit",body,token),"复制文件失败");
       counts[0]++;
       bytes[0]+=written;
+      return uploaded.id;
     }finally{
       if(file.exists())file.delete();
       if(directory.exists())directory.delete();
@@ -1273,12 +1472,7 @@ final class PremiumCloudClient {
   private ApiReply requestWithUuid(String method,String path,JSONObject body,String token,String uuid,CancelToken cancel)throws CloudException{
     HttpURLConnection connection=null;
     try{
-      StringBuilder url=new StringBuilder(API_ORIGIN).append(path).append('?');
-      query(url,"uuid",uuid);query(url,"devType","6");query(url,"devCode",uuid);
-      query(url,"devModel","Android");query(url,"devVersion",Build.VERSION.RELEASE);
-      query(url,"appVersion","");query(url,"timestamp",encryptWebTimestamp(System.currentTimeMillis()));
-      query(url,"appToken",token==null?"":token);query(url,"extra","2");
-      connection=(HttpURLConnection)new URL(url.toString()).openConnection();if(cancel!=null)cancel.register(connection);
+      connection=(HttpURLConnection)new URL(apiRequestUrl(path,uuid,token,System.currentTimeMillis())).openConnection();if(cancel!=null)cancel.register(connection);
       connection.setConnectTimeout(15_000);connection.setReadTimeout(30_000);connection.setRequestMethod(method);
       connection.setRequestProperty("Accept","application/json");connection.setRequestProperty("User-Agent",userAgent());
       connection.setRequestProperty("Origin",WEB_ORIGIN);connection.setRequestProperty("Referer",WEB_ORIGIN+"/");
@@ -1434,13 +1628,21 @@ final class PremiumCloudClient {
       Cipher cipher=Cipher.getInstance("AES/ECB/PKCS5Padding");
       cipher.init(Cipher.ENCRYPT_MODE,new SecretKeySpec(WEB_CIPHER_KEY.getBytes(StandardCharsets.UTF_8),"AES"));
       byte[] bytes=cipher.doFinal(Long.toString(timestamp).getBytes(StandardCharsets.UTF_8));
-      String digits="0123456789abcdef";StringBuilder hex=new StringBuilder(bytes.length*2);for(byte value:bytes){int unsigned=value&255;hex.append(digits.charAt(unsigned>>>4)).append(digits.charAt(unsigned&15));}
+      String digits="0123456789ABCDEF";StringBuilder hex=new StringBuilder(bytes.length*2);for(byte value:bytes){int unsigned=value&255;hex.append(digits.charAt(unsigned>>>4)).append(digits.charAt(unsigned&15));}
       return hex.toString();
     }catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"请求签名初始化失败",error);}
   }
 
+  static String apiRequestUrl(String path,String uuid,String token,long timestamp)throws Exception{
+    StringBuilder url=new StringBuilder(API_ORIGIN).append(path);
+    query(url,"uuid",uuid);query(url,"devType","6");query(url,"devCode",uuid);
+    query(url,"devModel","Android");query(url,"devVersion",Build.VERSION.RELEASE);
+    query(url,"appVersion","");query(url,"timestamp",encryptWebTimestamp(timestamp));
+    query(url,"appToken",token==null?"":token);query(url,"extra","2");return url.toString();
+  }
   private static void query(StringBuilder out,String key,String value)throws Exception{
-    if(out.charAt(out.length()-1)!='?')out.append('&');
+    if(out.indexOf("?")<0)out.append('?');
+    else if(out.charAt(out.length()-1)!='?'&&out.charAt(out.length()-1)!='&')out.append('&');
     out.append(URLEncoder.encode(key,"UTF-8")).append('=').append(URLEncoder.encode(value==null?"":value,"UTF-8"));
   }
 

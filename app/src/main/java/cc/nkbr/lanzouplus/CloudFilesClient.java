@@ -27,6 +27,7 @@ final class CloudFilesClient {
   private static volatile CloudFilesClient shared;
 
   enum Provider { ORDINARY, PREMIUM }
+  interface VerificationPrompt { boolean verify(String url)throws InterruptedException; }
 
   static final class CloudException extends Exception {
     private final int code;
@@ -38,8 +39,9 @@ final class CloudFilesClient {
       credentialsRequired=code==ERROR_CREDENTIALS_REQUIRED||code==ERROR_CREDENTIALS_UNREADABLE;
     }
 
-    CloudException(int code,String message,Throwable ignored){
+    CloudException(int code,String message,Throwable cause){
       this(code,message);
+      initCause(cause);
     }
 
     int code(){return code;}
@@ -301,6 +303,8 @@ final class CloudFilesClient {
     String iconPath="";
     String fragmentMode="byte_split";
     int partCount=2;
+    String fragmentSplitPolicy="parts";
+    long partBytes;
 
     static UploadOptions defaults(){return new UploadOptions();}
 
@@ -310,8 +314,36 @@ final class CloudFilesClient {
     UploadOptions iconPath(String value){iconPath=value==null?"":value;return this;}
     UploadOptions fragment(String mode,int parts){
       fragmentMode=mode==null||mode.isEmpty()?"byte_split":mode;
+      fragmentSplitPolicy="parts";
       partCount=parts;
       return this;
+    }
+    UploadOptions fragmentBytes(String mode,long bytes){
+      fragmentMode=mode;fragmentSplitPolicy="part_bytes";partBytes=bytes;return this;
+    }
+    UploadOptions fragmentAutomatic(String mode){
+      fragmentMode=mode;fragmentSplitPolicy="automatic";return this;
+    }
+    int plannedFragmentCount(long bytes,long confirmedLimitBytes)throws CloudException{
+      if(bytes<=0)throw new CloudException(ERROR_INVALID,"待分片文件不能为空");
+      long count;
+      if("parts".equals(fragmentSplitPolicy))count=partCount;
+      else{
+        long maximum;
+        if("automatic".equals(fragmentSplitPolicy)){
+          if(confirmedLimitBytes<=0)throw new CloudException(ERROR_UNSUPPORTED,"账号未提供可确认的单文件上传上限，请选择分片数量或单片大小");
+          maximum=confirmedLimitBytes;
+        }else if("part_bytes".equals(fragmentSplitPolicy)){
+          if(partBytes<=0)throw new CloudException(ERROR_INVALID,"单片大小必须大于零");
+          maximum=partBytes;
+        }else throw new CloudException(ERROR_INVALID,"分片策略无效");
+        count=Math.max(2,bytes/maximum+(bytes%maximum==0?0:1));
+      }
+      if(count<2||count>4096||count>bytes)throw new CloudException(ERROR_INVALID,"分片数量须为 2～4096，且不能超过文件字节数");
+      long plannedBytes=bytes/count+(bytes%count==0?0:1);
+      if(confirmedLimitBytes>0&&plannedBytes>confirmedLimitBytes)
+        throw new CloudException(ERROR_INVALID,"单片大小超过账号确认的上传上限，请增加分片数量");
+      return (int)count;
     }
   }
 
@@ -324,6 +356,7 @@ final class CloudFilesClient {
     ordinary=new OrdinaryCloudClient(application);
     premium=new PremiumCloudClient(application);
   }
+  void setVerificationPrompt(VerificationPrompt prompt){ordinary.verificationPrompt=prompt;}
 
   static CloudFilesClient shared(Context context){
     CloudFilesClient current=shared;
@@ -575,7 +608,10 @@ final class CloudFilesClient {
 
   UploadResult uploadFragmented(String folderId,String path,UploadOptions options)throws CloudException{
     UploadOptions use=options==null?UploadOptions.defaults():options;
-    if(selection==Provider.PREMIUM)return upload(folderId,path,use);
+    if(selection==Provider.PREMIUM){
+      try{return premium.cloudUploadFragmented(folderId,path,use);}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }
     return ordinary.uploadFragmented(folderId,path,use);
   }
 
@@ -598,7 +634,7 @@ final class CloudFilesClient {
 
   DownloadResult download(CloudItem item,String destination)throws CloudException{
     checkItem(item);
-    if(item.folder)throw new CloudException(ERROR_INVALID,"请选择文件下载");
+    if(item.folder)return CloudFragmentTransfer.download(this,item,destination);
     try{
       return selection==Provider.PREMIUM
           ?premium.cloudDownload(item,destination)

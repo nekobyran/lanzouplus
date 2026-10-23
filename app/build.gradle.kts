@@ -7,7 +7,7 @@ android {
  compileSdk = 36
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1009004; versionName = "1.9.4alpha" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 1009005; versionName = "1.9.5alpha" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {
@@ -25,6 +25,8 @@ android {
 }
 
 dependencies {
+ implementation("org.apache.commons:commons-compress:1.28.0")
+ implementation("org.tukaani:xz:1.10")
  implementation("org.commonmark:commonmark:0.21.0")
  implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
  implementation("org.commonmark:commonmark-ext-gfm-strikethrough:0.21.0")

@@ -18,6 +18,13 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
+import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
+import org.apache.commons.compress.archivers.sevenz.SevenZMethodConfiguration;
+import org.tukaani.xz.LZMA2Options;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -61,6 +68,10 @@ import javax.crypto.spec.GCMParameterSpec;
  * public share/permission pages for direct links.</p>
  */
 final class OrdinaryCloudClient {
+  volatile CloudFilesClient.VerificationPrompt verificationPrompt;
+  private String lastDownloadKey="";
+  private LanzouCore.DirectLink lastDownload;
+  private long lastDownloadAt;
   private static final String PC_ORIGIN="https://pc.woozooo.com";
   private static final String UP_ORIGIN="https://up.woozooo.com";
   private static final String ACCOUNTS_ORIGIN="https://accounts.woozooo.com";
@@ -442,11 +453,8 @@ final class OrdinaryCloudClient {
       CloudFilesClient.DownloadResult downloaded=downloadRaw(sourceId,name,temp.getAbsolutePath());
       CloudFilesClient.UploadResult uploaded=upload(targetId,temp.getAbsolutePath(),
           CloudFilesClient.UploadOptions.defaults().compatibilityWrap(false).kind("file"));
-      try{
-        CloudFilesClient.CloudItem source=new CloudFilesClient.CloudItem(sourceId,name,false,0,"","",false,0,"",false,"");
-        ManagedRecord metadata=managedMetadata(sourceId,false);
-        if(!metadata.description.isEmpty())task(map("task","11","file_id",uploaded.id,"desc",metadata.description));
-      }catch(CloudFilesClient.CloudException ignored){}
+      ManagedRecord metadata=managedMetadata(sourceId,false);
+      if(!metadata.description.isEmpty())task(map("task","11","file_id",uploaded.id,"desc",metadata.description));
       counts[0]++;
       bytes[0]+=downloaded.bytesDownloaded;
       return uploaded.id;
@@ -1022,7 +1030,21 @@ final class OrdinaryCloudClient {
 
   private LanzouCore.DirectLink resolveDownload(String shareUrl,String password)
       throws CloudFilesClient.CloudException{
-    try{return new LanzouCore(context).resolveDirect(shareUrl,password);}
+    try{
+      String key=shareUrl+"\n"+password;
+      if(key.equals(lastDownloadKey)&&lastDownload!=null&&System.currentTimeMillis()-lastDownloadAt<30_000)return lastDownload;
+      LanzouCore core=new LanzouCore(context);
+      LanzouCore.DirectLink result;
+      try{result=core.resolveDirect(shareUrl,password);}
+      catch(Exception error){
+        LanzouCore.UserVerificationRequiredException challenge=LanzouCore.userVerificationRequired(error);
+        CloudFilesClient.VerificationPrompt prompt=verificationPrompt;
+        String target=challenge==null?"":challenge.url;
+        if(target.isEmpty()||prompt==null||!prompt.verify(target))throw error;
+        result=core.resolveDirect(shareUrl,password);
+      }
+      lastDownloadKey=key;lastDownload=result;lastDownloadAt=System.currentTimeMillis();return result;
+    }
     catch(Exception error){
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,
           "下载链接解析失败："+sanitize(error.getMessage()),error);
@@ -1102,21 +1124,50 @@ final class OrdinaryCloudClient {
     }
   }
 
+  private long officialSingleFileLimit()throws CloudFilesClient.CloudException{
+      Session session=requireSession();
+      Response mypower=get(PC_ORIGIN+"/mydisk.php?item=profile&action=mypower",session.cookie,false);
+      ensureSessionHtml(mypower.text);
+      long limit=parseSingleFileLimit(mypower.text);
+      if(limit>0)return limit;
+      Response huiyuan=get(PC_ORIGIN+"/mydisk.php?item=profile&action=huiyuan",session.cookie,false);
+      ensureSessionHtml(huiyuan.text);
+      return parseSingleFileLimit(huiyuan.text);
+  }
+
+  static long parseSingleFileLimit(String html){
+    if(html==null||html.isEmpty())return 0;
+    Matcher tableMatcher=Pattern.compile("<t[hd][^>]*>[^<]*单个文件大小[^<]*</t[hd]>\\s*<t[hd][^>]*>([^<]+)</t[hd]>",
+        Pattern.CASE_INSENSITIVE).matcher(html);
+    if(tableMatcher.find()){
+      long parsed=parseSize(tableMatcher.group(1));
+      if(parsed>0)return parsed;
+    }
+    Matcher dlMatcher=Pattern.compile("<dt[^>]*>[^<]*单个文件大小[^<]*</dt>\\s*<dd[^>]*>([^<]+)</dd>",
+        Pattern.CASE_INSENSITIVE).matcher(html);
+    if(dlMatcher.find()){
+      long parsed=parseSize(dlMatcher.group(1));
+      if(parsed>0)return parsed;
+    }
+    Matcher generalMatcher=Pattern.compile("单个文件大小[^0-9A-Za-z]{0,20}([0-9]+(?:\\.[0-9]+)?\\s*(?:[KMG]B?|G|M|K))",
+        Pattern.CASE_INSENSITIVE).matcher(html);
+    if(generalMatcher.find()){
+      long parsed=parseSize(generalMatcher.group(1));
+      if(parsed>0)return parsed;
+    }
+    return 0;
+  }
+
   CloudFilesClient.UploadResult uploadFragmented(String folderId,String path,
                                                  CloudFilesClient.UploadOptions options)
       throws CloudFilesClient.CloudException{
     validId(folderId,"folderId");
     if(options==null)options=CloudFilesClient.UploadOptions.defaults();
-    int partCount=options.partCount;
-    if(partCount<2||partCount>4096)
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"分片数量必须在 2 到 4096 之间");
     File source=new File(path);
     if(!source.isFile())
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"分片上传源必须是普通文件");
     if(source.length()==0)
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"空文件不能执行分片上传");
-    if(partCount>source.length())
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"分片数量不能超过源文件字节数");
     synchronized(networkLock){
       requireSession();
       File tempRoot=new File(context.getCacheDir(),"fragments/"+UUID.randomUUID().toString());
@@ -1129,16 +1180,17 @@ final class OrdinaryCloudClient {
         File splitSource=source;
         if("archive_volume".equals(mode)){
           int kind=archiveKind(source);
-          if(kind==2)
-            throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_UNSUPPORTED,
-                "当前设备暂不支持重建 7z 分卷");
-          archiveInput=kind==1;
+          archiveInput=kind!=0;
           splitSource=new File(tempRoot,"volume-source.zip");
-          buildVolumeZip(source,splitSource,archiveInput);
-          if(partCount>splitSource.length())
-            throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,
-                "压缩后的数据不足以生成指定数量的非空分卷");
+          buildVolumeArchive(source,splitSource,archiveInput);
         }
+        long confirmedLimitBytes="automatic".equals(options.fragmentSplitPolicy)?officialSingleFileLimit():0;
+        int partCount=options.plannedFragmentCount(splitSource.length(),confirmedLimitBytes);
+        if(partCount>splitSource.length())
+          throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,
+              "archive_volume".equals(mode)
+                  ?"压缩后的数据不足以生成指定数量的非空分卷"
+                  :"分片数量不能超过源文件字节数");
         FragmentManifest manifest=new FragmentManifest(mode,source.getName(),source.length(),
             partCount,binaryWidth(partCount),archiveInput);
         List<File> pieces=splitFile(splitSource,tempRoot,manifest);
@@ -1231,10 +1283,13 @@ final class OrdinaryCloudClient {
       if(!metadata.description.isEmpty())
         task(map("task","11","file_id",newId,"desc",metadata.description));
       boolean iconApplied=false;
-      if(!options.iconPath.isEmpty()){
-        setIcon(newId,options.iconPath);
+      if(!options.iconPath.isEmpty()||options.autoIcon){
+        setIcon(newId,options.iconPath.isEmpty()?path:options.iconPath);
         iconApplied=true;
       }
+      ManagedRecord confirmed=managedMetadata(newId,false);
+      if(!metadata.name.equals(confirmed.name)||!metadata.description.equals(confirmed.description))
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"新文件标题或简介回读不一致，旧文件仍保留");
       deleteRaw(oldFile.id,false);
       boolean stillPresent=false;
       for(CloudFilesClient.CloudItem item:listAll(folderId))
@@ -1305,8 +1360,12 @@ final class OrdinaryCloudClient {
   private static BindingInfo bindingInfo(JSONObject value,boolean requireIcon)
       throws CloudFilesClient.CloudException{
     long status=valueAsLong(value.opt("zt"),-1);
-    if(!(status==0||status==1)||(requireIcon&&status!=1))
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"图标绑定回读未确认成功");
+    if(!(status==0||status==1)||(requireIcon&&status!=1)){
+      String message=firstNonEmpty(value.opt("inf") instanceof String?value.optString("inf"):"",
+          value.opt("info") instanceof String?value.optString("info"):"",
+          value.opt("msgs") instanceof String?value.optString("msgs"):"","图标绑定回读未确认成功");
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,sanitize(message));
+    }
     JSONArray info=value.optJSONArray("info");
     if(info==null||info.length()==0)
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"图标绑定状态缺少 info");
@@ -1368,7 +1427,8 @@ final class OrdinaryCloudClient {
   private Response request(String method,String url,String cookie,byte[] body,String contentType,
                             boolean follow,String referer)throws CloudFilesClient.CloudException{
     String current=url;
-    for(int hop=0;hop<=MAX_REDIRECTS;hop++){
+    redirects: for(int hop=0;hop<=MAX_REDIRECTS;hop++){
+      for(int attempt=0;attempt<3;attempt++){
       HttpURLConnection connection=null;
       try{
         connection=(HttpURLConnection)new URL(current).openConnection();
@@ -1379,11 +1439,16 @@ final class OrdinaryCloudClient {
         connection.setRequestProperty("User-Agent",userAgent());
         connection.setRequestProperty("Accept","application/json,text/html;q=0.9,*/*;q=0.8");
         connection.setRequestProperty("Referer",referer==null?PC_ORIGIN+"/":referer);
-        String header=cookie==null||cookie.isEmpty()?jar.cookiesFor(current):cookie;
+        String header=mergeCookie(cookie,jar.cookiesFor(current));
         if(header!=null&&!header.isEmpty())connection.setRequestProperty("Cookie",header);
         if(body!=null){
           connection.setDoOutput(true);
           connection.setRequestProperty("Content-Type",contentType);
+          if(contentType!=null&&contentType.startsWith("application/x-www-form-urlencoded")){
+            URL source=new URL(referer==null?PC_ORIGIN+"/":referer);
+            connection.setRequestProperty("Origin",source.getProtocol()+"://"+source.getAuthority());
+            connection.setRequestProperty("X-Requested-With","XMLHttpRequest");
+          }
           connection.setFixedLengthStreamingMode(body.length);
           try(OutputStream output=connection.getOutputStream()){output.write(body);}
         }
@@ -1394,10 +1459,16 @@ final class OrdinaryCloudClient {
           if(location==null||location.isEmpty())
             throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"服务器重定向缺少地址");
           current=resolveHttp(current,location);
-          continue;
+          continue redirects;
         }
         InputStream input=status>=400?connection.getErrorStream():connection.getInputStream();
         String text=input==null?"":read(input,MAX_HTML_BYTES);
+        String challenge=LanzouCore.acwCookie(text);
+        if(!challenge.isEmpty()){
+          jar.absorbCookie(new URL(current).getHost(),"acw_sc__v2="+challenge+"; Path=/");
+          if(attempt<2)continue;
+          throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"蓝奏云 ACW 验证未完成，请稍后重试");
+        }
         if(status<200||status>=300)
           throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NETWORK,
               "蓝奏云服务返回 HTTP "+status);
@@ -1408,6 +1479,7 @@ final class OrdinaryCloudClient {
         throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NETWORK,"网络请求失败，请稍后重试",error);
       }finally{
         if(connection!=null)connection.disconnect();
+      }
       }
     }
     throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"重定向次数过多");
@@ -1896,7 +1968,7 @@ final class OrdinaryCloudClient {
     return safe.length()>160?safe.substring(0,160):safe;
   }
 
-  private static String visibleDescription(String value){
+  static String visibleDescription(String value){
     String text=value==null?"":value;
     int newline=text.indexOf('\n');
     String first=newline<0?text:text.substring(0,newline);
@@ -1905,7 +1977,7 @@ final class OrdinaryCloudClient {
     return text;
   }
 
-  private static String preserveFragmentDescription(String current,String visible)
+  static String preserveFragmentDescription(String current,String visible)
       throws CloudFilesClient.CloudException{
     if(FragmentManifest.parse(current)==null)return visible==null?"":visible;
     String marker=current==null?"":current.split("\\r?\\n",2)[0].trim();
@@ -1952,7 +2024,7 @@ final class OrdinaryCloudClient {
     try{if(file.exists()&&file.isFile())file.delete();}catch(Exception ignored){}
   }
 
-  private static void deleteTree(File file){
+  static void deleteTree(File file){
     if(file==null||!file.exists())return;
     try{
       if(file.isDirectory()){
@@ -1963,12 +2035,12 @@ final class OrdinaryCloudClient {
     }catch(Exception ignored){}
   }
 
-  private static int binaryWidth(int partCount){
+  static int binaryWidth(int partCount){
     int natural=Integer.SIZE-Integer.numberOfLeadingZeros(partCount);
     return Math.max(4,natural);
   }
 
-  private static String joinLines(List<String> values){
+  static String joinLines(List<String> values){
     StringBuilder out=new StringBuilder();
     for(String value:values){
       if(value==null||value.isEmpty())continue;
@@ -1978,13 +2050,13 @@ final class OrdinaryCloudClient {
     return out.toString();
   }
 
-  private static long sumLengths(List<File> files){
+  static long sumLengths(List<File> files){
     long total=0;
     for(File file:files)total+=file.length();
     return total;
   }
 
-  private static List<File> splitFile(File source,File root,FragmentManifest manifest)
+  static List<File> splitFile(File source,File root,FragmentManifest manifest)
       throws CloudFilesClient.CloudException{
     long total=source.length();
     long chunk=(total+manifest.partCount-1)/manifest.partCount;
@@ -2019,7 +2091,7 @@ final class OrdinaryCloudClient {
     }
   }
 
-  private static int archiveKind(File source)throws CloudFilesClient.CloudException{
+  static int archiveKind(File source)throws CloudFilesClient.CloudException{
     try(InputStream input=new FileInputStream(source)){
       byte[] magic=new byte[6];
       int count=input.read(magic);
@@ -2035,12 +2107,17 @@ final class OrdinaryCloudClient {
     }
   }
 
-  private static void buildVolumeZip(File source,File target,boolean rebuildZip)
+  static void buildVolumeArchive(File source,File target,boolean archiveInput)
       throws CloudFilesClient.CloudException{
-    try(OutputStream file=new FileOutputStream(target);
+    try{
+      if(archiveInput&&archiveKind(source)==2){
+        rebuildSevenZip(source,target);
+        return;
+      }
+      try(OutputStream file=new FileOutputStream(target);
         ZipOutputStream zip=new ZipOutputStream(file)){
       byte[] buffer=new byte[64*1024];
-      if(rebuildZip){
+      if(archiveInput){
         try(InputStream input=new FileInputStream(source);
             ZipInputStream sourceZip=new ZipInputStream(input)){
           ZipEntry entry;
@@ -2065,10 +2142,38 @@ final class OrdinaryCloudClient {
         }
         zip.closeEntry();
       }
+      }
     }catch(CloudFilesClient.CloudException error){
       throw error;
     }catch(Exception error){
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NETWORK,"无法生成分卷压缩包",error);
+    }
+  }
+
+  private static void rebuildSevenZip(File source,File target)throws IOException{
+    int memoryKiB=(int)Math.min(Integer.MAX_VALUE,Runtime.getRuntime().maxMemory()/2048L);
+    try(RandomAccessFile input=new RandomAccessFile(source,"r");
+        SevenZFile seven=SevenZFile.builder().setSeekableByteChannel(input.getChannel())
+            .setMaxMemoryLimitKiB(memoryKiB).get();
+        RandomAccessFile targetFile=new RandomAccessFile(target,"rw");
+        SevenZOutputFile output=new SevenZOutputFile(targetFile.getChannel().truncate(0))){
+      output.setContentMethods(Collections.singletonList(
+          new SevenZMethodConfiguration(SevenZMethod.LZMA2,new LZMA2Options(1))));
+      byte[] buffer=new byte[64*1024];
+      SevenZArchiveEntry entry;
+      while((entry=seven.getNextEntry())!=null){
+        String name=entry.getName();
+        if(name!=null)name=name.replace('\\','/');
+        if(!safeArchiveEntry(name))throw new IOException("源 7z 包含无效路径");
+        SevenZArchiveEntry rebuilt=new SevenZArchiveEntry();
+        rebuilt.setName(name);rebuilt.setDirectory(entry.isDirectory());
+        output.putArchiveEntry(rebuilt);
+        if(!entry.isDirectory()){
+          int read;
+          while((read=seven.read(buffer))!=-1)output.write(buffer,0,read);
+        }
+        output.closeArchiveEntry();
+      }
     }
   }
 
@@ -2330,7 +2435,7 @@ final class OrdinaryCloudClient {
     FragmentSnapshot(String links){this.links=links;}
   }
 
-  private static final class FragmentManifest {
+  static final class FragmentManifest {
     final String mode;
     final String originalName;
     final long originalBytes;

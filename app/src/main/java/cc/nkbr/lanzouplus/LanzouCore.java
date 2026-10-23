@@ -572,7 +572,7 @@ final class LanzouCore {
 
 
         Exception retainedVerification=null;if(fast!=null)try{DirectLink value=resolveDirectRoute(shareUrl,pwd,fast,directLearnedRouteDeadline(deadline),attempted);profile.observeRoute(UA_SCOPE_DIRECT,fast.origin,fast.ua);observeRouteSuccess();return value;}catch(Exception error){if(error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error))throw error;if(routePressureError(error))observeRouteFailure(error);routes=routesAfter(routes,fast);if(userVerificationRequired(error)!=null)retainedVerification=error;if(routes.isEmpty())throw error;}
-                RouteOutcome<DirectLink> outcome;try{outcome=raceRoutes(routes,route->resolveDirectRoute(shareUrl,pwd,route,directLearnedRouteDeadline(deadline),attempted),value->true,error->error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error));}catch(Exception error){throw retainRouteChallenge(error,retainedVerification);}profile.observeRoute(UA_SCOPE_DIRECT,outcome.route.origin,outcome.route.ua);return outcome.value;
+                RouteOutcome<DirectLink> outcome;try{outcome=raceRoutes(routes,route->resolveDirectRoute(shareUrl,pwd,route,deadline,attempted),value->true,error->error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error));}catch(Exception error){throw retainRouteChallenge(error,retainedVerification);}profile.observeRoute(UA_SCOPE_DIRECT,outcome.route.origin,outcome.route.ua);return outcome.value;
     
     
   }

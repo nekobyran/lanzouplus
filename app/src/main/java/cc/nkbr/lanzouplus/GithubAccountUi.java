@@ -106,6 +106,7 @@ final class GithubAccountUi {
                         client.saveAuthorizedSession(session);
                         dialog.dismiss();
                         owner.showNotice("GitHub 登录成功：@" + session.profile.login, false);
+                        GithubMarketProjectDiscovery.start(owner, true, null);
                         if (onSignedIn != null && isOwnerCurrent(owner, navigation)) {
                             onSignedIn.run();
                         }

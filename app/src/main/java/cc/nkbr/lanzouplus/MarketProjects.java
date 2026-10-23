@@ -53,6 +53,8 @@ final class MarketProjects implements MarketProjectEditor.Host {
 
     ImageButton add = owner.iconButton(R.drawable.ic_add, "创建仓库工程");
     ImageButton importProject = owner.iconButton(R.drawable.ic_folder, "导入明文工程");
+    ImageButton discover = owner.iconButton(R.drawable.ic_refresh, "重新查找 GitHub 市场源仓库");
+    owner.pageHeaderRow.addView(discover);
     owner.pageHeaderRow.addView(importProject);
     owner.pageHeaderRow.addView(add);
     add.setOnClickListener(v -> edit(null));
@@ -67,6 +69,12 @@ final class MarketProjects implements MarketProjectEditor.Host {
     addGithubAccountEntry(list);
 
     int session = owner.navigationSession;
+    Runnable discovered = () -> {
+      if (session == owner.navigationSession && list.isAttachedToWindow()
+          && !owner.activityClosing()) showList();
+    };
+    discover.setOnClickListener(v -> GithubMarketProjectDiscovery.start(owner, true, discovered));
+    GithubMarketProjectDiscovery.start(owner, false, discovered);
     owner.io.execute(() -> {
       List<MarketProject> projects = new ArrayList<>();
       try {

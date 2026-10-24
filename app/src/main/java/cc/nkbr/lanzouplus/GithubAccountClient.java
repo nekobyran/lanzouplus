@@ -40,6 +40,9 @@ final class GithubAccountClient {
     private static final String KEY_ALIAS = "cc.nkbr.lanzouplus.github_account_aes_v1";
     private static final Object SESSION_LOCK = new Object();
     private static final long EXPIRY_MARGIN_MS = 30_000L;
+    private static final int RESPONSE_LIMIT = 8 * 1024 * 1024;
+    // 8 MiB 素材编码为 11,184,812 字节 Base64；预留 JSON、换行及对象字段余量。
+    private static final int BLOB_RESPONSE_LIMIT = 12 * 1024 * 1024 + 64 * 1024;
 
     interface Transport {
         Response execute(String method, String url, String body, String bearer) throws IOException;
@@ -116,6 +119,18 @@ final class GithubAccountClient {
 
     /** 无需重定向，所有 HTTP 调用均可通过 Transport 替身进行协议测试。 */
     static final class DirectTransport implements Transport {
+        static int responseLimit(String method, URL url) {
+            if (!"GET".equals(method) || !"api.github.com".equals(url.getHost())) {
+                return RESPONSE_LIMIT;
+            }
+            String[] part = url.getPath().split("/", -1);
+            boolean blobGet = part.length == 7 && part[0].isEmpty()
+                    && "repos".equals(part[1]) && !part[2].isEmpty()
+                    && !part[3].isEmpty() && "git".equals(part[4])
+                    && "blobs".equals(part[5]) && !part[6].isEmpty();
+            return blobGet ? BLOB_RESPONSE_LIMIT : RESPONSE_LIMIT;
+        }
+
         static void checkEndpoint(String endpoint, String bearer) throws IOException {
             URL url = new URL(endpoint);
             String host = url.getHost();
@@ -134,6 +149,7 @@ final class GithubAccountClient {
             checkEndpoint(endpoint, bearer);
             URL url = new URL(endpoint);
             String host = url.getHost();
+            int responseLimit = responseLimit(method, url);
             // 系统 HTTPS 代理可用；TLS 证书仍针对 github.com / api.github.com 校验。
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             try {
@@ -176,7 +192,7 @@ final class GithubAccountClient {
                     byte[] chunk = new byte[4096];
                     int length;
                     while ((length = stream.read(chunk)) != -1) {
-                        if (buffer.size() + length > 8 * 1024 * 1024) {
+                        if (buffer.size() + length > responseLimit) {
                             throw new IOException("GitHub 响应数据超出上限");
                         }
                         buffer.write(chunk, 0, length);

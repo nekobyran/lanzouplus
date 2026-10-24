@@ -205,6 +205,7 @@ final class CloudFilesClient {
     final int fragmentPartCount;
     final int fragmentBinaryWidth;
     final String fragmentExternalLinks;
+    final String warning;
 
     UploadResult(String id,String folderId,String originalName,String uploadedName,long bytesUploaded,
                  boolean compatibilityWrapped){
@@ -214,6 +215,13 @@ final class CloudFilesClient {
     UploadResult(String id,String folderId,String originalName,String uploadedName,long bytesUploaded,
                  boolean compatibilityWrapped,String fragmentMode,int fragmentPartCount,
                  int fragmentBinaryWidth,String fragmentExternalLinks){
+      this(id,folderId,originalName,uploadedName,bytesUploaded,compatibilityWrapped,fragmentMode,
+          fragmentPartCount,fragmentBinaryWidth,fragmentExternalLinks,"");
+    }
+
+    UploadResult(String id,String folderId,String originalName,String uploadedName,long bytesUploaded,
+                 boolean compatibilityWrapped,String fragmentMode,int fragmentPartCount,
+                 int fragmentBinaryWidth,String fragmentExternalLinks,String warning){
       this.id=id==null?"":id;
       this.folderId=folderId==null?"":folderId;
       this.originalName=originalName==null?"":originalName;
@@ -224,6 +232,12 @@ final class CloudFilesClient {
       this.fragmentPartCount=Math.max(0,fragmentPartCount);
       this.fragmentBinaryWidth=Math.max(0,fragmentBinaryWidth);
       this.fragmentExternalLinks=fragmentExternalLinks==null?"":fragmentExternalLinks;
+      this.warning=warning==null?"":warning;
+    }
+
+    UploadResult withWarning(String value){
+      return new UploadResult(id,folderId,originalName,uploadedName,bytesUploaded,compatibilityWrapped,
+          fragmentMode,fragmentPartCount,fragmentBinaryWidth,fragmentExternalLinks,value);
     }
   }
 
@@ -233,14 +247,21 @@ final class CloudFilesClient {
     final int filesUploaded;
     final int foldersCreated;
     final long bytesUploaded;
+    final String warning;
 
     DirectoryUploadResult(String rootFolderId,String sourceName,int filesUploaded,int foldersCreated,
                           long bytesUploaded){
+      this(rootFolderId,sourceName,filesUploaded,foldersCreated,bytesUploaded,"");
+    }
+
+    DirectoryUploadResult(String rootFolderId,String sourceName,int filesUploaded,int foldersCreated,
+                          long bytesUploaded,String warning){
       this.rootFolderId=rootFolderId==null?"":rootFolderId;
       this.sourceName=sourceName==null?"":sourceName;
       this.filesUploaded=Math.max(0,filesUploaded);
       this.foldersCreated=Math.max(0,foldersCreated);
       this.bytesUploaded=Math.max(0,bytesUploaded);
+      this.warning=warning==null?"":warning;
     }
   }
 
@@ -644,15 +665,17 @@ final class CloudFilesClient {
     }
   }
 
-  ReplaceResult replaceApk(CloudItem item,String path,UploadOptions options)throws CloudException{
+  ReplaceResult replaceApk(CloudItem item,String parentFolderId,String path,UploadOptions options)throws CloudException{
     checkItem(item);
     if(item.folder||!item.name.toLowerCase(java.util.Locale.ROOT).endsWith(".apk"))
       throw new CloudException(ERROR_INVALID,"只能替换 APK 文件");
+    String folder=parentFolderId==null?"":parentFolderId.trim();
+    if(folder.isEmpty())throw new CloudException(ERROR_INVALID,"缺少当前文件夹");
     UploadOptions use=options==null?UploadOptions.defaults():options;
     use.kind="apk";
-    if(selection==Provider.ORDINARY)return ordinary.replaceApk(item,path,use);
+    if(selection==Provider.ORDINARY)return ordinary.replaceApk(item,folder,path,use);
     try{
-      return premium.cloudReplaceFile(item,path,use);
+      return premium.cloudReplaceFile(item,folder,path,use);
     }catch(PremiumCloudClient.CloudException error){
       throw translate(error);
     }

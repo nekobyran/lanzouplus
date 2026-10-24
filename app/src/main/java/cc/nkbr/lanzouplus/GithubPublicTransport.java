@@ -211,6 +211,7 @@ final class GithubPublicTransport {
   private static Result fetch(Route route,int limit)throws Exception{
     long started=System.nanoTime();
     URL current=new URL(route.url);
+    boolean refresh=refreshQuery(current.getQuery());
     for(int redirects=0;redirects<=REDIRECT_LIMIT;redirects++){
       if(route.aborted)throw new CancellationException();
       if(!"https".equalsIgnoreCase(current.getProtocol())||current.getUserInfo()!=null
@@ -226,9 +227,14 @@ final class GithubPublicTransport {
         connection.setReadTimeout(route.mirror()
             ?MIRROR_READ_TIMEOUT_MS:DIRECT_READ_TIMEOUT_MS);
         connection.setInstanceFollowRedirects(false);
+        connection.setUseCaches(!refresh);
         connection.setRequestProperty("User-Agent","LanzouPlus-Market");
         connection.setRequestProperty("Accept",acceptFor(route.kind));
         connection.setRequestProperty("Accept-Encoding","identity");
+        if(refresh){
+          connection.setRequestProperty("Cache-Control","no-cache");
+          connection.setRequestProperty("Pragma","no-cache");
+        }
         int status=connection.getResponseCode();
         if(isRedirect(status)){
           String location=connection.getHeaderField("Location");
@@ -296,7 +302,7 @@ final class GithubPublicTransport {
       return null;
     }
     if(host.equals("raw.githubusercontent.com")){
-      if(query!=null)return null;
+      if(query!=null&&!refreshQuery(query))return null;
       String[] parts=path.split("/",-1);
       return parts.length>=5?Kind.RAW:null;
     }
@@ -309,6 +315,11 @@ final class GithubPublicTransport {
       return avatarQuery(query)?Kind.AVATAR:null;
     }
     return null;
+  }
+
+  /** Raw HEAD documents accept one caller-owned freshness token; credentials stay rejected. */
+  private static boolean refreshQuery(String query){
+    return query!=null&&query.matches("lzp-refresh=[0-9]{1,32}");
   }
 
   private static boolean avatarQuery(String query){

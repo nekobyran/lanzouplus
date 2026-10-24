@@ -10,6 +10,12 @@ import org.json.*;
 /** Repository content and cached presentation belong to GitHub; the market records its identity. */
 final class MarketRepositoryClient {
   static final String MARKET_ORIGIN="https://lanzoumarket.nkbr.cc";
+  /** Public GitHub repository that publishes the ordinary market catalog and announcements. */
+  static final String MARKET_STATIC_ORIGIN="https://raw.githubusercontent.com/nekobyran/lanzouplus-market/main/";
+  static final String STATIC_CATALOG_FILE="market.json";
+  static final String STATIC_ANNOUNCEMENTS_FILE="announcements.json";
+  /** Whole static catalog ceiling; one bounded read covers every local page of one session. */
+  static final int CATALOG_LIMIT=2*1024*1024;
   static final int SOURCE_LIMIT=8*1024*1024;
   /** Published metadata ceiling, matching the market server's repository.json limit. */
   static final int METADATA_LIMIT=512*1024;
@@ -101,18 +107,24 @@ final class MarketRepositoryClient {
     }
     String sourceIconUrl(){try{return metadata.assetUrl(rawRoot,metadata.icon);}catch(IOException error){return "";}}
     String sourcePublisher(){return metadata.publisher.isEmpty()?ownerLogin():metadata.publisher;}
-    JSONObject json()throws Exception{return new JSONObject().put("githubUrl",githubUrl).put("rawRoot",rawRoot).put("ownerAvatar",ownerAvatar).put("metadata",metadata.json).put("sourceJson",sourceJson).put("sourcesLoaded",sourcesLoaded).put("readme",readme).put("checkedAt",checkedAt);}
+    /** README is session state and deliberately omitted from the disk snapshot. */
+    JSONObject json()throws Exception{return new JSONObject().put("githubUrl",githubUrl).put("rawRoot",rawRoot).put("ownerAvatar",ownerAvatar).put("metadata",metadata.json).put("sourceJson",sourceJson).put("sourcesLoaded",sourcesLoaded).put("checkedAt",checkedAt);}
   }
   private final File directory;
   private final Transport transport;
-  private static final Map<String,Map<String,Document>> SESSION_READMES=new ConcurrentHashMap<>();
-  private static final Map<String,Object> README_LOCKS=new ConcurrentHashMap<>();
-  private final Map<String,Document> sessionReadmes;
+  private static final java.util.concurrent.atomic.AtomicLong REFRESH_SEQUENCE=
+      new java.util.concurrent.atomic.AtomicLong();
+  /** Activity recreation creates a new client, so README reuse ends with that client. */
+  private final ConcurrentHashMap<String,Document> sessionReadmes=new ConcurrentHashMap<>();
+  private final Map<String,Object> readmeLocks=new ConcurrentHashMap<>();
   private final Map<String,Object> repositoryLocks=new ConcurrentHashMap<>();
   private final Map<String,Document> memory=new HashMap<>();
   private final Map<String,Long> modified=new HashMap<>();
+  /** Session snapshot of the static catalog so paging never repeats a GitHub request. */
+  private final Object catalogLock=new Object();
+  private List<CatalogEntry> sessionCatalog;
   MarketRepositoryClient(File directory){this(directory,MarketRepositoryClient::httpGet);}
-  MarketRepositoryClient(File directory,Transport transport){this.directory=directory;this.transport=transport;sessionReadmes=SESSION_READMES.computeIfAbsent(directory.getAbsolutePath(),key->new ConcurrentHashMap<>());}
+  MarketRepositoryClient(File directory,Transport transport){this.directory=directory;this.transport=transport;}
 
   synchronized Document cached(String raw)throws Exception{
     File file=cacheFile(raw);if(!file.isFile())return null;
@@ -120,7 +132,7 @@ final class MarketRepositoryClient {
     JSONObject value=new JSONObject(new String(read(file,CACHE_LIMIT),StandardCharsets.UTF_8));
     String sourceJson=value.getString("sourceJson");
     boolean sourcesLoaded=value.getBoolean("sourcesLoaded");
-    Document result=new Document(value.getString("githubUrl"),value.getString("rawRoot"),value.optString("ownerAvatar"),new MarketRepository(value.getJSONObject("metadata")),sourceJson,value.optString("readme"),sourcesLoaded,value.getLong("checkedAt"));memory.put(key,result);modified.put(key,file.lastModified());return result;
+    Document result=new Document(value.getString("githubUrl"),value.getString("rawRoot"),value.optString("ownerAvatar"),new MarketRepository(value.getJSONObject("metadata")),sourceJson,"",sourcesLoaded,value.getLong("checkedAt"));memory.put(key,result);modified.put(key,file.lastModified());return result;
   }
 
   Document load(String raw,boolean force)throws Exception{
@@ -137,36 +149,72 @@ final class MarketRepositoryClient {
     synchronized(lock){return previewLocked(url,false);}
   }
   Document preview(String raw,boolean force)throws Exception{
-    String url=MarketRepository.canonicalUrl(raw);synchronized(repositoryLocks.computeIfAbsent(url,key->new Object())){return previewLocked(url,force);}
+    String url=MarketRepository.canonicalUrl(raw);
+    synchronized(repositoryLocks.computeIfAbsent(url,key->new Object())){
+      Document result=previewLocked(url,force);
+      if(force)sessionReadmes.remove(url);
+      return result;
+    }
+  }
+  /**
+   * Forced {@code lzpmarket.json} read for an update check. It reuses the per-repository lock and
+   * touches no README, icon or {@code sources.lzp}; an unchanged version keeps the README session,
+   * and {@link #previewLocked} drops a session README only when its version or mode differs from
+   * the fresh metadata.
+   */
+  Document checkVersion(String raw)throws Exception{
+    String url=MarketRepository.canonicalUrl(raw);Object lock=repositoryLocks.computeIfAbsent(url,key->new Object());
+    synchronized(lock){return previewLocked(url,true);}
   }
   /** Detail reads README without downloading the encrypted source or replacing an installed snapshot. */
   Document readme(String raw,boolean force)throws Exception{
-    String url=MarketRepository.canonicalUrl(raw);synchronized(README_LOCKS.computeIfAbsent(directory.getAbsolutePath()+"\n"+url,key->new Object())){
+    String url=MarketRepository.canonicalUrl(raw);synchronized(readmeLocks.computeIfAbsent(url,key->new Object())){
       Document remembered=sessionReadmes.get(url);
       if(!force&&remembered!=null)return remembered;
-      Document cached=cached(url),preview=previewLocked(url,force);
-      String readme=new String(transport.get(preview.rawRoot+preview.metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
-      Document result=new Document(url,preview.rawRoot,preview.ownerAvatar,preview.metadata,preview.sourceJson,readme,preview.sourcesLoaded,preview.checkedAt);
-      if(cached==null||!cached.sourcesLoaded||preview.sourcesLoaded)save(result);
-      sessionReadmes.put(url,result);
-      return result;
+      Document cached=cached(url),preview=previewLocked(url,true);
+      return readmeDocument(url,preview,cached);
     }
+  }
+  /**
+   * README for a metadata preview that was just loaded. The update decision uses that preview's
+   * {@code lzpmarket.json} version, so README, icons and {@code sources.lzp} never gate it.
+   */
+  Document readme(Document preview,boolean force)throws Exception{
+    String url=MarketRepository.canonicalUrl(preview.githubUrl);synchronized(readmeLocks.computeIfAbsent(url,key->new Object())){
+      Document remembered=sessionReadmes.get(url);
+      if(!force&&remembered!=null&&remembered.metadata.version.equals(preview.metadata.version)
+          &&remembered.metadata.versionMode.equals(preview.metadata.versionMode))return remembered;
+      return readmeDocument(url,preview,cached(url));
+    }
+  }
+  private Document readmeDocument(String url,Document preview,Document cached)throws Exception{
+    String readme=new String(transport.get(freshUrl(preview.rawRoot+preview.metadata.readme),README_LIMIT),StandardCharsets.UTF_8);
+    Document result=new Document(url,preview.rawRoot,preview.ownerAvatar,preview.metadata,preview.sourceJson,readme,preview.sourcesLoaded,preview.checkedAt);
+    if(cached==null||!cached.sourcesLoaded||preview.sourcesLoaded)save(result);
+    sessionReadmes.put(url,result);
+    return result;
   }
   /**
    * Reads the metadata a market row needs. An existing snapshot keeps its decoded sources and
    * saved category edits: the same version refreshes the timestamp only, and a newer upstream
    * version leaves the stored snapshot alone so a later {@link #load} still refetches the
-   * encrypted document. A repository with no snapshot yet is stored as a metadata-only preview.
+   * encrypted document. A session README survives when it already describes the fresh metadata
+   * version and mode. A repository with no snapshot yet is stored as a metadata-only preview.
    */
   private Document previewLocked(String url,boolean force)throws Exception{
     Document old=cached(url);
     if(old!=null&&!force&&System.currentTimeMillis()-old.checkedAt<60*60*1000L)return old;
     String identity=url.substring("https://github.com/".length());
     String root=rawRoot(identity);
-    MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
+    String metadataUrl=force?freshUrl(root+"lzpmarket.json"):root+"lzpmarket.json";
+    MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(metadataUrl,METADATA_LIMIT),StandardCharsets.UTF_8)));
     if(old==null){Document fresh=new Document(url,root,avatarUrl(identity),metadata,"","",false,System.currentTimeMillis());save(fresh);return fresh;}
     if(old.metadata.versionMode.equals(metadata.versionMode)&&MarketRepository.compareVersions(metadata.versionMode,metadata.version,old.metadata.version)<0)return old;
     if(!upstreamAhead(metadata,old.metadata)){Document kept=new Document(url,root,avatarUrl(identity),metadata,old.sourceJson,old.readme,old.sourcesLoaded,System.currentTimeMillis());save(kept);return kept;}
+    Document remembered=sessionReadmes.get(url);
+    if(remembered!=null&&(!remembered.metadata.version.equals(metadata.version)
+        ||!remembered.metadata.versionMode.equals(metadata.versionMode)))
+      sessionReadmes.remove(url,remembered);
     return new Document(url,root,avatarUrl(identity),metadata,"","",false,System.currentTimeMillis());
   }
   /**
@@ -176,21 +224,33 @@ final class MarketRepositoryClient {
    */
   private Document fetch(String url,boolean force)throws Exception{
     Document old=cached(url);
-    if(old!=null&&old.sourcesLoaded&&!force&&System.currentTimeMillis()-old.checkedAt<60*60*1000L)return old;
+    if(old!=null&&old.sourcesLoaded&&!force&&System.currentTimeMillis()-old.checkedAt<60*60*1000L){
+      Document session=sessionReadmes.get(url);
+      if(session!=null&&session.sourcesLoaded)return session;
+      String readme=new String(transport.get(freshUrl(old.rawRoot+old.metadata.readme),README_LIMIT),StandardCharsets.UTF_8);
+      Document result=new Document(url,old.rawRoot,old.ownerAvatar,old.metadata,old.sourceJson,readme,true,old.checkedAt);
+      sessionReadmes.put(url,result);return result;
+    }
     String identity=url.substring("https://github.com/".length());
     String root=rawRoot(identity);
-    MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
-    String sourceJson="",readme="";boolean sourcesLoaded=false;
+    String metadataUrl=force?freshUrl(root+"lzpmarket.json"):root+"lzpmarket.json";
+    MarketRepository metadata=new MarketRepository(new JSONObject(new String(transport.get(metadataUrl,METADATA_LIMIT),StandardCharsets.UTF_8)));
+    String sourceJson="",readme="";boolean sourcesLoaded=false,readmeLoaded=false;
     if(old!=null&&old.sourcesLoaded&&metadata.versionMode.equals(old.metadata.versionMode)){
       int compared=MarketRepository.compareVersions(metadata.versionMode,metadata.version,old.metadata.version);
-      if(compared<0||compared==0&&!force){sourceJson=old.sourceJson;readme=old.readme;sourcesLoaded=true;if(compared<0)metadata=old.metadata;}
+      if(compared<0||compared==0&&!force){
+        sourceJson=old.sourceJson;sourcesLoaded=true;if(compared<0)metadata=old.metadata;
+        Document session=sessionReadmes.get(url);
+        if(!force&&session!=null&&session.metadata.version.equals(metadata.version)){readme=session.readme;readmeLoaded=true;}
+      }
     }
     if(!sourcesLoaded){
-      sourceJson=new String(MarketSourceCodec.decode(transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
+      String sourcesUrl=force?freshUrl(root+metadata.sources):root+metadata.sources;
+      sourceJson=new String(MarketSourceCodec.decode(transport.get(sourcesUrl,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
       LanzouCore.parseSourceDocument(sourceJson);
-      readme=new String(transport.get(root+metadata.readme,README_LIMIT),StandardCharsets.UTF_8);
       sourcesLoaded=true;
     }
+    if(!readmeLoaded)readme=new String(transport.get(freshUrl(root+metadata.readme),README_LIMIT),StandardCharsets.UTF_8);
     Document result=new Document(url,root,avatarUrl(identity),metadata,sourceJson,readme,sourcesLoaded,System.currentTimeMillis());
     save(result);sessionReadmes.put(url,result);return result;
   }
@@ -277,17 +337,40 @@ final class MarketRepositoryClient {
   }
 
   /**
-   * One bounded page of the market catalog, keeping the server's snapshot state so a changed
-   * snapshot stays visible even when the link list is unchanged.
+   * The whole ordinary catalog, read once from the public GitHub static repository and
+   * remembered for this client session. {@code force} bypasses both that snapshot and any
+   * HTTP cache, which the submission duplicate check requires.
    */
+  List<CatalogEntry> catalogAll(boolean force)throws Exception{
+    if(!force)synchronized(catalogLock){if(sessionCatalog!=null)return new ArrayList<>(sessionCatalog);}
+    /* The GitHub read stays outside the lock so badge and page reads never wait on a route. */
+    List<CatalogEntry> fresh=readStaticCatalog(force);
+    synchronized(catalogLock){sessionCatalog=fresh;return new ArrayList<>(fresh);}
+  }
+  /** One local page of the session catalog; the network read already happened. */
   Catalog catalog(int offset,int limit)throws Exception{
-    JSONObject value=new JSONObject(new String(transport.get(MARKET_ORIGIN+"/api/v1/repositories?offset="+offset+"&limit="+limit,256*1024),StandardCharsets.UTF_8));
-    JSONArray rows=value.getJSONArray("repositories");List<CatalogEntry> entries=new ArrayList<>();
-    for(int i=0;i<rows.length();i++){
-      JSONObject object=rows.getJSONObject(i);
-      entries.add(CatalogEntry.parse(object));
-    }
-    return new Catalog(entries,value.optLong("total",entries.size()),value.optInt("offset",offset),value.optInt("limit",limit));
+    List<CatalogEntry> all=catalogAll(false);
+    int from=Math.max(0,Math.min(offset,all.size()));
+    int to=Math.max(from,Math.min(all.size(),from+Math.max(0,limit)));
+    return new Catalog(new ArrayList<>(all.subList(from,to)),all.size(),from,to-from);
+  }
+  private List<CatalogEntry> readStaticCatalog(boolean force)throws Exception{
+    String address=MARKET_STATIC_ORIGIN+STATIC_CATALOG_FILE;
+    JSONObject value=new JSONObject(new String(
+        transport.get(force?freshUrl(address):address,CATALOG_LIMIT),StandardCharsets.UTF_8));
+    if(value.optInt("schema",0)!=1)throw new IOException("市场静态清单格式版本不受支持");
+    JSONArray rows=value.optJSONArray("repositories");
+    if(rows==null)throw new IOException("市场清单未读取完整，请重试");
+    List<CatalogEntry> entries=new ArrayList<>();
+    for(int i=0;i<rows.length();i++)entries.add(CatalogEntry.parse(rows.getJSONObject(i)));
+    return Collections.unmodifiableList(entries);
+  }
+  /**
+   * GitHub owner and repository names are case-insensitive, so identity comparisons use the
+   * lowercase canonical link. A stored or typed {@code .git} suffix is already removed.
+   */
+  static String catalogKey(String url)throws IOException{
+    return MarketRepository.canonicalUrl(url).toLowerCase(Locale.ROOT);
   }
 
   interface SubmissionProgress{void status(String message);}
@@ -315,26 +398,22 @@ final class MarketRepositoryClient {
   }
 
   Submission upload(String raw,SubmissionProgress progress)throws Exception{
-    String url=MarketRepository.canonicalUrl(raw);
-    if(progress!=null)progress.status("正在更新市场清单并检查版本…");
+    String url=MarketRepository.canonicalUrl(raw),key=catalogKey(url);
+    if(progress!=null)progress.status("正在读取 GitHub 市场清单并检查版本…");
     CatalogEntry listed=null;
-    for(int offset=0;;){
-      Catalog page=catalog(offset,100);
-      for(CatalogEntry entry:page.entries)if(entry.githubUrl.equalsIgnoreCase(url)){listed=entry;break;}
-      if(listed!=null)break;
-      offset+=page.entries.size();
-      if(offset>=page.total)break;
-      if(page.entries.isEmpty())throw new IOException("市场清单未读取完整，请重试");
-    }
+    for(CatalogEntry entry:catalogAll(true))if(catalogKey(entry.githubUrl).equals(key)){listed=entry;break;}
     if(progress!=null)progress.status("正在读取 GitHub 工程资料…");
     String identity=url.substring("https://github.com/".length()),root=rawRoot(identity);
     MarketRepository metadata=new MarketRepository(new JSONObject(
-        new String(transport.get(root+"lzpmarket.json",METADATA_LIMIT),StandardCharsets.UTF_8)));
+        new String(transport.get(freshUrl(root+"lzpmarket.json"),METADATA_LIMIT),StandardCharsets.UTF_8)));
     metadata.validateSubmission(url);
     String versionMode=MarketRepository.resolveVersionMode(metadata.versionMode,metadata.version);
     String publisher=metadata.publisher.isEmpty()?ownerLogin(url):metadata.publisher;
     String description=automaticSubmissionDescription(metadata);
     if(listed!=null&&listed.hasVersion()){
+      /* Comparing values that use different version modes would order unrelated formats. */
+      if(!versionMode.equals(listed.versionMode))throw new IOException(
+          "市场已收录的版本格式与当前仓库不同，请合并这两条记录后再上传");
       if(MarketRepository.compareVersions(versionMode,metadata.version,listed.version)<=0){
         return new Submission(url,metadata.title,metadata.name,publisher,description,
             metadata.version,versionMode,"current",false);
@@ -342,11 +421,13 @@ final class MarketRepositoryClient {
     }
     if(progress!=null)progress.status("版本有更新，正在验证源与 README…");
     String sourceJson=new String(MarketSourceCodec.decode(
-        transport.get(root+metadata.sources,ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
+        transport.get(freshUrl(root+metadata.sources),ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
     if(LanzouCore.parseSourceDocument(sourceJson).isEmpty())throw new IOException("仓库至少需要一个有效源");
-    transport.get(root+metadata.readme,README_LIMIT);
-    if(!metadata.icon.isEmpty())transport.get(metadata.assetUrl(root,metadata.icon),2*1024*1024);
-    if(!metadata.publisherAvatar.isEmpty())transport.get(metadata.assetUrl(root,metadata.publisherAvatar),2*1024*1024);
+    transport.get(freshUrl(root+metadata.readme),README_LIMIT);
+    if(!metadata.icon.isEmpty())
+      transport.get(freshUrl(metadata.assetUrl(root,metadata.icon)),2*1024*1024);
+    if(!metadata.publisherAvatar.isEmpty())
+      transport.get(freshUrl(metadata.assetUrl(root,metadata.publisherAvatar)),2*1024*1024);
     if(progress!=null)progress.status("正在申请市场检测码…");
     JSONObject preflight=transport.post(MARKET_ORIGIN+"/api/v1/repositories/preflight",
         new JSONObject().put("githubUrl",url));
@@ -395,6 +476,10 @@ final class MarketRepositoryClient {
   }
 
   private File cacheFile(String raw)throws Exception{return new File(directory,MarketRepository.canonicalUrl(raw).substring("https://github.com/".length()).replace('/','_')+".json");}
+  static String freshUrl(String url){
+    char separator=url.indexOf('?')<0?'?':'&';
+    return url+separator+"lzp-refresh="+System.currentTimeMillis()+REFRESH_SEQUENCE.incrementAndGet();
+  }
   static byte[] httpGet(String raw,int limit)throws Exception{
     if(GithubPublicTransport.supports(raw))return GithubPublicTransport.get(raw,limit);
     URL url=new URL(raw);if(!url.getProtocol().equals("https"))throw new IOException("仓库资源必须使用 HTTPS");

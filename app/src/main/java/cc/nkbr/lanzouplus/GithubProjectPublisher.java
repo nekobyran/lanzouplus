@@ -16,6 +16,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
@@ -79,19 +80,27 @@ final class GithubProjectPublisher {
         final String error;
         final boolean newRepository;
         final boolean refUpdated;
+        final boolean alreadyLatest;
 
         Outcome(String repositoryUrl, int preparedFiles, int expectedFiles,
                 String error, boolean newRepository, boolean refUpdated) {
+            this(repositoryUrl, preparedFiles, expectedFiles, error, newRepository, refUpdated,
+                    false);
+        }
+
+        Outcome(String repositoryUrl, int preparedFiles, int expectedFiles,
+                String error, boolean newRepository, boolean refUpdated, boolean alreadyLatest) {
             this.repositoryUrl = repositoryUrl;
             this.preparedFiles = preparedFiles;
             this.expectedFiles = expectedFiles;
             this.error = error;
             this.newRepository = newRepository;
             this.refUpdated = refUpdated;
+            this.alreadyLatest = alreadyLatest;
         }
 
         boolean hasRepository() { return !repositoryUrl.isEmpty(); }
-        boolean complete() { return refUpdated && error.isEmpty(); }
+        boolean complete() { return (refUpdated || alreadyLatest) && error.isEmpty(); }
     }
 
     /**
@@ -271,13 +280,16 @@ final class GithubProjectPublisher {
             } catch (Exception failure) {
                 result = new Outcome("", 0, 0, safeMessage(failure), false, false);
             }
-            if(result.refUpdated){
+            if(result.refUpdated || result.alreadyLatest){
                 try{
                     project.metadata.put("repositoryUrl",result.repositoryUrl);
                     project.save(new File(new File(owner.getFilesDir(),"market-projects"),project.id+".json"));
                 }catch(Exception bindingFailure){
                     result=new Outcome(result.repositoryUrl,result.preparedFiles,result.expectedFiles,
-                            "GitHub 已发布，但本机工程绑定保存失败，请重新打开工程确认",result.newRepository,true);
+                            result.alreadyLatest
+                                    ? "GitHub 仓库已是最新，但本机工程绑定保存失败，请重新打开工程确认"
+                                    : "GitHub 已发布，但本机工程绑定保存失败，请重新打开工程确认",
+                            result.newRepository, result.refUpdated, result.alreadyLatest);
                 }
             }
             Outcome resultOnUi = result;
@@ -441,12 +453,16 @@ final class GithubProjectPublisher {
             throw new IOException("GitHub 仓库文件清单被截断，已停止以保护原有文件");
         }
         LinkedHashSet<String> remoteFiles = new LinkedHashSet<>();
+        Map<String, String> remoteBlobs = new LinkedHashMap<>();
         JSONArray existingTree = treeSnapshot.optJSONArray("tree");
         if (existingTree == null) throw new IOException("GitHub 未返回仓库文件清单");
         for (int i = 0; i < existingTree.length(); i++) {
             JSONObject member = existingTree.optJSONObject(i);
             if (member != null && "blob".equals(member.optString("type"))) {
-                remoteFiles.add(member.optString("path"));
+                String path = member.optString("path");
+                remoteFiles.add(path);
+                remoteBlobs.put(path,
+                        requiredId(member, "GitHub 仓库文件对象 ID 缺失：" + path));
             }
         }
         // 新增路径若已属于其它作者且不在上次管理清单中，拒绝覆盖。
@@ -464,6 +480,11 @@ final class GithubProjectPublisher {
             String filename = file.getKey();
             progress.status("准备 Git 对象 " + (prepared[0] + 1) + "/" + files.size()
                     + "：" + filename);
+            String remoteBlob = remoteBlobs.get(filename);
+            if (remoteBlob != null) {
+                byte[] remoteBytes = readBlob(client, login, repository, remoteBlob, filename);
+                if (sameFileContent(filename, file.getValue(), remoteBytes)) continue;
+            }
             JSONObject blobRequest = new JSONObject()
                     .put("content", Base64.encodeToString(file.getValue(), Base64.NO_WRAP))
                     .put("encoding", "base64");
@@ -484,6 +505,12 @@ final class GithubProjectPublisher {
                         .put("type", "blob")
                         .put("sha", JSONObject.NULL));
             }
+        }
+
+        if (treeChanges.length() == 0) {
+            progress.status("GitHub 仓库内容已是最新，未创建新提交");
+            return new Outcome(bound.repositoryUrl, 0, files.size(), "",
+                    createdNow, false, true);
         }
 
         ensureNotCancelled(cancelled);
@@ -531,6 +558,32 @@ final class GithubProjectPublisher {
             return new Outcome(bound.repositoryUrl, prepared[0], files.size(),
                     "GitHub 远端已完成一次提交，但本机关联文件清单保存失败，后续更新前需先修复本机存储",
                     createdNow, true);
+        }
+    }
+
+    private static byte[] readBlob(GithubAccountClient client, String login, String repository,
+            String blobId, String path) throws IOException {
+        JSONObject blob = client.apiForAccount(login, "GET",
+                repository + "/git/blobs/" + Uri.encode(blobId), null);
+        if (!"base64".equals(blob.optString("encoding"))) {
+            throw new IOException("GitHub 返回的文件内容编码无法读取：" + path);
+        }
+        try {
+            return Base64.decode(blob.optString("content"), Base64.DEFAULT);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("GitHub 返回的文件内容无法读取：" + path);
+        }
+    }
+
+    private static boolean sameFileContent(String path, byte[] local, byte[] remote)
+            throws IOException {
+        if (!MarketProject.SOURCES_ENTRY.equals(path)) return Arrays.equals(local, remote);
+        // sources.lzp 每次含随机 IV；只比较源 JSON 明文，上传内容仍是原密文。
+        try {
+            return Arrays.equals(MarketSourceCodec.decode(local),
+                    MarketSourceCodec.decode(remote));
+        } catch (IllegalArgumentException malformed) {
+            return false;
         }
     }
 
@@ -591,9 +644,18 @@ final class GithubProjectPublisher {
         String title;
         String message;
         if (result.complete()) {
-            title = result.newRepository ? "已创建并发布 GitHub 仓库" : "GitHub 仓库更新成功";
-            message = "已将 " + result.expectedFiles + " 个工程文件在默认分支一次提交生效。"
-                    + "\n" + result.repositoryUrl + "\n\n尚未提交至市场，可另行操作。";
+            if (result.alreadyLatest) {
+                title = "GitHub 仓库已是最新";
+                message = "工程内容与仓库默认分支一致，未创建新提交。"
+                        + "\n" + result.repositoryUrl + "\n\n尚未提交至市场，可另行操作。";
+            } else {
+                title = result.newRepository ? "已创建并发布 GitHub 仓库" : "GitHub 仓库更新成功";
+                message = "已将 " + result.expectedFiles + " 个工程文件在默认分支一次提交生效。"
+                        + "\n" + result.repositoryUrl + "\n\n尚未提交至市场，可另行操作。";
+            }
+        } else if (result.alreadyLatest) {
+            title = "GitHub 仓库已是最新 · 本机记录异常";
+            message = result.repositoryUrl + "\n\n" + result.error;
         } else if (result.refUpdated) {
             title = "GitHub 远端已更新 · 本机记录异常";
             message = result.repositoryUrl + "\n\n" + result.error;

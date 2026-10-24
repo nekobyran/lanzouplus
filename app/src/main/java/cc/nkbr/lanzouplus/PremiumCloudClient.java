@@ -372,6 +372,7 @@ final class PremiumCloudClient {
     int totalPage=reply.root.optInt("totalPage",0);
     int total=reply.root.optInt("total",items.size());
     boolean hasMore=totalPage>0?page<totalPage:items.size()>=pageSize;
+    if(items.isEmpty())hasMore=false;
     return new CloudFilesClient.CloudPage(items,page,hasMore,total);
   }
 
@@ -980,7 +981,8 @@ final class PremiumCloudClient {
     }
   }
 
-  CloudFilesClient.ReplaceResult cloudReplaceFile(CloudFilesClient.CloudItem oldFile,String path,
+  CloudFilesClient.ReplaceResult cloudReplaceFile(CloudFilesClient.CloudItem oldFile,
+                                                  String parentFolderId,String path,
                                                   CloudFilesClient.UploadOptions options)
       throws CloudException{
     if(oldFile==null||oldFile.folder)throw new CloudException(ERROR_PROTOCOL,"请选择 APK 文件");
@@ -991,7 +993,12 @@ final class PremiumCloudClient {
     String token=tokenFor(account);
     LoginState state=ensureLoggedIn(account);
     String uploadAccount=state.account.isEmpty()?account:state.account;
-    String folder=findPremiumFolder(token,oldFile.id);
+    String folder=premiumFolder(parentFolderId);
+    boolean listed=false;
+    for(CloudFilesClient.CloudItem item:premiumAll(token,folder))
+      if(!item.folder&&item.id.equals(oldFile.id)){listed=true;break;}
+    if(!listed)
+      throw new CloudException(CloudFilesClient.ERROR_NOT_FOUND,"待换包文件不在当前文件夹");
     CloudFilesClient.UploadResult uploaded=premiumUpload(token,uploadAccount,folder,path);
     JSONObject body=new JSONObject();
     try{body.put("fileDesc",oldFile.description).put("fileId",uploaded.id).put("fileName",oldFile.name);}
@@ -1004,21 +1011,6 @@ final class PremiumCloudClient {
     if(present)throw new CloudException(ERROR_PROTOCOL,"优享未确认旧文件已移入回收站");
     return new CloudFilesClient.ReplaceResult(oldFile.id,uploaded.id,folder,oldFile.name,
         uploaded.uploadedName,false);
-  }
-
-  private String findPremiumFolder(String token,String fileId)throws CloudException{
-    java.util.ArrayDeque<String> pending=new java.util.ArrayDeque<>();
-    Set<String> visited=new HashSet<>();
-    pending.add("0");
-    while(!pending.isEmpty()){
-      String folder=pending.removeFirst();
-      if(!visited.add(folder))continue;
-      for(CloudFilesClient.CloudItem item:premiumAll(token,folder)){
-        if(item.folder)pending.addLast(item.id);
-        else if(item.id.equals(fileId))return folder;
-      }
-    }
-    throw new CloudException(ERROR_PROTOCOL,"待换包文件不在云盘目录中");
   }
 
   private CloudFilesClient.UploadResult premiumUpload(String token,String account,String folder,

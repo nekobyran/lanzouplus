@@ -167,13 +167,17 @@ final class MarketCatalogView {
     LinearLayout panel=new LinearLayout(owner);
     panel.setOrientation(LinearLayout.VERTICAL);
     panel.setPadding(owner.dp(8),owner.dp(4),owner.dp(8),0);
-    TextView status=owner.text("正在读取 GitHub README…",12,owner.MUTED);
+    TextView status=owner.text("正在检查 GitHub 仓库版本…",12,owner.MUTED);
     status.setPadding(owner.dp(12),0,owner.dp(12),owner.dp(8));
     Button starButton=owner.toolbarTextButton("Star");
     starButton.setTextSize(12);
     starButton.setContentDescription("Star GitHub 仓库");
+    Button refreshButton=owner.toolbarTextButton("刷新");
+    refreshButton.setTextSize(12);
+    refreshButton.setContentDescription("刷新仓库版本与 README");
     LinearLayout statusRow=new LinearLayout(owner);statusRow.setGravity(Gravity.CENTER_VERTICAL);
     statusRow.addView(status,new LinearLayout.LayoutParams(0,-2,1));
+    statusRow.addView(refreshButton,new LinearLayout.LayoutParams(owner.dp(60),owner.dp(44)));
     statusRow.addView(starButton,new LinearLayout.LayoutParams(owner.dp(128),owner.dp(44)));
     panel.addView(statusRow,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     FrameLayout frame=new FrameLayout(owner);
@@ -191,6 +195,7 @@ final class MarketCatalogView {
     final Button[] download={null},delete={null};
     final boolean[] busy={false};
     final boolean[] starBusy={false};
+    final boolean[] reading={false};
     final Boolean[] starred={null};
     final long[] stars={card.github==null?-1:card.github.stars};
     final android.webkit.WebView[] web={null};
@@ -299,56 +304,102 @@ final class MarketCatalogView {
         });
       });
     });
+    refreshButton.setOnClickListener(v->loadDetail(card,dialog,status,frame,web,document,installed,
+        starButton,refreshButton,starred,stars,reading,updateButtons,true));
     owner.showRounded(dialog);
+    loadDetail(card,dialog,status,frame,web,document,installed,starButton,refreshButton,
+        starred,stars,reading,updateButtons,force);
+  }
+
+  private void loadDetail(Card card,AlertDialog dialog,TextView status,FrameLayout frame,
+      android.webkit.WebView[] web,MarketRepositoryClient.Document[] document,
+      Models.Source[] installed,Button starButton,Button refreshButton,Boolean[] starred,
+      long[] stars,boolean[] reading,Runnable[] updateButtons,boolean force){
+    if(reading[0])return;
+    reading[0]=true;refreshButton.setEnabled(false);
+    status.setText(force?"正在刷新 GitHub 仓库版本…":"正在检查 GitHub 仓库版本…");
     owner.io.execute(()->{
+      MarketRepositoryClient.Document checked=null,loaded=null;
+      MarketRepositoryClient.GithubInfo identity=null;
+      Models.Source current=null;
+      Boolean knownStar=null;boolean knownSignedIn=false;String failure="";
       try{
-        MarketRepositoryClient.Document loaded=owner.core.marketRepositories().readme(card.url,false);
-        Models.Source current=findInstalled(card.url);
-        owner.runOnUiThread(()->{
-          if(!dialog.isShowing())return;
-          document[0]=loaded;installed[0]=current;
-          status.setText(loaded.sourcePublisher()+" · "+loaded.metadata.version);
-          frame.removeAllViews();web[0]=MarketReadmeView.create(owner,loaded.readme,loaded.rawRoot,loaded.githubUrl);
-          frame.addView(web[0],new FrameLayout.LayoutParams(-1,-1));updateButtons[0].run();
-        });
-        MarketRepositoryClient.GithubInfo info=card.github;
-        if(info==null)try{info=owner.core.marketRepositories().githubInfo(card.url,force);}catch(Exception ignored){}
-        MarketRepositoryClient.GithubInfo identity=info;
-        Boolean isStarred=null;boolean signedIn=false;
-        try{
-          GithubAccountClient account=GithubAccountClient.production(owner);
-          GithubAccountClient.Profile profile=account.cachedProfile();
-          signedIn=profile!=null&&account.hasUsableSession();
-          if(signedIn)isStarred=account.starred(card.url);
-        }catch(IOException ignored){}
-        Boolean knownStar=isStarred;boolean knownSignedIn=signedIn;
-        owner.runOnUiThread(()->{
-          if(!dialog.isShowing())return;
-          document[0]=loaded;installed[0]=current;status.setText(loaded.sourcePublisher()+
-              " · "+loaded.metadata.version);
-          if(identity!=null)stars[0]=identity.stars;
-          starred[0]=knownStar;
-          starButton.setContentDescription(knownSignedIn?"Star GitHub 仓库":"登录 GitHub 后 Star 仓库");
-          updateStarButton(starButton,starred[0],stars[0],false);
-          updateButtons[0].run();
-        });
+        checked=owner.core.marketRepositories().checkVersion(card.url);
       }catch(Exception error){
-        owner.runOnUiThread(()->{
-          if(!dialog.isShowing())return;
-          frame.removeAllViews();TextView failure=owner.text("无法读取 README：\n"+owner.friendlyError(error),13,owner.MUTED);
-          failure.setPadding(owner.dp(16),owner.dp(24),owner.dp(16),0);
-          frame.addView(failure);status.setText("GitHub 仓库读取失败");updateButtons[0].run();
-        });
+        failure=owner.friendlyError(error);
       }
+      try{current=findInstalled(card.url);}catch(Exception ignored){}
+      MarketRepositoryClient.Document checkedDocument=checked;
+      Models.Source installedNow=current;
+      String versionError=failure;
+      /* The version decides the update button; README, GitHub identity and Star state load later. */
+      owner.runOnUiThread(()->{
+        if(!dialog.isShowing())return;
+        if(checkedDocument!=null){
+          card.document=checkedDocument;card.error="";document[0]=checkedDocument;installed[0]=installedNow;
+          status.setText(checkedDocument.sourcePublisher()+" · "+checkedDocument.metadata.version);
+        }else{
+          document[0]=null;status.setText("GitHub 仓库版本读取失败");
+        }
+        updateButtons[0].run();
+      });
+      if(checked!=null)try{
+        loaded=owner.core.marketRepositories().readme(checked,force);
+      }catch(Exception error){
+        if(failure.isEmpty())failure=owner.friendlyError(error);
+      }
+      identity=force?null:card.github;
+      if(identity==null)try{identity=owner.core.marketRepositories().githubInfo(card.url,force);}catch(Exception ignored){}
+      try{
+        GithubAccountClient account=GithubAccountClient.production(owner);
+        GithubAccountClient.Profile profile=account.cachedProfile();
+        knownSignedIn=profile!=null&&account.hasUsableSession();
+        if(knownSignedIn)knownStar=account.starred(card.url);
+      }catch(IOException ignored){}
+      MarketRepositoryClient.Document result=loaded;
+      MarketRepositoryClient.GithubInfo github=identity;
+      Boolean starState=knownStar;
+      boolean signedIn=knownSignedIn;
+      String error=failure;
+      owner.runOnUiThread(()->{
+        if(!dialog.isShowing())return;
+        reading[0]=false;refreshButton.setEnabled(true);
+        if(checkedDocument!=null){
+          if(web[0]!=null){web[0].stopLoading();web[0].destroy();web[0]=null;}
+          frame.removeAllViews();
+          if(result!=null){
+            web[0]=MarketReadmeView.create(owner,result.readme,result.rawRoot,result.githubUrl);
+            frame.addView(web[0],new FrameLayout.LayoutParams(-1,-1));
+          }else{
+            TextView failed=owner.text("无法读取 README：\n"+error,13,owner.MUTED);
+            failed.setPadding(owner.dp(16),owner.dp(24),owner.dp(16),0);
+            frame.addView(failed);
+          }
+          if(github!=null)stars[0]=github.stars;
+          starred[0]=starState;
+          starButton.setContentDescription(signedIn?"Star GitHub 仓库":"登录 GitHub 后 Star 仓库");
+          updateStarButton(starButton,starred[0],stars[0],false);
+        }else{
+          if(web[0]!=null){web[0].stopLoading();web[0].destroy();web[0]=null;}
+          frame.removeAllViews();
+          TextView failed=owner.text("无法读取 GitHub 仓库版本：\n"+versionError,13,owner.MUTED);
+          failed.setPadding(owner.dp(16),owner.dp(24),owner.dp(16),0);
+          frame.addView(failed);
+        }
+        updateButtons[0].run();
+      });
     });
   }
   private Models.Source findInstalled(String url)throws Exception{
     for(Models.Source source:owner.core.sources())if(source.kind==Models.SOURCE_REPOSITORY&&url.equals(source.url))return source;
     return null;
   }
-  private static boolean newer(MarketRepositoryClient.Document document,Models.Source source){
-    try{return !document.metadata.versionMode.equals(source.repositoryVersionMode)||
-        MarketRepository.compareVersions(document.metadata.versionMode,document.metadata.version,source.repositoryVersion)>0;
+  /** GitHub {@code lzpmarket.json} decides updates; a catalog row version is display text only. */
+  static boolean newer(MarketRepositoryClient.Document document,Models.Source source){
+    try{
+      if(source.repositoryVersion.isEmpty()||!MarketRepository.isVersionMode(source.repositoryVersionMode))return true;
+      return !document.metadata.versionMode.equals(source.repositoryVersionMode)||
+          MarketRepository.compareVersions(document.metadata.versionMode,document.metadata.version,source.repositoryVersion)>0;
     }catch(Exception ignored){return false;}
   }
 

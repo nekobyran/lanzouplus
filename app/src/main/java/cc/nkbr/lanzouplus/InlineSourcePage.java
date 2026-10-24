@@ -23,7 +23,11 @@ final class InlineSourcePage {
   private TextView identity;
   private LinearLayout shell;
   private int request;
-  private final Set<String> hydrated=new HashSet<>();
+    private final Set<String> hydrated=new HashSet<>();
+  private List<BrowserHistory.Route> historyRoute;
+  private int historyDepth;
+  private String historyQuery="";
+  private int historyScroll;
 
   InlineSourcePage(MainActivity owner){this.owner=owner;}
   static void open(MainActivity owner,Models.Source source,boolean refresh){
@@ -31,6 +35,52 @@ final class InlineSourcePage {
     if(owner.inlineSourcePage==null)owner.inlineSourcePage=new InlineSourcePage(owner);
     owner.inlineSourcePage.enter(source,refresh);
   }
+  static void openHistory(MainActivity owner,Models.Source source,BrowserHistory.Entry entry){
+    if(owner.pageKind!=1||owner.sourceGrid==null)owner.showSources((MainActivity.SourceListPageState)null);
+    if(owner.inlineSourcePage==null)owner.inlineSourcePage=new InlineSourcePage(owner);
+    owner.inlineSourcePage.restoreHistory(entry);
+    owner.inlineSourcePage.enter(source,false);
+  }
+    /** Rebuild each path level from its parent; never rehydrate saved Source.members. */
+  void restoreHistory(BrowserHistory.Entry entry){
+    historyRoute=new ArrayList<>(entry.routes);
+    historyDepth=1;
+    historyQuery=entry.query;
+    historyScroll=entry.scroll;
+  }
+
+  private void advanceHistoryRestore(Level loaded){
+    if(historyRoute==null)return;
+    if(historyDepth<historyRoute.size()){
+      BrowserHistory.Route target=historyRoute.get(historyDepth);
+      for(Models.Source candidate:loaded.values){
+        String key=candidate.id.isEmpty()?candidate.url:candidate.id;
+        if(!key.equals(target.id)||!candidate.nodeId.equals(target.nodeId))continue;
+        historyDepth++;
+        enter(candidate,false);
+        return;
+      }
+      historyRoute=null;
+      owner.showNotice("历史列表层级已不存在："+target.title,true);
+      owner.finishHistoryRestore(null);
+      return;
+    }
+    loaded.query=historyQuery;
+    loaded.scroll=historyScroll;
+    historyRoute=null;
+    display(loaded);
+    final ScrollView scroll=owner.pageScroll;
+    final int savedScroll=loaded.scroll;
+    if(scroll!=null&&savedScroll>0)scroll.postDelayed(()->{
+      if(owner.inlineSourcePage==this&&owner.pageScroll==scroll){
+        scroll.scrollTo(0,savedScroll);
+        if(owner.sourceListWindow!=null)owner.sourceListWindow.refresh();
+      }
+    },150L);
+    BrowserHistory.Entry restored=owner.currentHistoryEntry();
+    owner.finishHistoryRestore(restored==null?null:restored.withPosition(historyQuery,historyScroll));
+  }
+
   private void attach(){
     if(shell==owner.root)return;
     shell=owner.root;
@@ -73,7 +123,8 @@ final class InlineSourcePage {
   }
   String itemKey(Models.Source source){Models.Item item=levels.get(levels.size()-1).items.get(MainActivity.sourceKey(source));return item==null?MainActivity.sourceKey(source):item.url;}
   void refreshCurrent(){if(levels.size()>1){Level current=levels.get(levels.size()-1);hydrated.remove(MainActivity.sourceKey(current.source));load(current,false);}}
-  private void enter(Models.Source source,boolean refresh){
+    private void enter(Models.Source source,boolean refresh){
+    owner.recordCurrentHistory();
     attach();
     if(levels.isEmpty())levels.add(new Level(null,owner.sourcePageSources));
     capture();
@@ -95,11 +146,12 @@ final class InlineSourcePage {
         }
         owner.runOnUiThread(()->{
           if(ticket!=request||session!=owner.navigationSession||owner.inlineSourcePage!=this||owner.root!=shell)return;
-          level.items.clear();level.items.putAll(loaded.items);level.rows.clear();level.rows.putAll(loaded.rows);level.values=values;display(level);
+          level.items.clear();level.items.putAll(loaded.items);level.rows.clear();level.rows.putAll(loaded.rows);level.values=values;display(level);advanceHistoryRestore(level);
         });
       }catch(Exception error){owner.runOnUiThread(()->{
         if(ticket!=request||session!=owner.navigationSession||owner.inlineSourcePage!=this)return;
         owner.sourceHeading.setText("读取失败，点击路径旁刷新按钮重试");owner.showNotice(owner.friendlyError(error),true);
+        if(historyRoute!=null){historyRoute=null;owner.finishHistoryRestore(null);}
       });}
     });
   }
@@ -149,7 +201,7 @@ final class InlineSourcePage {
     if(owner.sourceListFilterRunnable!=null)owner.ui.removeCallbacks(owner.sourceListFilterRunnable);
     owner.renderSources(owner.sourceGrid,level.values,level.query,owner.sourceHeading);
     if(owner.motionEnabled()){owner.sourceGrid.animate().cancel();owner.sourceGrid.setAlpha(0f);owner.sourceGrid.animate().alpha(1f).setDuration(190).start();}
-    owner.pageScroll.scrollTo(0,level.scroll);
+    owner.pageScroll.scrollTo(0,level.scroll);owner.noteHistoryRoute();
     renderPath();
   }
   private void renderPath(){
@@ -181,7 +233,7 @@ final class InlineSourcePage {
   }
   private void go(int depth){
     if(depth<0||depth>=levels.size()-1)return;
-    request++;capture();while(levels.size()>depth+1)levels.remove(levels.size()-1);
+    owner.recordCurrentHistory();request++;capture();while(levels.size()>depth+1)levels.remove(levels.size()-1);
     Level level=levels.get(depth);display(level);
     if(depth==0&&level.values.isEmpty())owner.loadSourcePageSnapshot(owner.navigationSession,level.values,owner.sourceGrid,owner.sourceFilter,owner.sourceHeading);
   }

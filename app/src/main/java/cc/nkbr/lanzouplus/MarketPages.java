@@ -21,7 +21,9 @@ final class MarketPages {
     ImageButton projects=owner.iconButton(R.drawable.ic_edit,"仓库工程");projects.setOnClickListener(v->showProjects());owner.pageHeaderRow.addView(projects,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton management=owner.iconButton(R.drawable.ic_settings,"云盘文件管理");management.setOnClickListener(v->owner.cloudManagement().show());owner.pageHeaderRow.addView(management,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton reload=owner.iconButton(R.drawable.ic_refresh,"更新市场");reload.setOnClickListener(v->showMarket(true));owner.pageHeaderRow.addView(reload,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
-    TextView status=owner.text("正在读取市场…",13,owner.MUTED);owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(28)));
+    owner.pageHeaderRow.addView(MarketAnnouncements.entry(owner),new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
+    if(force)owner.marketAnnouncements().checkInBackground(owner,true);
+    TextView status=owner.text("正在读取 GitHub 市场…",13,owner.MUTED);owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(28)));
     EditText search=owner.sourceInput("搜索标题、简介、发布者或仓库名",android.text.InputType.TYPE_CLASS_TEXT);
     search.setSingleLine(true);search.setContentDescription("市场本地搜索");
     owner.root.addView(search,new LinearLayout.LayoutParams(-1,owner.dp(52)));
@@ -35,13 +37,13 @@ final class MarketPages {
     owner.io.execute(()->{try{
       File file=new File(owner.getFilesDir(),"market-index.json");MarketIndex cached=readIndex(file);
       if(!cached.entries.isEmpty())owner.runOnUiThread(()->catalog.render(cached.entries));
-      List<MarketRepositoryClient.CatalogEntry> latest=new ArrayList<>();StringBuilder fingerprint=new StringBuilder();
-      for(int offset=0;;offset+=50){MarketRepositoryClient.Catalog page=owner.core.marketRepositories().catalog(offset,50);latest.addAll(page.entries);fingerprint.append(page.fingerprint());if(page.entries.size()<50)break;}
+      /* One bounded GitHub read; scrolling and search only page the in-memory snapshot. */
+      List<MarketRepositoryClient.CatalogEntry> latest=owner.core.marketRepositories().catalogAll(force);
       boolean auto=owner.getSharedPreferences("market",Context.MODE_PRIVATE).getBoolean("auto_update",true);
-      String current=fingerprint.toString();
+      String current=new MarketRepositoryClient.Catalog(latest,latest.size(),0,latest.size()).fingerprint();
       Runnable apply=()->{owner.io.execute(()->{try{JSONArray rows=new JSONArray();for(MarketRepositoryClient.CatalogEntry entry:latest)rows.put(entry.json());JSONObject saved=new JSONObject().put("fingerprint",current).put("repositories",rows);try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));}}catch(Exception error){owner.runOnUiThread(()->owner.showNotice("市场缓存保存失败",true));}});catalog.render(latest);};
       owner.runOnUiThread(()->{if(session!=owner.navigationSession)return;if(auto||force||cached.entries.isEmpty())apply.run();else if(!cached.fingerprint.equals(current)){AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("市场有更新").setMessage("已发现新的仓库目录，现在更新？").setNegativeButton("稍后",null).setPositiveButton("更新",(dialog,which)->apply.run()).create();owner.showRounded(prompt);}});
-    }catch(Exception error){owner.runOnUiThread(()->{if(session==owner.navigationSession){status.setText("市场暂时无法更新");owner.showNotice(owner.friendlyError(error),true);}});}});
+    }catch(Exception error){owner.runOnUiThread(()->{if(session==owner.navigationSession){status.setText("GitHub 市场暂时无法读取");owner.showNotice(owner.friendlyError(error),true);}});}});
   }
   /**
    * The cached catalog page set. It keeps the snapshot fingerprint next to the links, so a

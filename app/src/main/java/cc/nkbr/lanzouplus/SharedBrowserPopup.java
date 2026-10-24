@@ -34,12 +34,12 @@ import org.json.JSONObject;
  * popup is styled from one place.</p>
  */
 final class SharedBrowserPopup {
-  private static final String PREFS = "web-browser-v2", HISTORY = "history";
-  private static final int MAX_ENTRIES = 120;
+      // Entries are owned by BrowserHistory.
+  
 
   private SharedBrowserPopup() {}
 
-  static void show(Activity host, boolean favoritesMode, Consumer<String> openUrl) {
+  static void show(Activity host, boolean favoritesMode, Consumer<BrowserHistory.Entry> openUrl) {
     if (host == null || host.isFinishing()) return;
     if (favoritesMode) {
       if (host instanceof LanzouWebActivity) {
@@ -53,9 +53,7 @@ final class SharedBrowserPopup {
       return;
     }
     SharedPopupSurface.Theme theme = new SharedPopupSurface.Theme(host);
-    SharedPreferences prefs = host.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    String key = HISTORY;
-    List<Entry> entries = read(prefs.getString(key, "[]"));
+        
 
     LinearLayout panel = new LinearLayout(host);
     panel.setOrientation(LinearLayout.VERTICAL);
@@ -89,7 +87,7 @@ final class SharedBrowserPopup {
     actionBar.setBackground(strip);
     actionBar.setClipToOutline(true);
     actionBar.setContentDescription("浏览历史多选操作");
-    ImageButton open = SharedPopupSurface.actionButton(host, R.drawable.ic_open_with, "打开所选网页", theme.accent);
+    ImageButton open = SharedPopupSurface.actionButton(host, R.drawable.ic_open_with, "打开所选历史位置", theme.accent);
     ImageButton star = SharedPopupSurface.actionButton(host, R.drawable.ic_star,
         "将所选网页加入收藏", theme.accent);
     ImageButton path = SharedPopupSurface.actionButton(host, R.drawable.ic_folder, "将所选网页加入路径", theme.accent);
@@ -113,7 +111,7 @@ final class SharedBrowserPopup {
         HistoryPopupNavigation.HISTORY,
         theme.accent, theme.text, openUrl);
     Session session = new Session(host, dialog, list, summary, selectAll, open, star, path, delete,
-        actionBar, actionParams, key, theme, openUrl);
+                        actionBar, actionParams, theme, openUrl);
     session.reload();
 
     selectAll.setOnClickListener(v -> {
@@ -124,7 +122,7 @@ final class SharedBrowserPopup {
         return;
       }
       session.selectionMode = true;
-      for (Entry entry : session.entries) session.selected.add(entry.url);
+      for (BrowserHistory.Entry entry : session.entries) session.selected.add(entry.id);
       session.render();
     });
     open.setOnClickListener(v -> session.openSelected());
@@ -175,17 +173,17 @@ final class SharedBrowserPopup {
     final ImageButton open, star, path, delete;
     final LinearLayout actionBar;
     final LinearLayout.LayoutParams actionParams;
-    final String key;
+    
     final SharedPopupSurface.Theme theme;
-    final Consumer<String> openUrl;
-    final List<Entry> entries = new ArrayList<>();
+    final Consumer<BrowserHistory.Entry> openUrl;
+    final List<BrowserHistory.Entry> entries = new ArrayList<>();
     final LinkedHashSet<String> selected = new LinkedHashSet<>();
     boolean selectionMode,selectionBarRevealed;
 
     Session(Activity host, AlertDialog dialog, LinearLayout list, TextView summary, TextView selectAll,
         ImageButton open, ImageButton star, ImageButton path, ImageButton delete, LinearLayout actionBar,
-        LinearLayout.LayoutParams actionParams, String key, SharedPopupSurface.Theme theme,
-        Consumer<String> openUrl) {
+                        LinearLayout.LayoutParams actionParams, SharedPopupSurface.Theme theme,
+        Consumer<BrowserHistory.Entry> openUrl) {
       this.host = host;
       this.dialog = dialog;
       this.list = list;
@@ -197,14 +195,14 @@ final class SharedBrowserPopup {
       this.delete = delete;
       this.actionBar = actionBar;
       this.actionParams = actionParams;
-      this.key = key;
+      
       this.theme = theme;
       this.openUrl = openUrl;
     }
 
     void reload() {
       entries.clear();
-      entries.addAll(read(host.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(key, "[]")));
+      entries.addAll(BrowserHistory.read(host));
       dialog.setTitle(("浏览历史") + " · " + entries.size());
       render();
     }
@@ -212,9 +210,9 @@ final class SharedBrowserPopup {
     void render() {
       list.removeAllViews();
       LinkedHashSet<String> alive = new LinkedHashSet<>();
-      for (Entry entry : entries) alive.add(entry.url);
+      for (BrowserHistory.Entry entry : entries) alive.add(entry.id);
       selected.retainAll(alive);
-      for (Entry entry : entries) list.addView(buildRow(entry), new LinearLayout.LayoutParams(-1, -2));
+      for (BrowserHistory.Entry entry : entries) list.addView(buildRow(entry), new LinearLayout.LayoutParams(-1, -2));
       if (entries.isEmpty()) {
         TextView empty = SharedPopupSurface.label(host, "暂无浏览历史", 13, theme.muted);
         empty.setGravity(Gravity.CENTER);
@@ -223,8 +221,8 @@ final class SharedBrowserPopup {
       sync();
     }
 
-    private View buildRow(Entry entry) {
-      boolean checked = selected.contains(entry.url);
+    private View buildRow(BrowserHistory.Entry entry) {
+      boolean checked = selected.contains(entry.id);
       LinearLayout row = new LinearLayout(host);
       row.setGravity(Gravity.CENTER_VERTICAL);
       row.setPadding(dp(host, 4), dp(host, 3), dp(host, 4), dp(host, 3));
@@ -240,13 +238,18 @@ final class SharedBrowserPopup {
       icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
       icon.setPadding(dp(host,8),dp(host,8),dp(host,8),dp(host,8));
       row.addView(icon,new LinearLayout.LayoutParams(dp(host,44),dp(host,44)));
-      WebsiteIcons.bind(host,icon,entry.url,theme.muted);
+      if (entry.type == BrowserHistory.Type.WEB) WebsiteIcons.bind(host,icon,entry.url,theme.muted);
+      else { icon.setImageResource(entry.type == BrowserHistory.Type.FOLDER ? R.drawable.ic_folder
+          : entry.type == BrowserHistory.Type.INLINE ? R.drawable.ic_sources : R.drawable.ic_globe);
+        icon.setColorFilter(theme.accent); }
       LinearLayout words = new LinearLayout(host);
       words.setOrientation(LinearLayout.VERTICAL);
       TextView title = SharedPopupSurface.label(host, entry.title, 14, theme.text);
       title.setSingleLine(true);
       title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-      TextView url = SharedPopupSurface.label(host, entry.url, 11, theme.muted);
+      String kind = entry.type == BrowserHistory.Type.WEB ? "网页" : entry.type == BrowserHistory.Type.INLINE
+          ? "多级列表" : entry.type == BrowserHistory.Type.FOLDER ? "目录" : "蓝奏云解析";
+      TextView url = SharedPopupSurface.label(host, kind + " · " + entry.url, 11, theme.muted);
       url.setSingleLine(true);
       url.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
       TextView moment = SharedPopupSurface.label(host, SharedPopupSurface.moment(entry.at), 10, theme.muted);
@@ -262,16 +265,16 @@ final class SharedBrowserPopup {
       row.setContentDescription(entry.title + "，" + entry.url + (checked ? "，已选择" : "") + "，轻点打开，长按多选");
       row.setOnClickListener(v -> {
         if (selectionMode) {
-          if (!selected.remove(entry.url)) selected.add(entry.url);
+          if (!selected.remove(entry.id)) selected.add(entry.id);
           if (selected.isEmpty()) selectionMode = false;
           render();
           return;
         }
-        openEntry(entry.url);
+        openEntry(entry);
       });
       row.setOnLongClickListener(v -> {
         selectionMode = true;
-        selected.add(entry.url);
+        selected.add(entry.id);
         render();
         return true;
       });
@@ -282,10 +285,12 @@ final class SharedBrowserPopup {
       actionParams.height = selectionMode ? dp(host, 56) : 0;
       actionBar.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
       if(selectionMode&&!selectionBarRevealed){selectionBarRevealed=true;actionBar.post(()->actionBar.requestRectangleOnScreen(new android.graphics.Rect(0,0,actionBar.getWidth(),actionBar.getHeight()),true));}else if(!selectionMode)selectionBarRevealed=false;
-      boolean single = selected.size() == 1, any = !selected.isEmpty();
+                  boolean single = selected.size() == 1, any = !selected.isEmpty(), webSelected = false;
+      for (BrowserHistory.Entry entry : entries)
+        if (selected.contains(entry.id) && entry.type == BrowserHistory.Type.WEB) { webSelected = true; break; }
       SharedPopupSurface.styleButton(open, theme.accent, theme.muted, single);
-      SharedPopupSurface.styleButton(star, theme.accent, theme.muted, any);
-      SharedPopupSurface.styleButton(path, theme.accent, theme.muted, any);
+                  SharedPopupSurface.styleButton(star, theme.accent, theme.muted, webSelected);
+                  SharedPopupSurface.styleButton(path, theme.accent, theme.muted, webSelected);
       SharedPopupSurface.styleButton(delete, theme.accent, theme.muted, any);
       star.setImageResource(R.drawable.ic_star);
       star.setContentDescription("将所选网页加入收藏");
@@ -295,15 +300,15 @@ final class SharedBrowserPopup {
       selectAll.setContentDescription(selectionMode ? "退出浏览记录多选" : "全选浏览记录");
     }
 
-    void openSelected() {
+            void openSelected() {
       if (selected.size() != 1) return;
-      openEntry(selected.iterator().next());
+      for (BrowserHistory.Entry entry : entries)
+        if (selected.contains(entry.id)) { openEntry(entry); return; }
     }
 
-    private void openEntry(String url) {
-      if (url == null || url.isEmpty()) return;
+    private void openEntry(BrowserHistory.Entry entry) {
       dialog.dismiss();
-      if (openUrl != null) openUrl.accept(url);
+      if (openUrl != null) openUrl.accept(entry);
     }
 
     /**
@@ -313,8 +318,8 @@ final class SharedBrowserPopup {
     void addSelectedToPath() {
       if (selected.isEmpty()) return;
       List<Models.Item> items = new ArrayList<>();
-      for (Entry entry : entries) {
-        if (!selected.contains(entry.url)) continue;
+      for (BrowserHistory.Entry entry : entries) {
+        if (!selected.contains(entry.id) || entry.type != BrowserHistory.Type.WEB) continue;
         items.add(SourceDestinationPopup.webFavoriteItem(entry.url, entry.title));
       }
       if (items.isEmpty()) return;
@@ -327,53 +332,14 @@ final class SharedBrowserPopup {
 
     void deleteSelected() {
       if (selected.isEmpty()) return;
-      SharedPreferences prefs = host.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-      List<Entry> kept = new ArrayList<>();
-      for (Entry entry : entries) if (!selected.contains(entry.url)) kept.add(entry);
-      prefs.edit().putString(key, write(kept)).apply();
+      BrowserHistory.delete(host, selected);
       Toast.makeText(host, "已删除 " + selected.size() + " 项", Toast.LENGTH_SHORT).show();
       selected.clear();
       reload();
     }
   }
 
-  private static final class Entry {
-    final String title, url;
-    final long at;
-
-    Entry(String title, String url, long at) {
-      this.title = title == null || title.trim().isEmpty() ? (url == null ? "" : url) : title;
-      this.url = url == null ? "" : url;
-      this.at = at;
-    }
-  }
-
-  private static List<Entry> read(String raw) {
-    List<Entry> entries = new ArrayList<>();
-    try {
-      JSONArray array = new JSONArray(raw);
-      for (int i = 0; i < array.length() && entries.size() < MAX_ENTRIES; i++) {
-        JSONObject item = array.optJSONObject(i);
-        if (item == null) continue;
-        String url = item.optString("u", "");
-        if (!url.isEmpty()) entries.add(new Entry(item.optString("t", url), url, item.optLong("a")));
-      }
-    } catch (Exception ignored) {
-    }
-    return entries;
-  }
-
-  private static String write(List<Entry> entries) {
-    JSONArray output = new JSONArray();
-    for (int i = 0; i < entries.size() && i < MAX_ENTRIES; i++) {
-      Entry entry = entries.get(i);
-      try {
-        output.put(new JSONObject().put("t", entry.title).put("u", entry.url).put("a", entry.at));
-      } catch (Exception ignored) {
-      }
-    }
-    return output.toString();
-  }
+  
 
   private static int dp(Activity host, int value) {
     return SharedPopupSurface.dp(host, value);

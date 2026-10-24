@@ -32,7 +32,7 @@ final class HistoryPopupNavigation {
 
   /** One collection tab row; inserted at the top of the caller-supplied page container. */
   static void attach(Activity host, AlertDialog dialog, LinearLayout panel, int current,
-      int accent, int text, Consumer<String> openUrl) {
+      int accent, int text, Consumer<BrowserHistory.Entry> openUrl) {
     LinearLayout tabs=new LinearLayout(host);
     String[] labels={"下载历史","浏览历史","收藏"};
     for(int index=0;index<labels.length;index++) {
@@ -82,9 +82,9 @@ final class HistoryPopupNavigation {
     });
   }
 
-  static Consumer<String> browserOpener(Activity host) {
-    if(host instanceof LanzouWebActivity)return ((LanzouWebActivity)host)::load;
-    return url->((MainActivity)host).openWebPage(url,"",false);
+  static Consumer<BrowserHistory.Entry> browserOpener(Activity host) {
+    if(host instanceof LanzouWebActivity)return ((LanzouWebActivity)host)::openHistoryEntry;
+    return ((MainActivity)host)::openHistoryEntry;
   }
 
   /** True unless the user turned animations off in system settings. */

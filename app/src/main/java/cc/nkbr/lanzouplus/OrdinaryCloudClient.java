@@ -2,8 +2,12 @@ package cc.nkbr.lanzouplus;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -284,11 +288,10 @@ final class OrdinaryCloudClient {
         items.addAll(parseItems(folders.opt("text"),true));
       }
       JSONObject files=task(map("task","5","folder_id",id,"pg",Integer.toString(page)));
-      int before=items.size();
-      items.addAll(parseItems(files.opt("text"),false));
-      Object info=files.opt("info");
-      long marker=valueAsLong(info,-1);
-      boolean hasMore=marker>=0?marker!=0:items.size()>before;
+      List<CloudFilesClient.CloudItem> fileItems=parseItems(files.opt("text"),false);
+      items.addAll(fileItems);
+      long marker=valueAsLong(files.opt("info"),-1);
+      boolean hasMore=marker>=0?marker!=0:!fileItems.isEmpty();
       return new CloudFilesClient.CloudPage(items,page,hasMore,items.size());
     }
   }
@@ -1113,12 +1116,17 @@ final class OrdinaryCloudClient {
       if(id.isEmpty())
         throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,
             "上传完成但无法安全确认新文件 ID");
-      if(options.autoIcon){
+      String warning="";
+      boolean iconSource=!options.iconPath.isEmpty()
+          ||prepared.originalName.toLowerCase(Locale.ROOT).endsWith(".apk");
+      if(options.autoIcon&&iconSource){
         try{setIcon(id,options.iconPath.isEmpty()?path:options.iconPath);}
-        catch(CloudFilesClient.CloudException ignored){}
+        catch(CloudFilesClient.CloudException iconFailure){
+          warning="图标未设置："+iconFailure.getMessage();
+        }
       }
       return new CloudFilesClient.UploadResult(id,folderId,prepared.originalName,prepared.remoteName,
-          prepared.uploadBytes,prepared.wrapped);
+          prepared.uploadBytes,prepared.wrapped,"",0,0,"",warning);
     }finally{
       if(prepared.temporary)deleteQuietly(prepared.file);
     }
@@ -1229,14 +1237,16 @@ final class OrdinaryCloudClient {
       String rootName=safeName(source.getName());
       String rootId=mkdirId(folderId,rootName,"");
       int[] counts=new int[]{0,0};
+      int[] iconWarnings=new int[]{0};
       long[] bytes=new long[]{0};
-      uploadTree(rootId,source,0,options,counts,bytes);
-      return new CloudFilesClient.DirectoryUploadResult(rootId,source.getName(),counts[0],counts[1],bytes[0]);
+      uploadTree(rootId,source,0,options,counts,bytes,iconWarnings);
+      return new CloudFilesClient.DirectoryUploadResult(rootId,source.getName(),counts[0],counts[1],bytes[0],
+          iconWarnings[0]==0?"":iconWarnings[0]+" 个文件的图标未设置");
     }
   }
 
   private void uploadTree(String remoteParent,File directory,int depth,
-                          CloudFilesClient.UploadOptions options,int[] counts,long[] bytes)
+                          CloudFilesClient.UploadOptions options,int[] counts,long[] bytes,int[] iconWarnings)
       throws CloudFilesClient.CloudException{
     if(depth>MAX_DIRECTORY_DEPTH)
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"目录层级过深");
@@ -1249,17 +1259,18 @@ final class OrdinaryCloudClient {
         try{if(android.system.OsConstants.S_ISLNK(android.system.Os.lstat(child.getAbsolutePath()).st_mode))continue;}catch(android.system.ErrnoException error){throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"无法读取本地目录",error);}
         String remote=mkdirId(remoteParent,safeName(child.getName()),"");
         counts[1]++;
-        uploadTree(remote,child,depth+1,options,counts,bytes);
+        uploadTree(remote,child,depth+1,options,counts,bytes,iconWarnings);
       }else if(child.isFile()){
         CloudFilesClient.UploadResult uploaded=uploadPrepared(remoteParent,child.getAbsolutePath(),options);
         counts[0]++;
         bytes[0]+=uploaded.bytesUploaded;
+        if(!uploaded.warning.isEmpty())iconWarnings[0]++;
       }
     }
   }
 
-  CloudFilesClient.ReplaceResult replaceApk(CloudFilesClient.CloudItem oldFile,String path,
-                                            CloudFilesClient.UploadOptions options)
+  CloudFilesClient.ReplaceResult replaceApk(CloudFilesClient.CloudItem oldFile,String parentFolderId,
+                                            String path,CloudFilesClient.UploadOptions options)
       throws CloudFilesClient.CloudException{
     validId(oldFile.id,"oldFileId");
     if(oldFile.folder||!oldFile.name.toLowerCase(Locale.ROOT).endsWith(".apk"))
@@ -1270,9 +1281,14 @@ final class OrdinaryCloudClient {
     if(options==null)options=CloudFilesClient.UploadOptions.defaults();
     synchronized(networkLock){
       requireSession();
+      String folderId=validId(parentFolderId,"parentFolderId");
+      boolean listed=false;
+      for(CloudFilesClient.CloudItem item:listAll(folderId))
+        if(!item.folder&&item.id.equals(oldFile.id)){listed=true;break;}
+      if(!listed)
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NOT_FOUND,
+            "待换包文件不在当前文件夹");
       ManagedRecord metadata=managedMetadata(oldFile.id,false);
-      String folderId=findContainingFolder(oldFile.id);
-      List<CloudFilesClient.CloudItem> before=listAll(folderId);
       CloudFilesClient.UploadResult uploaded=uploadPrepared(folderId,path,
           CloudFilesClient.UploadOptions.defaults().compatibilityWrap(options.compatibilityWrap).kind("file"));
       String newId=uploaded.id;
@@ -1300,21 +1316,6 @@ final class OrdinaryCloudClient {
       return new CloudFilesClient.ReplaceResult(oldFile.id,newId,folderId,metadata.name,
           uploaded.uploadedName,iconApplied);
     }
-  }
-
-  private String findContainingFolder(String fileId)throws CloudFilesClient.CloudException{
-    java.util.ArrayDeque<String> pending=new java.util.ArrayDeque<>();
-    Set<String> visited=new HashSet<>();
-    pending.add("-1");
-    while(!pending.isEmpty()){
-      String folder=pending.removeFirst();
-      if(!visited.add(folder))continue;
-      for(CloudFilesClient.CloudItem item:listAll(folder)){
-        if(item.folder)pending.addLast(item.id);
-        else if(item.id.equals(fileId))return folder;
-      }
-    }
-    throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NOT_FOUND,"待换包文件不在云盘目录中");
   }
 
   void setIcon(String fileId,String path)throws CloudFilesClient.CloudException{
@@ -1702,45 +1703,36 @@ final class OrdinaryCloudClient {
     return BitmapFactory.decodeFile(file.getAbsolutePath(),options);
   }
 
-  private static Bitmap extractApkIcon(File apk)throws CloudFilesClient.CloudException{
-    Bitmap best=null;
-    int bestScore=-1;
-    try(ZipFile zip=new ZipFile(apk)){
-      java.util.Enumeration<? extends ZipEntry> entries=zip.entries();
-      while(entries.hasMoreElements()){
-        ZipEntry entry=entries.nextElement();
-        String lower=entry.getName().toLowerCase(Locale.ROOT);
-        if(entry.isDirectory()||!lower.startsWith("res/")||entry.getSize()<=0
-            ||entry.getSize()>=8*1024*1024
-            ||!(lower.endsWith(".png")||lower.endsWith(".webp")||lower.endsWith(".jpg")
-            ||lower.endsWith(".jpeg")))continue;
-        int score=0;
-        if(lower.contains("ic_launcher"))score+=100;
-        if(lower.contains("launcher"))score+=60;
-        if(lower.contains("icon"))score+=30;
-        if(lower.contains("mipmap"))score+=20;
-        if(score<=bestScore)continue;
-        byte[] bytes;
-        try(InputStream input=zip.getInputStream(entry)){
-          bytes=readBytes(input,8*1024*1024);
-        }
-        BitmapFactory.Options options=new BitmapFactory.Options();
-        options.inJustDecodeBounds=true;
-        BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
-        if(options.outWidth<=0||options.outHeight<=0)continue;
-        if(Math.max(options.outWidth,options.outHeight)>Math.min(options.outWidth,options.outHeight)*3)continue;
-        Bitmap candidate=BitmapFactory.decodeByteArray(bytes,0,bytes.length);
-        if(candidate==null)continue;
-        if(best!=null)best.recycle();
-        best=candidate;
-        bestScore=score;
+  private Bitmap extractApkIcon(File apk)throws CloudFilesClient.CloudException{
+    try{
+      PackageManager manager=context.getPackageManager();
+      String path=apk.getAbsolutePath();
+      PackageInfo archive=manager.getPackageArchiveInfo(path,0);
+      if(archive==null||archive.applicationInfo==null)
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"无法读取 APK manifest");
+      if(archive.applicationInfo.icon==0)
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"APK manifest 未声明应用图标");
+      archive.applicationInfo.sourceDir=path;
+      archive.applicationInfo.publicSourceDir=path;
+      Drawable icon=archive.applicationInfo.loadIcon(manager);
+      if(icon==null)
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"APK manifest 未声明可用图标");
+      int width=icon.getIntrinsicWidth(),height=icon.getIntrinsicHeight();
+      if(width<=0||height<=0){width=144;height=144;}
+      if(width>144||height>144){
+        float ratio=144f/Math.max(width,height);
+        width=Math.max(1,Math.round(width*ratio));
+        height=Math.max(1,Math.round(height*ratio));
       }
+      Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);
+      icon.setBounds(0,0,width,height);
+      icon.draw(new Canvas(bitmap));
+      return bitmap;
+    }catch(CloudFilesClient.CloudException error){
+      throw error;
     }catch(Exception error){
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"无法读取 APK 图标",error);
     }
-    if(best==null)
-      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"APK 中未找到可用图标");
-    return best;
   }
 
   private static Bitmap scaleToIcon(Bitmap source){

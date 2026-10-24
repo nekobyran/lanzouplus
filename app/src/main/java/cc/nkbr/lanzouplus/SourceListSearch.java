@@ -8,24 +8,36 @@ import java.util.function.BooleanSupplier;
 final class SourceListSearch {
   static final class Entry {
     final Models.Source source;
-    String[] fields;
+    String[] titles,extras;
     final boolean members;
     final List<String> categories;
+    List<String> categoryKeys;
     Entry(Models.Source source,boolean members){
       this.source=source;
       this.members=members;
       categories=SourceCategoryPicker.labels(source);
     }
-    int rank(String query,boolean fuzzy){return rank(query,fuzzy?3:0);}
-    int rank(String query,int level){
-      if(fields==null)fields=MainActivity.sourceListCorpus(source,members).toLowerCase(Locale.ROOT).split("\n");
-      int best=Integer.MAX_VALUE;
-      for(String field:fields){
+    /** The corpus keeps its "t:"/"e:" markers, so the split runs once per rebuild and the query loop copies nothing. */
+    private void fold(){
+      List<String> titleValues=new ArrayList<>(),extraValues=new ArrayList<>();
+      for(String field:MainActivity.sourceListCorpus(source,members).toLowerCase(Locale.ROOT).split("\n")){
         if(field.length()<2)continue;
-        boolean title=field.startsWith("t:");
-        int rank=LanzouCore.matchRank(field.substring(2),query,title?level:0);
-        if(rank>=0)best=Math.min(best,rank+(title?0:3));
+        if(field.startsWith("t:"))titleValues.add(field.substring(2));else extraValues.add(field.substring(2));
+      }
+      titles=titleValues.toArray(new String[0]);
+      extras=extraValues.toArray(new String[0]);
+    }
+    int rank(LanzouCore.SearchQuery query,int level){
+      if(titles==null)fold();
+      int best=Integer.MAX_VALUE;
+      for(String field:titles){
+        int rank=LanzouCore.matchRankFolded(field,query,level);
+        if(rank>=0&&rank<best)best=rank;
         if(best==0)break;
+      }
+      if(best!=0)for(String field:extras){
+        int rank=LanzouCore.matchRankFolded(field,query,0);
+        if(rank>=0){int value=rank+3;if(value<best)best=value;}
       }
       return best==Integer.MAX_VALUE?-1:best;
     }
@@ -42,13 +54,15 @@ final class SourceListSearch {
     return filter(entries,categories,query,fuzzy?3:0,cancelled);
   }
   static Result filter(List<Entry> entries,List<String> categories,String query,int level,BooleanSupplier cancelled){
-    String key=query.toLowerCase(Locale.ROOT);Result result=new Result();List<Ranked> matches=new ArrayList<>();
+    LanzouCore.SearchQuery prepared=LanzouCore.SearchQuery.of(query);
+    List<String> filters=SourceCategories.normalized(categories);
+    Result result=new Result();List<Ranked> matches=new ArrayList<>();
     for(Entry entry:entries){
       if(cancelled.getAsBoolean())return null;
       Models.Source source=entry.source;
       if(source.kind==Models.SOURCE_WEB)result.web++;else result.lanzou++;
-      if(!SourceCategories.matches(entry.categories,categories))continue;
-      int rank=key.isEmpty()?0:entry.rank(key,level);
+      if(!inCategories(entry,filters))continue;
+      int rank=prepared.empty()?0:entry.rank(prepared,level);
       if(rank>=0)matches.add(new Ranked(source,rank));
     }
     matches.sort((a,b)->{
@@ -58,6 +72,12 @@ final class SourceListSearch {
     });
     for(Ranked value:matches)result.values.add(value.source);
     return result;
+  }
+  private static boolean inCategories(Entry entry,List<String> filters){
+    if(filters.isEmpty())return true;
+    if(entry.categoryKeys==null)entry.categoryKeys=SourceCategories.normalized(entry.categories);
+    for(String value:entry.categoryKeys)for(String filter:filters)if(value.equalsIgnoreCase(filter))return true;
+    return false;
   }
   private static int kind(Models.Source source){return source.kind==Models.SOURCE_WEB?2:source.kind==Models.SOURCE_SINGLE?1:0;}
 

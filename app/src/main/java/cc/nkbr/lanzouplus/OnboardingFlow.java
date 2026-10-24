@@ -620,18 +620,19 @@ final class OnboardingFlow {
   }
 
   private void complete(){
+    if(!active)return;
     if(!activity.hasUsableLanzouBaseOriginForStartup()){
       moveTo(BASE);
       setStatus(activity.getString(R.string.onboarding_base_required));
       return;
     }
+    active=false;
+    requestGeneration.incrementAndGet();
     if(!preview){
       saveChannel(activity,selectedChannel(activity));
       prefs.edit().putBoolean("complete",true).putInt("step",DONE).remove("base_draft").apply();
       activity.getPreferences(0).edit().remove("accepted").apply();
     }
-    active=false;
-    requestGeneration.incrementAndGet();
     activity.onboarding=null;
     activity.safeStartMainExperience();
     Intent original=activity.getIntent();

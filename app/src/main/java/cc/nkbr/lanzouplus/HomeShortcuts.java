@@ -26,6 +26,7 @@ final class HomeShortcuts {
   static final int PORTRAIT_CAPACITY=5,LANDSCAPE_CAPACITY=8;
   private static final int STRIP_HEIGHT_DP=100,PAGER_HEIGHT_DP=88,DOT_HEIGHT_DP=12;
   private static final int ICON_DP=52,LABEL_DP=20,TILE_GAP_DP=3;
+  private static final float PAGE_SWIPE_FRACTION=.28f;
 
   private final MainActivity owner;
   private final FrameLayout stage;
@@ -163,6 +164,15 @@ final class HomeShortcuts {
   static int pageStartFor(int page,boolean landscape){
     int capacity=capacityFor(landscape);
     return page<=0?0:page*capacity;
+  }
+
+  static int pagerReleaseTarget(int delta,int velocity,int pageWidth,int downPage,int pageCount,int touchSlop,int minimumVelocity){
+    if(pageWidth<=0||Math.abs(delta)<=touchSlop)return downPage;
+    boolean flung=Math.abs(velocity)>Math.max(minimumVelocity*2,touchSlop*12);
+    boolean dragged=Math.abs(delta)>=pageWidth*PAGE_SWIPE_FRACTION;
+    if(!flung&&!dragged)return downPage;
+    int target=delta>0?downPage+1:downPage-1;
+    return Math.max(0,Math.min(pageCount-1,target));
   }
 
   private int measuredWidth(){
@@ -381,16 +391,17 @@ final class HomeShortcuts {
   }
 
   /**
-   * A compact one-page-at-a-time horizontal scroller. Fast swipes move one page; slower drags
-   * settle on the nearest page. The snap rule follows cover-os Pager (MIT).
+   * A compact one-page-at-a-time horizontal scroller. Release uses AndroidX ViewPager's
+   * position-or-fling decision with a shorter 28% page-width drag threshold for this strip.
    */
   private static final class SnapPager extends HorizontalScrollView {
     private final OverScroller scroller;
     private final int touchSlop,minimumVelocity,maximumVelocity;
     private VelocityTracker velocityTracker;
     private Runnable pageChanged;
-    private int pageWidth,pageCount,currentPage,downPage,pendingPage=-1;
-    private boolean suppressPageCallback;
+    private int pageWidth,pageCount,currentPage,downPage,downScrollX,pendingPage=-1,activePointerId=-1;
+    private float downX,downY;
+    private boolean suppressingPageCallback,horizontalGesture,verticalGesture;
 
     SnapPager(Context context){
       super(context);
@@ -414,7 +425,7 @@ final class HomeShortcuts {
     }
 
     void installPages(LinearLayout content,int pages,int width,int selected){
-      suppressPageCallback=true;
+      suppressingPageCallback=true;
       removeAllViews();
       addView(content,new LayoutParams(Math.max(width,width*Math.max(1,pages)),ViewGroup.LayoutParams.MATCH_PARENT));
       pageCount=Math.max(1,pages);
@@ -423,7 +434,7 @@ final class HomeShortcuts {
       pendingPage=currentPage;
       downPage=currentPage;
       scrollTo(currentPage*pageWidth,0);
-      suppressPageCallback=false;
+      suppressingPageCallback=false;
       notifyPage();
     }
 
@@ -453,18 +464,47 @@ final class HomeShortcuts {
       }
     }
 
+    @Override public boolean onInterceptTouchEvent(MotionEvent event){
+      int action=event.getActionMasked();
+      if(action==MotionEvent.ACTION_DOWN){
+        beginGesture(event);
+        return super.onInterceptTouchEvent(event);
+      }
+      if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){
+        boolean intercepted=super.onInterceptTouchEvent(event);
+        finishGesture();
+        return intercepted;
+      }
+      if(action==MotionEvent.ACTION_MOVE&&!horizontalGesture&&!verticalGesture){
+        int index=event.findPointerIndex(activePointerId);
+        if(index<0)return false;
+        float dx=Math.abs(event.getX(index)-downX),dy=Math.abs(event.getY(index)-downY);
+        if(dy>touchSlop&&dy>=dx){
+          verticalGesture=true;
+          return false;
+        }
+        if(dx<=touchSlop||dx<=dy)return false;
+        horizontalGesture=true;
+        scroller.forceFinished(true);
+        downScrollX=getScrollX();
+        downPage=Math.max(0,Math.min(pageCount-1,Math.round(getScrollX()/(float)pageWidth)));
+        getParent().requestDisallowInterceptTouchEvent(true);
+      }
+      if(verticalGesture)return false;
+      boolean intercepted=super.onInterceptTouchEvent(event);
+      if(intercepted)getParent().requestDisallowInterceptTouchEvent(true);
+      return intercepted;
+    }
+
     @Override public boolean onTouchEvent(MotionEvent event){
       if(pageWidth<=0)return super.onTouchEvent(event);
       int action=event.getActionMasked();
-      if(action==MotionEvent.ACTION_DOWN){
-        scroller.forceFinished(true);
-        if(velocityTracker==null)velocityTracker=VelocityTracker.obtain();
-        else velocityTracker.clear();
-        downPage=Math.round(getScrollX()/(float)pageWidth);
-      }
-      if(velocityTracker!=null)velocityTracker.addMovement(event);
+      if(action==MotionEvent.ACTION_DOWN&&activePointerId<0)beginGesture(event);
+      if(action!=MotionEvent.ACTION_DOWN&&velocityTracker!=null)velocityTracker.addMovement(event);
       boolean handled=super.onTouchEvent(event);
-      if(action==MotionEvent.ACTION_MOVE&&handled)getParent().requestDisallowInterceptTouchEvent(true);
+      if(action==MotionEvent.ACTION_MOVE&&handled&&!verticalGesture){
+        getParent().requestDisallowInterceptTouchEvent(true);
+      }
       if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){
         int velocity=0;
         if(velocityTracker!=null&&action==MotionEvent.ACTION_UP){
@@ -475,18 +515,42 @@ final class HomeShortcuts {
           velocityTracker.recycle();
           velocityTracker=null;
         }
-        goToPage(releaseTarget(velocity),true);
+        if(action==MotionEvent.ACTION_CANCEL&&horizontalGesture){
+          goToPage(downPage,true);
+        }else if(horizontalGesture){
+          goToPage(releaseTarget(velocity),true);
+        }
+        finishGesture();
       }
       return handled;
     }
 
-    private int releaseTarget(int velocity){
-      int nearest=Math.round(getScrollX()/(float)pageWidth);
-      if(Math.abs(velocity)>Math.max(minimumVelocity,touchSlop*8)){
-        if(velocity<0)return Math.max(nearest,downPage+1);
-        return Math.min(nearest,downPage-1);
+    private void beginGesture(MotionEvent event){
+      if(velocityTracker==null)velocityTracker=VelocityTracker.obtain();
+      else velocityTracker.clear();
+      velocityTracker.addMovement(event);
+      activePointerId=event.getPointerId(0);
+      downX=event.getX(0);
+      downY=event.getY(0);
+      downScrollX=getScrollX();
+      downPage=Math.max(0,Math.min(pageCount-1,Math.round(getScrollX()/(float)pageWidth)));
+      horizontalGesture=false;
+      verticalGesture=false;
+    }
+
+    private void finishGesture(){
+      if(velocityTracker!=null){
+        velocityTracker.recycle();
+        velocityTracker=null;
       }
-      return nearest;
+      activePointerId=-1;
+      horizontalGesture=false;
+      verticalGesture=false;
+    }
+
+    private int releaseTarget(int velocity){
+      return pagerReleaseTarget(getScrollX()-downScrollX,velocity,pageWidth,downPage,pageCount,
+          touchSlop,minimumVelocity);
     }
 
     @Override public void fling(int velocityX){
@@ -511,7 +575,7 @@ final class HomeShortcuts {
     }
 
     private void notifyPage(){
-      if(!suppressPageCallback&&pageChanged!=null)pageChanged.run();
+      if(!suppressingPageCallback&&pageChanged!=null)pageChanged.run();
     }
 
     private interface PageChanged {

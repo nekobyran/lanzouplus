@@ -4,6 +4,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.view.Gravity;
+import android.view.View;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -54,9 +55,9 @@ final class MarketProjects implements MarketProjectEditor.Host {
     ImageButton add = owner.iconButton(R.drawable.ic_add, "创建仓库工程");
     ImageButton importProject = owner.iconButton(R.drawable.ic_folder, "导入明文工程");
     ImageButton discover = owner.iconButton(R.drawable.ic_refresh, "重新查找 GitHub 市场源仓库");
-    owner.pageHeaderRow.addView(discover);
-    owner.pageHeaderRow.addView(importProject);
-    owner.pageHeaderRow.addView(add);
+    addHeaderAction(discover);
+    addHeaderAction(importProject);
+    addHeaderAction(add);
     add.setOnClickListener(v -> edit(null));
     importProject.setOnClickListener(v -> MarketFilePicker.choose(
         owner, ".json,.lzp-project", this::importProject));
@@ -135,6 +136,13 @@ final class MarketProjects implements MarketProjectEditor.Host {
             () -> owner.showNotice("工程读取失败：" + owner.friendlyError(error), true));
       }
     });
+  }
+
+  private void addHeaderAction(View button) {
+    LinearLayout.LayoutParams params =
+        new LinearLayout.LayoutParams(owner.dp(44), owner.dp(48));
+    params.setMargins(owner.dp(4), 0, owner.dp(4), 0);
+    owner.pageHeaderRow.addView(button, params);
   }
 
   private void addGithubAccountEntry(LinearLayout list) {

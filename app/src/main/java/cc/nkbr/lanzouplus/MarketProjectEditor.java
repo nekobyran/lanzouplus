@@ -516,7 +516,7 @@ final class MarketProjectEditor {
     button.setGravity(Gravity.CENTER);
     button.setPadding(owner.dp(14), 0, owner.dp(14), 0);
     button.setMinHeight(owner.dp(48));
-    button.setBackground(owner.filterRipple(owner.solidShape(owner.SURFACE, 14)));
+    button.setBackground(owner.filterRipple(owner.solidShape(owner.SURFACE, 28)));
     button.setContentDescription(label);
     return button;
   }
@@ -525,7 +525,7 @@ final class MarketProjectEditor {
     Button button = owner.toolbarTextButton(label);
     button.setTextSize(14);
     button.setTextColor(owner.BG);
-    button.setBackground(owner.filterRipple(owner.solidShape(owner.PRIMARY, 16)));
+    button.setBackground(owner.filterRipple(owner.solidShape(owner.PRIMARY, 28)));
     button.setContentDescription(label);
     return button;
   }

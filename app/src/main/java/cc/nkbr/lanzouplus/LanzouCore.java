@@ -319,8 +319,26 @@ final class LanzouCore {
   private static final class DirectCookieQuotaException extends DirectRetryException{DirectCookieQuotaException(){super("蓝奏当前会话下载额度已用完",30000L,true);}}
   static final class DirectPasswordException extends IOException{DirectPasswordException(){super("需要访问密码");}DirectPasswordException(String message){super(message==null||message.trim().isEmpty()?"需要访问密码":message.trim());}}
   /** Immutable index row: the item is an owned copy, so its folded match texts are computed once and reused by every query. */
-  private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,path,folded,foldedTitle,foldedDescription,foldedPath,foldedSource;final int depth,page;final long expiresAt;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path){this(item,sourceId,depth,page,path,Long.MAX_VALUE);}CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path,long expiresAt){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.path=path==null?"":path;this.folded=foldDirectorySearch(item.title+"\n"+this.path);this.foldedTitle=foldDirectorySearch(item.title);this.foldedDescription=foldDirectorySearch(item.description);this.foldedPath=foldDirectorySearch(this.path);this.foldedSource=foldDirectorySearch(item.source);this.expiresAt=expiresAt<=0?Long.MAX_VALUE:expiresAt;}}
-  private static final class DirectorySearchIndex{final long revision;final List<CachedDirectoryEntry> entries;DirectorySearchIndex(long revision,List<CachedDirectoryEntry> entries){this.revision=revision;this.entries=entries;}}
+  private static final class CachedDirectoryEntry{final Models.Item item;final String sourceId,path,folded,foldedTitle,foldedDescription,foldedPath,foldedSource,matchKey;final int depth,page;final long expiresAt;CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path){this(item,sourceId,depth,page,path,Long.MAX_VALUE);}CachedDirectoryEntry(Models.Item item,String sourceId,int depth,int page,String path,long expiresAt){this.item=item;this.sourceId=sourceId;this.depth=depth;this.page=page;this.path=path==null?"":path;this.folded=foldDirectorySearch(item.title+"\n"+this.path);this.foldedTitle=foldDirectorySearch(item.title);this.foldedDescription=foldDirectorySearch(item.description);this.foldedPath=foldDirectorySearch(this.path);this.foldedSource=foldDirectorySearch(item.source);this.matchKey=indexedMatchKey(item);this.expiresAt=expiresAt<=0?Long.MAX_VALUE:expiresAt;}}
+  private static final class DirectorySearchIndex{
+    final long revision;final List<CachedDirectoryEntry> entries;
+    private volatile IndexScanMemo lastScan;
+    DirectorySearchIndex(long revision,List<CachedDirectoryEntry> entries){this.revision=revision;this.entries=entries;}
+    /** One ranked pass per (query, scope) on this snapshot; the incremental remainder reuses the same list. */
+    List<RankedDirectoryEntry> ranked(SearchQuery query,Set<String> allowedSourceIds,int level){
+      IndexScanMemo memo=lastScan;
+      if(memo!=null&&memo.serves(query,allowedSourceIds,level))return memo.candidates;
+      long now=System.currentTimeMillis();List<RankedDirectoryEntry> candidates=new ArrayList<>();
+      for(CachedDirectoryEntry entry:entries){
+        if(entry.expiresAt<now||allowedSourceIds!=null&&!allowedSourceIds.isEmpty()&&!allowedSourceIds.contains(entry.sourceId))continue;
+        int rank=indexedItemMatchRank(entry,query,level);if(rank>=0)candidates.add(new RankedDirectoryEntry(entry,rank));
+      }
+      candidates.sort((a,b)->{int byRank=Integer.compare(a.rank,b.rank);if(byRank!=0)return byRank;return Integer.compare(a.entry.depth,b.entry.depth);});
+      List<RankedDirectoryEntry> published=Collections.unmodifiableList(candidates);
+      lastScan=new IndexScanMemo(query.folded,allowedSourceIds,level,published);
+      return published;
+    }
+  }
   private static final class SourceNameEntry{final Models.Source source;final Models.SourceMember member;final String id,folded;SourceNameEntry(Models.Source source,Models.SourceMember member,String id,String folded){this.source=source;this.member=member;this.id=id;this.folded=folded;}}
   static final class SourceRetestPlan { final Models.Source source;final String key;final boolean userSource;final long revision;SourceRetestPlan(Models.Source source,String key,boolean userSource,long revision){this.source=source;this.key=key;this.userSource=userSource;this.revision=revision;} }
   private static final class SourceRetestUnit{final SourceRetestPlan plan;final int memberIndex;SourceRetestUnit(SourceRetestPlan plan,int memberIndex){this.plan=plan;this.memberIndex=memberIndex;}}
@@ -372,6 +390,67 @@ final class LanzouCore {
   }
   private static String foldSearchQuery(String value){return value.toLowerCase(Locale.ROOT);}
   private static String foldDirectorySearch(String value){return foldSearchQuery(value==null?"":value).replace('\\','/');}
+  /**
+   * A needle prepared once per scan: folding, the whole-query term list and the non-space code
+   * points are reused by every candidate instead of re-folding and re-splitting the same query for
+   * each field. Values fed to {@link #matchRankFolded} must already be folded.
+   */
+  static final class SearchQuery{
+    private static final String[] NO_TERMS=new String[0];
+    final String raw,folded;final String[] terms;final int[] points;final int allowedPartial,allowedFuzzy;
+    private SearchQuery(String raw,String folded){
+      this.raw=raw;this.folded=folded;this.terms=splitSearchTerms(folded);
+      int count=0;for(int i=0;i<folded.length();i+=Character.charCount(folded.codePointAt(i)))if(!Character.isWhitespace(folded.codePointAt(i)))count++;
+      points=new int[count];int slot=0;
+      for(int i=0;i<folded.length();i+=Character.charCount(folded.codePointAt(i))){int cp=folded.codePointAt(i);if(!Character.isWhitespace(cp))points[slot++]=cp;}
+      allowedPartial=Math.max(1,count/2);allowedFuzzy=Math.max(3,count*2);
+    }
+    static SearchQuery of(String query){String text=query==null?"":query;String trimmed=text.trim();return new SearchQuery(text,trimmed.isEmpty()?"":trimmed.toLowerCase(Locale.ROOT));}
+    boolean empty(){return folded.isEmpty();}
+    /** Java regex {@code \s} is the ASCII set; {@code split("\\s+")} drops empty edges, so match that here. */
+    private static String[] splitSearchTerms(String value){
+      if(value.isEmpty())return NO_TERMS;
+      ArrayList<String> parts=new ArrayList<>();
+      int start=-1;
+      for(int i=0;i<value.length();i++){
+        char c=value.charAt(i);boolean blank=c==' '||c=='\t'||c=='\n'||c=='\u000B'||c=='\f'||c=='\r';
+        if(blank){if(start>=0){parts.add(value.substring(start,i));start=-1;}}
+        else if(start<0)start=i;
+      }
+      if(start>=0)parts.add(value.substring(start));
+      return parts.isEmpty()?NO_TERMS:parts.toArray(new String[0]);
+    }
+  }
+  private static final ThreadLocal<SearchQuery> PREPARED_QUERY=new ThreadLocal<>();
+  /** Reuses the needle across the per-item loops that rank many rows with one query. */
+  static SearchQuery preparedQuery(String query){
+    String text=query==null?"":query;
+    SearchQuery cached=PREPARED_QUERY.get();
+    if(cached!=null&&text.equals(cached.raw))return cached;
+    SearchQuery built=SearchQuery.of(text);
+    PREPARED_QUERY.set(built);
+    return built;
+  }
+  /** Same ranking contract as {@link #matchRank(String,String,int)}; the value must already be folded. */
+  static int matchRankFolded(String foldedValue,SearchQuery query,int level){
+    if(query==null||query.empty())return 0;
+    String value=foldedValue==null?"":foldedValue;
+    if(value.contains(query.folded))return 0;
+    boolean allTerms=true;
+    for(String term:query.terms)if(!value.contains(term)){allTerms=false;break;}
+    if(allTerms)return 1;
+    if(level==0)return -1;
+    int at=0,gaps=0;
+    int[] points=query.points;
+    for(int slot=0;slot<points.length;slot++){
+      int found=value.indexOf(points[slot],at);
+      if(found<0)return -1;
+      if(slot>0)gaps+=found-at;
+      at=found+Character.charCount(points[slot]);
+    }
+    int allowed=level==1?query.allowedPartial:level==2?query.allowedFuzzy:Integer.MAX_VALUE;
+    return gaps>allowed?-1:10+gaps;
+  }
   static final class ImportResult { final int added,duplicates,invalid;ImportResult(int added,int duplicates,int invalid){this.added=added;this.duplicates=duplicates;this.invalid=invalid;} }
   static final class AddResult {final int line;final String url;final Models.Source source;final String message;final boolean added,duplicate;AddResult(int line,String url,Models.Source source,String message,boolean added,boolean duplicate){this.line=line;this.url=url;this.source=source==null?null:copySource(source);this.message=message==null?"":message;this.added=added;this.duplicate=duplicate;}}
   static final class AddBatchResult {final int added,duplicates,failed,childAdded,childDuplicates,childEmpty,childFailed;final List<AddResult> lines;AddBatchResult(int added,int duplicates,int failed,int childAdded,int childDuplicates,int childEmpty,int childFailed,List<AddResult> lines){this.added=added;this.duplicates=duplicates;this.failed=failed;this.childAdded=childAdded;this.childDuplicates=childDuplicates;this.childEmpty=childEmpty;this.childFailed=childFailed;this.lines=Collections.unmodifiableList(lines);}}
@@ -1780,7 +1859,7 @@ final class LanzouCore {
 
   static Models.Source indexScopeSourceFromJson(JSONObject value)throws Exception{return sourceFromJson(value);}
 
-  private List<Models.Item> localSourceIndexMatches(String query,Set<String> allowedSourceIds,boolean fuzzy)throws IOException{String needle=foldDirectorySearch(query==null?"":query.trim());LinkedHashMap<String,Models.Item> out=new LinkedHashMap<>();if(needle.isEmpty())return new ArrayList<>();for(Models.Source source:sources()){if(source.kind!=Models.SOURCE_WEB&&source.kind!=Models.SOURCE_SINGLE)continue;String id=sourceId(source);if(allowedSourceIds!=null&&!allowedSourceIds.isEmpty()&&!allowedSourceIds.contains(id))continue;String corpus=source.title+" "+source.description+" "+source.url+" "+(source.kind==Models.SOURCE_WEB?"非蓝奏云源 其他网站 web":"蓝奏云源 单软件");if(matchRank(foldDirectorySearch(corpus),needle,fuzzy)<0)continue;Models.Item item=!source.members.isEmpty()?itemFromMember(source.members.get(0),source.title):new Models.Item();if(item.title.isEmpty())item.title=source.title;if(item.url.isEmpty())item.url=source.url;if(item.shareUrl.isEmpty())item.shareUrl=source.url;item.source=source.title;item.sourceId=id;item.sourceEntry=true;out.putIfAbsent(indexedMatchKey(item),item);}return new ArrayList<>(out.values());}
+  private List<Models.Item> localSourceIndexMatches(String query,Set<String> allowedSourceIds,boolean fuzzy)throws IOException{String needle=foldDirectorySearch(query==null?"":query.trim());LinkedHashMap<String,Models.Item> out=new LinkedHashMap<>();if(needle.isEmpty())return new ArrayList<>();SearchQuery prepared=SearchQuery.of(needle);int level=fuzzy?3:0;for(Models.Source source:sources()){if(source.kind!=Models.SOURCE_WEB&&source.kind!=Models.SOURCE_SINGLE)continue;String id=sourceId(source);if(allowedSourceIds!=null&&!allowedSourceIds.isEmpty()&&!allowedSourceIds.contains(id))continue;String corpus=source.title+" "+source.description+" "+source.url+" "+(source.kind==Models.SOURCE_WEB?"非蓝奏云源 其他网站 web":"蓝奏云源 单软件");if(matchRankFolded(foldDirectorySearch(corpus),prepared,level)<0)continue;Models.Item item=!source.members.isEmpty()?itemFromMember(source.members.get(0),source.title):new Models.Item();if(item.title.isEmpty())item.title=source.title;if(item.url.isEmpty())item.url=source.url;if(item.shareUrl.isEmpty())item.shareUrl=source.url;item.source=source.title;item.sourceId=id;item.sourceEntry=true;out.putIfAbsent(indexedMatchKey(item),item);}return new ArrayList<>(out.values());}
 
   void setDirectoryCachingEnabled(boolean enabled){directoryCachingEnabled=enabled;}
   boolean directoryCachingEnabled(){return directoryCachingEnabled;}
@@ -1867,18 +1946,28 @@ final class LanzouCore {
 
   private List<Models.Item> cachedMatchesFromIndex(String query,Set<String> allowedSourceIds,DirectorySearchIndex index,boolean fuzzy,boolean indexHit,Set<String> delivered)throws IOException{
     String needle=foldDirectorySearch(query==null?"":query.trim());if(needle.isEmpty()||index==null)return new ArrayList<>();
-    long now=System.currentTimeMillis();List<RankedDirectoryEntry> candidates=new ArrayList<>();for(CachedDirectoryEntry entry:index.entries){if(entry.expiresAt<now||delivered.contains(indexedMatchKey(entry.item))||allowedSourceIds!=null&&!allowedSourceIds.isEmpty()&&!allowedSourceIds.contains(entry.sourceId))continue;int rank=indexedItemMatchRank(entry,needle,fuzzy);if(rank>=0)candidates.add(new RankedDirectoryEntry(entry,rank));}candidates.sort((a,b)->{int byRank=Integer.compare(a.rank,b.rank);if(byRank!=0)return byRank;return Integer.compare(a.entry.depth,b.entry.depth);});LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();for(RankedDirectoryEntry candidate:candidates){CachedDirectoryEntry entry=candidate.entry;Models.Item item=copyItem(entry.item);item.indexHit=indexHit;String key=firstNonEmpty(item.url,item.shareUrl);if(key.isEmpty())key=entry.sourceId+"\n"+entry.path;matches.putIfAbsent(key,item);}
+    List<RankedDirectoryEntry> candidates=index.ranked(SearchQuery.of(needle),allowedSourceIds,fuzzy?3:0);
+    long now=System.currentTimeMillis();LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();for(RankedDirectoryEntry candidate:candidates){CachedDirectoryEntry entry=candidate.entry;if(entry.expiresAt<now||delivered.contains(entry.matchKey))continue;Models.Item item=copyItem(entry.item);item.indexHit=indexHit;String key=firstNonEmpty(item.url,item.shareUrl);if(key.isEmpty())key=entry.sourceId+"\n"+entry.path;matches.putIfAbsent(key,item);}
     return new ArrayList<>(matches.values());
+  }
+
+  private static final class IndexScanMemo{
+    private final String needle;private final Set<String> allowedSourceIds;private final int level;
+    final List<RankedDirectoryEntry> candidates;
+    IndexScanMemo(String needle,Set<String> allowedSourceIds,int level,List<RankedDirectoryEntry> candidates){this.needle=needle;this.allowedSourceIds=allowedSourceIds==null?null:new HashSet<>(allowedSourceIds);this.level=level;this.candidates=candidates;}
+    boolean serves(SearchQuery query,Set<String> allowed,int otherLevel){
+      return otherLevel==level&&needle.equals(query.folded)&&(allowed==null?allowedSourceIds==null:allowed.equals(allowedSourceIds));
+    }
   }
 
   private static final class RankedDirectoryEntry{final CachedDirectoryEntry entry;final int rank;RankedDirectoryEntry(CachedDirectoryEntry entry,int rank){this.entry=entry;this.rank=rank;}}
 
   /** Ranks against the folded texts the entry precomputed; the ordering contract is unchanged. */
-  private static int indexedItemMatchRank(CachedDirectoryEntry entry,String needle,boolean fuzzy){
-    int title=matchRank(entry.foldedTitle,needle,fuzzy);if(title>=0)return title;
-    int description=matchRank(entry.foldedDescription,needle,fuzzy);if(description>=0)return 1000+description;
-    int path=matchRank(entry.foldedPath,needle,fuzzy);if(path>=0)return 2000+path;
-    int source=matchRank(entry.foldedSource,needle,fuzzy);return source<0?-1:3000+source;
+  private static int indexedItemMatchRank(CachedDirectoryEntry entry,SearchQuery query,int level){
+    int title=matchRankFolded(entry.foldedTitle,query,level);if(title>=0)return title;
+    int description=matchRankFolded(entry.foldedDescription,query,level);if(description>=0)return 1000+description;
+    int path=matchRankFolded(entry.foldedPath,query,level);if(path>=0)return 2000+path;
+    int source=matchRankFolded(entry.foldedSource,query,level);return source<0?-1:3000+source;
   }
   private DirectorySearchIndex directorySearchIndexForSearch()throws IOException{long revision=directoryCacheRevision.get();DirectorySearchIndex cached=directorySearchIndex;if(cached==null||cached.revision!=revision)return directorySearchIndex();return cached;}
 
@@ -2518,22 +2607,7 @@ final class LanzouCore {
   private static boolean matches(Models.Item item,String query,int level){return matchRank(item.title,query,level)>=0;}
   static int matchRank(String value,String query,boolean fuzzy){return matchRank(value,query,fuzzy?3:0);}
   static int matchRank(String foldedValue,String foldedQuery,int level){
-    if(foldedQuery==null||foldedQuery.trim().isEmpty())return 0;
-    String value=foldSearchQuery(foldedValue==null?"":foldedValue),query=foldSearchQuery(foldedQuery.trim());
-    if(value.contains(query))return 0;
-    String[] terms=query.split("\\s+");boolean allTerms=true;
-    for(String term:terms)if(!value.contains(term)){allTerms=false;break;}
-    if(allTerms)return 1;
-    if(level==0)return -1;
-    int at=0,gaps=0,matched=0;
-    for(int i=0;i<query.length();){
-      int cp=query.codePointAt(i);i+=Character.charCount(cp);if(Character.isWhitespace(cp))continue;
-      int found=value.indexOf(new String(Character.toChars(cp)),at);if(found<0)return -1;
-      if(matched>0)gaps+=found-at;
-      at=found+Character.charCount(cp);matched++;
-    }
-    int allowed=level==1?Math.max(1,matched/2):level==2?Math.max(3,matched*2):Integer.MAX_VALUE;
-    return gaps>allowed?-1:10+gaps;
+    return matchRankFolded(foldSearchQuery(foldedValue==null?"":foldedValue),preparedQuery(foldedQuery),level);
   }
   private static String dateFromIcon(String icon){Matcher m=ICON_DATE.matcher(icon);return m.find()?m.group(1)+"-"+m.group(2)+"-"+m.group(3):"";}
   private static String firstNonEmpty(String... values){for(String value:values)if(value!=null&&!value.trim().isEmpty())return value.trim();return"";}

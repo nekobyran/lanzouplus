@@ -79,7 +79,6 @@ final class SettingsTabs {
         add(body,owner.buildSourceSettingsPanel());
         addRow(body,owner.settingsSwitchRow("自动更新资源市场",owner.getSharedPreferences("market",0).getBoolean("auto_update",true),enabled->owner.getSharedPreferences("market",0).edit().putBoolean("auto_update",enabled).apply()));
         addRow(body,owner.settingsAction(R.drawable.ic_refresh,"更新资源市场",v->owner.marketPages().showMarket(true)));
-        addRow(body,owner.settingsAction(R.drawable.ic_folder,"lzpmarket 仓库工程",v->owner.marketPages().showProjects()));
         addRow(body,owner.settingsAction(R.drawable.ic_add,"快捷分类",v->CategoryEditor.shortcuts(owner)));break;
       case "下载":
         add(body,owner.buildUnifiedSliderPanel(owner.buildDownloadSettingsPanel()));

@@ -19,7 +19,7 @@ import android.widget.ImageView;
  * resolved palette so light, night, enabled and destructive states stay aligned everywhere.
  */
 final class AppButtons {
-  private static final int RADIUS_DP = 14;
+  private static final int RADIUS_DP = 28;
   private static final int TOUCH_SIZE_DP = 48;
 
   private enum Role { PRIMARY, TONAL, OUTLINED, TEXT, DESTRUCTIVE }
@@ -72,6 +72,14 @@ final class AppButtons {
       Button button = dialog.getButton(which);
       if (button == null) continue;
       apply(owner, button, Role.TEXT);
+      android.view.ViewGroup.LayoutParams layout = button.getLayoutParams();
+      if (layout instanceof android.view.ViewGroup.MarginLayoutParams) {
+        android.view.ViewGroup.MarginLayoutParams margins =
+            (android.view.ViewGroup.MarginLayoutParams) layout;
+        margins.setMarginStart(size(owner, 4));
+        margins.setMarginEnd(size(owner, 4));
+        button.setLayoutParams(margins);
+      }
       if (destructive(button.getText())) {
         button.setTextColor(colored(alpha(owner.MUTED, .62f),
             textColor(owner, Role.DESTRUCTIVE)));

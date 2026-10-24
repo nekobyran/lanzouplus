@@ -623,14 +623,14 @@ final class GithubProjectPublisher {
                         result.repositoryUrl));
                 owner.showNotice("仓库地址已复制", false);
             });
-            panel.addView(copy, new LinearLayout.LayoutParams(-1, -2));
+            addOutcomeAction(owner, panel, copy);
             Button open = owner.button("在浏览器打开仓库");
             open.setOnClickListener(v -> GithubAccountUi.openBrowser(owner, result.repositoryUrl));
-            panel.addView(open, new LinearLayout.LayoutParams(-1, -2));
+            addOutcomeAction(owner, panel, open);
             if (result.refUpdated) {
                 Button add = owner.button("添加为列表源（不提交市场）");
                 add.setOnClickListener(v -> addAsSource(owner, navigation, result.repositoryUrl));
-                panel.addView(add, new LinearLayout.LayoutParams(-1, -2));
+                addOutcomeAction(owner, panel, add);
             }
         }
         owner.showRounded(new AlertDialog.Builder(owner)
@@ -638,6 +638,12 @@ final class GithubProjectPublisher {
                 .setView(panel)
                 .setNegativeButton("关闭", null)
                 .create());
+    }
+
+    private static void addOutcomeAction(MainActivity owner, LinearLayout panel, Button button) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, owner.dp(48));
+        params.topMargin = owner.dp(8);
+        panel.addView(button, params);
     }
 
     private static void addAsSource(MainActivity owner, int navigation, String repositoryUrl) {

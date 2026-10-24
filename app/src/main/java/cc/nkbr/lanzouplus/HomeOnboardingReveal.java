@@ -4,6 +4,7 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Rect;
@@ -27,6 +28,8 @@ final class HomeOnboardingReveal {
   static final String CONSUMED_KEY="home_reveal_v188_consumed";
   private static final String CAPTION_PLACEHOLDER="开始资源探索之旅";
   private static final String SEARCH_PLACEHOLDER="搜索一下";
+  private static final int RISE_MS=320,ALIGN_MS=240,CAPTION_MS=360,MORPH_MS=580,ASSEMBLE_MS=260;
+  private static final int ICON_EXIT_DP=56,TITLE_OFFSET_DP=26,TITLE_RISE_DP=96,NAV_RISE_DP=76;
   private static final int MAX_LAYOUT_ATTEMPTS=6;
 
   private final MainActivity owner;
@@ -41,6 +44,7 @@ final class HomeOnboardingReveal {
   private final Runnable after;
   private final AnimatorSet timeline=new AnimatorSet();
   private boolean finished;
+  private boolean beginStarted;
   private int layoutAttempts;
 
   private HomeOnboardingReveal(MainActivity owner,Runnable after){
@@ -108,6 +112,7 @@ final class HomeOnboardingReveal {
       completion.run();
       return null;
     }
+    if(owner.homeOnboardingReveal!=null)return null;
     if(consume)consume(owner);
     if(!owner.motionEnabled()){
       completion.run();
@@ -146,33 +151,149 @@ final class HomeOnboardingReveal {
   }
 
   private void begin(){
-    if(finished)return;
+    if(finished||beginStarted)return;
     if(owner.homeStage!=stage||owner.homeOnboardingReveal!=this){settle(false);return;}
     if(stage.getWidth()<=0||search.getWidth()<=0||titleAnchor.getWidth()<=0){
       if(layoutAttempts++<MAX_LAYOUT_ATTEMPTS){stage.postDelayed(this::begin,48);return;}
       settle(true);
       return;
     }
+    beginStarted=true;
     Rect titleRect=boundsIn(stage,titleAnchor);
 
+    title.setTranslationX(-owner.dp(TITLE_OFFSET_DP));
+    title.setTranslationY(owner.dp(TITLE_RISE_DP));
+    icon.setTranslationX(-owner.dp(TITLE_OFFSET_DP));
+    icon.setTranslationY(owner.dp(TITLE_RISE_DP));
+    if(nav!=null)nav.setTranslationY(owner.dp(NAV_RISE_DP));
+
     int pillWidth=Math.max(owner.dp(180),Math.round(caption.getPaint().measureText(CAPTION_PLACEHOLDER))+owner.dp(36));
-    setCaptionBounds(Math.round(titleRect.left+titleRect.width()/2f-pillWidth/2f),titleRect.bottom+owner.dp(12),pillWidth,owner.dp(40));
-    AnimatorSet reveal=new AnimatorSet();
-    reveal.playTogether(ObjectAnimator.ofFloat(title,View.ALPHA,0f,1f),ObjectAnimator.ofFloat(icon,View.ALPHA,0f,1f));
-    reveal.setDuration(190);
-    ObjectAnimator greeting=ObjectAnimator.ofFloat(pill,View.ALPHA,0f,1f,0f);greeting.setDuration(300);
-    AnimatorSet home=new AnimatorSet();List<Animator> assembly=new ArrayList<>();
-    assembly.add(ObjectAnimator.ofFloat(search,View.ALPHA,0f,1f));
+    int pillHeight=owner.dp(40);
+    int startLeft=Math.round(titleRect.left+titleRect.width()/2f-pillWidth/2f);
+    int startTop=titleRect.bottom+owner.dp(12);
+    setCaptionBounds(startLeft,startTop,pillWidth,pillHeight);
+
+    AnimatorSet rise=new AnimatorSet();
+    rise.playTogether(ObjectAnimator.ofFloat(title,View.TRANSLATION_Y,owner.dp(TITLE_RISE_DP),0f),
+        ObjectAnimator.ofFloat(title,View.ALPHA,0f,1f),
+        ObjectAnimator.ofFloat(icon,View.TRANSLATION_Y,owner.dp(TITLE_RISE_DP),0f),
+        ObjectAnimator.ofFloat(icon,View.ALPHA,0f,1f));
+    rise.setDuration(RISE_MS);
+    rise.setInterpolator(new DecelerateInterpolator());
+
+    AnimatorSet align=new AnimatorSet();
+    align.playTogether(ObjectAnimator.ofFloat(title,View.TRANSLATION_X,-owner.dp(TITLE_OFFSET_DP),0f),
+        ObjectAnimator.ofFloat(icon,View.TRANSLATION_X,-owner.dp(TITLE_OFFSET_DP),-owner.dp(ICON_EXIT_DP)),
+        ObjectAnimator.ofFloat(icon,View.ALPHA,1f,0f));
+    align.setDuration(ALIGN_MS);
+    align.setInterpolator(new DecelerateInterpolator());
+
+    ObjectAnimator greeting=ObjectAnimator.ofFloat(pill,View.ALPHA,0f,1f);
+    greeting.setDuration(CAPTION_MS);
+
+    AnimatorSet assemble=new AnimatorSet();
+    List<Animator> assembly=new ArrayList<>();
+    assembly.add(ObjectAnimator.ofFloat(icon,View.TRANSLATION_X,-owner.dp(ICON_EXIT_DP),0f));
+    assembly.add(ObjectAnimator.ofFloat(icon,View.ALPHA,0f,1f));
     if(category!=null)assembly.add(ObjectAnimator.ofFloat(category,View.ALPHA,0f,1f));
     if(recommendations!=null)assembly.add(ObjectAnimator.ofFloat(recommendations,View.ALPHA,0f,1f));
+    if(nav!=null)assembly.add(ObjectAnimator.ofFloat(nav,View.TRANSLATION_Y,owner.dp(NAV_RISE_DP),0f));
     if(nav!=null)assembly.add(ObjectAnimator.ofFloat(nav,View.ALPHA,0f,1f));
-    home.playTogether(assembly);home.setDuration(190);
-    timeline.playSequentially(phase(reveal,"title-fade"),phase(greeting,"exploration-caption"),phase(home,"home-fade"));
+    assemble.playTogether(assembly);
+    assemble.setDuration(ASSEMBLE_MS);
+    assemble.setInterpolator(new DecelerateInterpolator());
+
+    timeline.playSequentially(phase(rise,"title-rise"),phase(align,"title-align-icon-exit"),
+        phase(greeting,"exploration-caption"),
+        phase(morph(startLeft,startTop,pillWidth,pillHeight),"search-morph"),
+        phase(assemble,"home-assemble"));
     timeline.addListener(new AnimatorListenerAdapter(){
       @Override public void onAnimationEnd(Animator animation){settle(true);}
       @Override public void onAnimationCancel(Animator animation){settle(true);}
     });
     timeline.start();
+  }
+
+  private ValueAnimator morph(int startLeft,int startTop,int startWidth,int startHeight){
+    final MorphGeometry geometry=new MorphGeometry();
+    final float startRadius=owner.dp(20),endRadius=owner.dp(26),stroke=owner.dp(1);
+    final int surface=owner.SURFACE;
+    ValueAnimator morph=ValueAnimator.ofFloat(0f,1f);
+    morph.addListener(new AnimatorListenerAdapter(){
+      @Override public void onAnimationStart(Animator animation){
+        if(finished)return;
+        Rect searchRect=boundsIn(stage,search);
+        geometry.endLeft=searchRect.left;
+        geometry.endTop=searchRect.top;
+        geometry.endWidth=Math.max(1,searchRect.width());
+        geometry.endHeight=Math.max(1,searchRect.height());
+        geometry.startScaleX=startWidth/(float)geometry.endWidth;
+        geometry.startScaleY=startHeight/(float)geometry.endHeight;
+        setCaptionBounds(geometry.endLeft,geometry.endTop,geometry.endWidth,geometry.endHeight);
+        pill.setPivotX(0f);
+        pill.setPivotY(0f);
+        pill.setTranslationX(startLeft-geometry.endLeft);
+        pill.setTranslationY(startTop-geometry.endTop);
+        pill.setScaleX(geometry.startScaleX);
+        pill.setScaleY(geometry.startScaleY);
+        caption.setPivotX(geometry.endWidth/2f);
+        caption.setPivotY(geometry.endHeight/2f);
+        hint.setPivotX(0f);
+        hint.setPivotY(0f);
+        counterScale(geometry.startScaleX,geometry.startScaleY);
+        geometry.ready=true;
+      }
+    });
+    morph.addUpdateListener(frame->{
+      if(finished||!geometry.ready)return;
+      float value=((Float)frame.getAnimatedValue()).floatValue();
+      float scaleX=geometry.startScaleX+(1f-geometry.startScaleX)*value;
+      float scaleY=geometry.startScaleY+(1f-geometry.startScaleY)*value;
+      pill.setTranslationX((startLeft-geometry.endLeft)*(1f-value));
+      pill.setTranslationY((startTop-geometry.endTop)*(1f-value));
+      pill.setScaleX(scaleX);
+      pill.setScaleY(scaleY);
+      counterScale(scaleX,scaleY);
+      float radius=startRadius+(endRadius-startRadius)*value;
+      captionShape.setCornerRadius(radius/(float)Math.sqrt(scaleX*scaleY));
+      captionShape.setColor(Color.argb(Math.round(255*value),Color.red(surface),Color.green(surface),Color.blue(surface)));
+      captionShape.setStroke(Math.round(stroke*value),owner.DIV);
+      caption.setAlpha(Math.max(0f,1f-value/.4f));
+      hint.setAlpha(Math.min(1f,Math.max(0f,(value-.4f)/.6f)));
+    });
+    morph.addListener(new AnimatorListenerAdapter(){
+      @Override public void onAnimationEnd(Animator animation){
+        if(!finished&&geometry.ready){
+          pill.setTranslationX(0f);
+          pill.setTranslationY(0f);
+          pill.setScaleX(1f);
+          pill.setScaleY(1f);
+          counterScale(1f,1f);
+          search.setAlpha(1f);
+          pill.setAlpha(0f);
+        }
+      }
+    });
+    morph.setDuration(MORPH_MS);
+    morph.setInterpolator(new DecelerateInterpolator());
+    return morph;
+  }
+
+  private static final class MorphGeometry {
+    int endLeft,endTop,endWidth,endHeight;
+    float startScaleX=1f,startScaleY=1f;
+    boolean ready;
+  }
+
+  /**
+   * The pill is laid out at the final search size and scaled down to the greeting size, so both texts
+   * receive the inverse scale: glyphs keep their size and centre while only the capsule grows.
+   */
+  private void counterScale(float scaleX,float scaleY){
+    caption.setScaleX(1f/scaleX);
+    caption.setScaleY(1f/scaleY);
+    hint.setScaleX(1f/scaleX);
+    hint.setScaleY(1f/scaleY);
   }
 
   private void setCaptionBounds(int left,int top,int width,int height){
@@ -203,6 +324,8 @@ final class HomeOnboardingReveal {
     finished=true;
     timeline.cancel();
     if(overlay.getParent()==stage)stage.removeView(overlay);
+    caption.setScaleX(1f);caption.setScaleY(1f);
+    hint.setScaleX(1f);hint.setScaleY(1f);
     title.setAlpha(1f);
     title.setTranslationX(0f);
     title.setTranslationY(0f);

@@ -66,7 +66,7 @@ final class CloudManagement {
     owner.pageDirection=1;owner.base();owner.pageKind=7;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=this::back;
     listGeneration++;listLoading=false;appendLoading=false;
     owner.primaryHeader("管理");controls.clear();
-    ImageButton back=owner.iconButton(R.drawable.ic_back,"返回市场");back.setOnClickListener(v->owner.marketPages().showMarket(false));owner.pageHeaderRow.addView(back,0,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
+    ImageButton back=owner.iconButton(R.drawable.ic_back,"返回主页");back.setOnClickListener(v->owner.navigateHome());owner.pageHeaderRow.addView(back,0,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
     ImageButton accountSettings=owner.iconButton(R.drawable.ic_settings,"云盘账号设置");accountSettings.setOnClickListener(v->owner.openCloudAccountSettings());owner.pageHeaderRow.addView(accountSettings);controls.add(accountSettings);
     ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
     LinearLayout providers=new LinearLayout(owner);
@@ -148,7 +148,7 @@ final class CloudManagement {
   private void back(){
     if(!selected.isEmpty()){selected.clear();update();return;}
     if(!folderIds.isEmpty()){jump(folderIds.size()-2);return;}
-    owner.marketPages().showMarket(false);
+    owner.navigateHome();
   }
   private void jump(int level){
     if(mutating)return;

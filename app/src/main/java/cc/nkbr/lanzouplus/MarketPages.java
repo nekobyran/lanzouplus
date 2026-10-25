@@ -19,9 +19,7 @@ final class MarketPages {
     owner.pageDirection=1;owner.primaryBase(4);owner.pageKind=5;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=owner::navigateHome;owner.primaryHeader("市场");
     ImageButton submit=owner.iconButton(R.drawable.ic_add,"上传 GitHub 仓库链接");submit.setOnClickListener(v->submitDialog(null));owner.pageHeaderRow.addView(submit,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton projects=owner.iconButton(R.drawable.ic_edit,"仓库工程");projects.setOnClickListener(v->showProjects());owner.pageHeaderRow.addView(projects,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
-    ImageButton management=owner.iconButton(R.drawable.ic_settings,"云盘文件管理");management.setOnClickListener(v->owner.cloudManagement().show());owner.pageHeaderRow.addView(management,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     ImageButton reload=owner.iconButton(R.drawable.ic_refresh,"更新市场");reload.setOnClickListener(v->showMarket(true));owner.pageHeaderRow.addView(reload,new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
-    owner.pageHeaderRow.addView(MarketAnnouncements.entry(owner),new LinearLayout.LayoutParams(owner.dp(44),owner.dp(48)));
     if(force)owner.marketAnnouncements().checkInBackground(owner,true);
     TextView status=owner.text("正在读取 GitHub 市场…",13,owner.MUTED);owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(28)));
     EditText search=owner.sourceInput("搜索标题、简介、发布者或仓库名",android.text.InputType.TYPE_CLASS_TEXT);

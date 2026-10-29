@@ -35,11 +35,16 @@ final class CloudManagement {
   private LinearLayout breadcrumbs;
   private TextView status;
   private EditText filterField;
+  private Button selectedActions;
+  private HorizontalScrollView actionScroll;
   private FileAdapter adapter;
   private String query="";
   private int page;
   private int listGeneration;
   private boolean mutating,listLoading,appendLoading,hasMore;
+  private boolean recycleView;
+  private CloudRecyclePage recyclePage;
+  private Bundle recycleState;
   private String failure="";
   private static final int CLOUD_PAGE_SIZE=50;
   interface Work { String run()throws Exception; }
@@ -58,17 +63,19 @@ final class CloudManagement {
     });
     if(owner.getSharedPreferences("cloud_management",0).getBoolean("premium",false))provider=CloudFilesClient.Provider.PREMIUM;
   }
-  void saveState(Bundle state){state.putBoolean("cloudPremium",provider==CloudFilesClient.Provider.PREMIUM);state.putStringArrayList("cloudIds",new ArrayList<>(folderIds));state.putStringArrayList("cloudNames",new ArrayList<>(folderNames));state.putString("cloudQuery",query);}
-  void restoreState(Bundle state){if(state==null)return;provider=state.getBoolean("cloudPremium",false)?CloudFilesClient.Provider.PREMIUM:CloudFilesClient.Provider.ORDINARY;folderIds.clear();folderNames.clear();if(state.getStringArrayList("cloudIds")!=null)folderIds.addAll(state.getStringArrayList("cloudIds"));if(state.getStringArrayList("cloudNames")!=null)folderNames.addAll(state.getStringArrayList("cloudNames"));query=state.getString("cloudQuery","");}
+  void saveState(Bundle state){state.putBoolean("cloudPremium",provider==CloudFilesClient.Provider.PREMIUM);state.putStringArrayList("cloudIds",new ArrayList<>(folderIds));state.putStringArrayList("cloudNames",new ArrayList<>(folderNames));state.putString("cloudQuery",query);state.putBoolean("cloudRecycleView",recycleView);if(recyclePage!=null)recyclePage.saveState(state);}
+  void restoreState(Bundle state){if(state==null)return;provider=state.getBoolean("cloudPremium",false)?CloudFilesClient.Provider.PREMIUM:CloudFilesClient.Provider.ORDINARY;folderIds.clear();folderNames.clear();if(state.getStringArrayList("cloudIds")!=null)folderIds.addAll(state.getStringArrayList("cloudIds"));if(state.getStringArrayList("cloudNames")!=null)folderNames.addAll(state.getStringArrayList("cloudNames"));query=state.getString("cloudQuery","");recycleView=state.getBoolean("cloudRecycleView",false);recycleState=new Bundle();recycleState.putInt("cloudRecycleFirst",state.getInt("cloudRecycleFirst",0));recycleState.putInt("cloudRecycleTop",state.getInt("cloudRecycleTop",0));}
   boolean onActivityResult(int request,int result,Intent data){return false;}
   private String folder(){return folderIds.isEmpty()?"-1":folderIds.get(folderIds.size()-1);}
   void show(){
+    if(recycleView){showRecycle();return;}
     owner.pageDirection=1;owner.base();owner.pageKind=7;owner.activeSource=null;owner.clearFolderTrail();owner.systemBackAction=this::back;
     listGeneration++;listLoading=false;appendLoading=false;
     owner.primaryHeader("管理");controls.clear();
     ImageButton back=owner.iconButton(R.drawable.ic_back,"返回主页");back.setOnClickListener(v->owner.navigateHome());owner.pageHeaderRow.addView(back,0,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
     ImageButton accountSettings=owner.iconButton(R.drawable.ic_settings,"云盘账号设置");accountSettings.setOnClickListener(v->owner.openCloudAccountSettings());owner.pageHeaderRow.addView(accountSettings);controls.add(accountSettings);
     ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
+    ImageButton entry=owner.iconButton(R.drawable.ic_add,"上传文件或新建文件夹");entry.setOnClickListener(v->entryMenu());owner.pageHeaderRow.addView(entry);controls.add(entry);
     LinearLayout providers=new LinearLayout(owner);
     providers.setGravity(Gravity.CENTER_VERTICAL);
     for(CloudFilesClient.Provider value:CloudFilesClient.Provider.values()){
@@ -85,37 +92,33 @@ final class CloudManagement {
     HorizontalScrollView providerScroll=new HorizontalScrollView(owner);
     providerScroll.setHorizontalScrollBarEnabled(false);
     providerScroll.addView(providers);
-    owner.root.addView(providerScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));
-    boolean landscape=owner.getResources().getConfiguration().orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE;
-    HorizontalScrollView pathScroll=new HorizontalScrollView(owner);pathScroll.setHorizontalScrollBarEnabled(false);breadcrumbs=new LinearLayout(owner);pathScroll.addView(breadcrumbs);renderBreadcrumbs();
+    FrameLayout searchBox=new FrameLayout(owner);searchBox.setBackground(owner.shape(owner.SURFACE,14));
     filterField=owner.sourceInput("搜索当前文件夹",android.text.InputType.TYPE_CLASS_TEXT);filterField.setSingleLine(true);filterField.setText(query);
+    filterField.setBackgroundColor(Color.TRANSPARENT);filterField.setPadding(owner.dp(14),0,owner.dp(12),0);
+    searchBox.addView(filterField,new FrameLayout.LayoutParams(-1,-1));
     filterField.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int b,int c){}public void afterTextChanged(Editable e){}public void onTextChanged(CharSequence s,int a,int b,int c){query=s.toString();if(adapter!=null)adapter.refilter();if(list!=null)list.post(CloudManagement.this::loadMoreIfViewportFilled);}});
-    LinearLayout actions=new LinearLayout(owner);actions.setGravity(Gravity.CENTER_VERTICAL);
-    Button createEntry=owner.button("新建文件夹");createEntry.setOnClickListener(v->createFolder());actions.addView(createEntry,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(createEntry);
-    Button uploadEntry=uploadButton();uploadEntry.setOnClickListener(v->uploadMenu());actions.addView(uploadEntry,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(uploadEntry);
-    Button selectedActions=owner.toolbarTextButton("所选项目");selectedActions.setOnClickListener(v->selectionMenu());actions.addView(selectedActions,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(selectedActions);
-    HorizontalScrollView actionScroll=new HorizontalScrollView(owner);actionScroll.setHorizontalScrollBarEnabled(false);actionScroll.addView(actions);
-    status=owner.text("",12,owner.MUTED);status.setMaxLines(2);status.setPadding(owner.dp(4),0,owner.dp(4),0);
-    if(landscape){
-      owner.root.setPadding(owner.dp(16),owner.dp(4),owner.dp(16),owner.dp(8));
-      status.setSingleLine(true);status.setMaxLines(1);status.setEllipsize(android.text.TextUtils.TruncateAt.END);
-      status.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);status.setMaxWidth(owner.dp(220));status.setPadding(owner.dp(8),0,owner.dp(4),0);
-      LinearLayout pathAndStatus=new LinearLayout(owner);pathAndStatus.setGravity(Gravity.CENTER_VERTICAL);
-      pathAndStatus.addView(pathScroll,new LinearLayout.LayoutParams(0,owner.dp(48),1));
-      LinearLayout.LayoutParams statusParams=new LinearLayout.LayoutParams(-2,owner.dp(48));statusParams.setMargins(owner.dp(8),0,0,0);
-      pathAndStatus.addView(status,statusParams);
-      owner.root.addView(pathAndStatus,new LinearLayout.LayoutParams(-1,owner.dp(48)));
-      LinearLayout searchAndActions=new LinearLayout(owner);searchAndActions.setGravity(Gravity.CENTER_VERTICAL);
-      searchAndActions.addView(filterField,new LinearLayout.LayoutParams(0,owner.dp(48),1));
-      LinearLayout.LayoutParams actionParams=new LinearLayout.LayoutParams(0,owner.dp(48),1);actionParams.setMargins(owner.dp(8),0,0,0);
-      searchAndActions.addView(actionScroll,actionParams);
-      owner.root.addView(searchAndActions,new LinearLayout.LayoutParams(-1,owner.dp(48)));
-    }else{
-      owner.root.addView(pathScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));
-      owner.root.addView(filterField,new LinearLayout.LayoutParams(-1,owner.dp(48)));
-      owner.root.addView(actionScroll,new LinearLayout.LayoutParams(-1,owner.dp(52)));
-      owner.root.addView(status,new LinearLayout.LayoutParams(-1,owner.dp(40)));
-    }
+    owner.root.addView(searchBox,new LinearLayout.LayoutParams(-1,owner.dp(48)));
+    HorizontalScrollView pathScroll=new HorizontalScrollView(owner);pathScroll.setHorizontalScrollBarEnabled(false);breadcrumbs=new LinearLayout(owner);pathScroll.addView(breadcrumbs);renderBreadcrumbs();
+    selectedActions=owner.toolbarTextButton("所选项目");selectedActions.setOnClickListener(v->selectionMenu());
+    controls.add(selectedActions);
+    actionScroll=new HorizontalScrollView(owner);actionScroll.setHorizontalScrollBarEnabled(false);
+    actionScroll.addView(selectedActions,new android.widget.HorizontalScrollView.LayoutParams(-2,owner.dp(48)));
+    actionScroll.setVisibility(View.GONE);
+    status=owner.text("",12,owner.MUTED);status.setSingleLine(true);
+    status.setEllipsize(android.text.TextUtils.TruncateAt.END);status.setMaxWidth(owner.dp(150));
+    status.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);status.setPadding(owner.dp(8),0,owner.dp(2),0);
+    LinearLayout pathRow=new LinearLayout(owner);pathRow.setGravity(Gravity.CENTER_VERTICAL);
+    pathRow.addView(pathScroll,new LinearLayout.LayoutParams(0,owner.dp(48),1));
+    LinearLayout.LayoutParams statusParams=new LinearLayout.LayoutParams(-2,owner.dp(48));statusParams.setMargins(owner.dp(8),0,0,0);
+    pathRow.addView(status,statusParams);
+    owner.root.addView(pathRow,new LinearLayout.LayoutParams(-1,owner.dp(48)));
+    LinearLayout providerRow=new LinearLayout(owner);providerRow.setGravity(Gravity.CENTER_VERTICAL);
+    providerRow.addView(providerScroll,new LinearLayout.LayoutParams(0,owner.dp(48),1));
+    ImageButton recycle=owner.iconButton(R.drawable.ic_delete_record,"打开当前云盘回收站");
+    recycle.setOnClickListener(v->showRecycle());controls.add(recycle);
+    providerRow.addView(recycle,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
+    owner.root.addView(providerRow,new LinearLayout.LayoutParams(-1,owner.dp(48)));
+    owner.root.addView(actionScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     list=new ListView(owner);list.setDivider(new android.graphics.drawable.ColorDrawable(owner.DIV));list.setDividerHeight(owner.dp(1));
     list.setItemsCanFocus(false);
     adapter=new FileAdapter();
@@ -144,6 +147,17 @@ final class CloudManagement {
       }
     });
     update();load(false);
+  }
+  private void showRecycle(){
+    if(mutating)return;
+    listGeneration++;listLoading=false;appendLoading=false;recycleView=true;
+    if(recyclePage==null){
+      final CloudFilesClient.Provider target=provider;
+      recyclePage=new CloudRecyclePage(owner,()->{synchronized(client){client.selectProvider(target);return client.recycleBin();}},
+          ()->{recycleView=false;recyclePage=null;recycleState=null;show();});
+      recyclePage.restoreState(recycleState);
+    }
+    recyclePage.show();
   }
   private void back(){
     if(!selected.isEmpty()){selected.clear();update();return;}
@@ -181,19 +195,9 @@ final class CloudManagement {
     List<CloudFilesClient.CloudItem> visible=adapter.visible();
     return position<visible.size()?visible.get(position):null;
   }
-  private Button uploadButton(){
-    Button button=owner.button("上传");
-    android.graphics.drawable.Drawable arrow=owner.getDrawable(R.drawable.ic_install);
-    if(arrow!=null){
-      android.graphics.drawable.RotateDrawable rotated=new android.graphics.drawable.RotateDrawable();
-      rotated.setDrawable(arrow);
-      rotated.setFromDegrees(180f);
-      rotated.setToDegrees(180f);
-      button.setCompoundDrawablesWithIntrinsicBounds(rotated,null,null,null);
-      button.setCompoundDrawablePadding(owner.dp(6));
-    }
-    button.setContentDescription("上传文件或文件夹到当前目录");
-    return button;
+  private void entryMenu(){
+    String[] options={"上传文件","新建文件夹"};
+    AlertDialog dialog=new AlertDialog.Builder(owner).setTitle("添加到当前目录").setItems(options,(d,which)->{if(which==0)uploadMenu();else createFolder();}).setNegativeButton("取消",null).create();owner.showRounded(dialog);
   }
   private void renderBreadcrumbs(){
     if(breadcrumbs==null)return;breadcrumbs.removeAllViews();
@@ -202,10 +206,13 @@ final class CloudManagement {
   }
   private void update(){
     renderBreadcrumbs();
+    boolean selecting=!selected.isEmpty();
+    if(actionScroll!=null)actionScroll.setVisibility(selecting?View.VISIBLE:View.GONE);
+    if(selectedActions!=null)selectedActions.setText(selecting?"所选项目 "+selected.size():"所选项目");
     for(View control:controls)control.setEnabled(!mutating);
     if(status!=null){
-      String summary=mutating?"正在处理云盘文件…":!failure.isEmpty()?failure:items.size()+" 个项目 · "+(provider==CloudFilesClient.Provider.PREMIUM?"蓝奏云优享版":"蓝奏云");
-      summary=summary+(selected.isEmpty()?" · 长按项目多选":" · 已选 "+selected.size()+" 个");
+      String summary=mutating?"处理中":!failure.isEmpty()?failure:items.size()+" 个项目";
+      if(!selected.isEmpty())summary="已选 "+selected.size()+" 个";
       if(appendLoading)summary=summary+" · 正在加载更多…";
       status.setText(summary);
     }
@@ -924,7 +931,9 @@ final class CloudManagement {
         row=layout;
       }
 
-      holder.check.setChecked(selected.contains(item.id));
+      boolean selecting=!selected.isEmpty();
+      holder.check.setVisibility(selecting?View.VISIBLE:View.GONE);
+      holder.check.setChecked(selecting&&selected.contains(item.id));
       holder.icon.setTag(item.iconUrl);
       holder.icon.setColorFilter(owner.PRIMARY);
       holder.icon.setImageResource(item.folder?R.drawable.ic_folder:R.drawable.ic_download);

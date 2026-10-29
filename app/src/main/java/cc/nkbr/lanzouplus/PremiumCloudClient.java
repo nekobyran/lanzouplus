@@ -90,6 +90,8 @@ final class PremiumCloudClient {
   private final Object sessionLock=new Object();
   private final Map<String,SessionEntry> sessions=new HashMap<>();
   private final Map<String,Object> accountLocks=new HashMap<>();
+  /** Monotonic account-selection/credential epoch. A->B->A still changes it. */
+  private long selectionRevision;
 
   PremiumCloudClient(Context context){
     this.context=context.getApplicationContext();
@@ -183,7 +185,7 @@ final class PremiumCloudClient {
     synchronized(sessionLock){
       Vault vault=loadVault();
       if(!vault.accounts.containsKey(name))return false;
-      if(!name.equals(vault.current)){vault.current=name;persist(vault);}
+      if(!name.equals(vault.current)){vault.current=name;selectionRevision++;persist(vault);}
       return true;
     }
   }
@@ -194,6 +196,7 @@ final class PremiumCloudClient {
       Vault vault=loadVault();
       if(vault.accounts.remove(name)==null)return false;
       sessions.remove(name);accountLocks.remove(name);
+      selectionRevision++;
       if(vault.accounts.isEmpty()){clearStoredLogin();return true;}
       if(name.equals(vault.current))vault.current=vault.accounts.keySet().iterator().next();
       persist(vault);return true;
@@ -210,6 +213,7 @@ final class PremiumCloudClient {
       LoginState state=readLoginState(credentials.appToken);
       synchronized(sessionLock){
         Vault vault=loadVault();vault.accounts.put(name,credentials);vault.current=name;persist(vault);
+        selectionRevision++;
         sessions.put(name,new SessionEntry(state,System.currentTimeMillis()));
       }
       return state;
@@ -242,6 +246,7 @@ final class PremiumCloudClient {
           Vault vault=loadVault();
           if(!vault.accounts.containsKey(name))throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"所选账号已删除");
           vault.accounts.put(name,renewed);persist(vault);
+          selectionRevision++;
           sessions.put(name,new SessionEntry(state,System.currentTimeMillis()));
         }
         return state;
@@ -350,6 +355,210 @@ final class PremiumCloudClient {
   private String tokenFor(String loginName)throws CloudException{
     ensureLoggedIn(loginName);
     return credentials(loginName).appToken;
+  }
+
+  /**
+   * Binds the recycle protocol to the account and device identity captured now.
+   * Every request re-checks that the account, its token and the stored uuid are
+   * unchanged; a later account switch fails with ERROR_ACCOUNT_CHANGED.
+   */
+  CloudRecycleProtocol.Bin recycleBin()
+      throws CloudException,CloudFilesClient.CloudException{
+    final String name=requiredCurrentAccount();
+    final String token=tokenFor(name);
+    final String uuid=ensureUuid();
+    final long revision;
+    synchronized(sessionLock){revision=selectionRevision;}
+    checkManagementIdentity(name,token,uuid,revision);
+    CloudRecycleProtocol.PremiumTransport transport=new CloudRecycleProtocol.PremiumTransport(){
+      @Override public CloudRecycleProtocol.Reply get(String url)throws CloudFilesClient.CloudException{
+        return sendRecycle("GET",url,null,name,token,uuid,revision);
+      }
+      @Override public CloudRecycleProtocol.Reply postJson(String url,JSONObject body)
+          throws CloudFilesClient.CloudException{
+        return sendRecycle("POST",url,body,name,token,uuid,revision);
+      }
+    };
+    return CloudRecycleProtocol.premiumBin(transport,API_ORIGIN);
+  }
+
+  private CloudRecycleProtocol.Reply sendRecycle(String method,String url,JSONObject body,
+                                                String name,String token,String uuid,long revision)
+      throws CloudFilesClient.CloudException{
+    checkManagementIdentity(name,token,uuid,revision);
+    String path=officialRecyclePath(url);
+    try{
+      ApiReply reply=requestWithUuid(method,path,body,token,uuid);
+      requireSuccess(reply,"回收站操作失败");
+      checkManagementIdentity(name,token,uuid,revision);
+      return new CloudRecycleProtocol.Reply(reply.httpStatus,reply.root.toString());
+    }catch(CloudException error){
+      throw CloudFilesClient.translate(error);
+    }
+  }
+
+  private String officialRecyclePath(String url)throws CloudFilesClient.CloudException{
+    try{
+      URI uri=new URI(url);
+      URI base=new URI(API_ORIGIN);
+      if(!"https".equalsIgnoreCase(uri.getScheme())
+          ||uri.getHost()==null||!uri.getHost().equalsIgnoreCase(base.getHost()))
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,
+            "回收站请求目标不是优享官方接口");
+      String path=uri.getRawPath();
+      if(path==null||path.isEmpty())
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"回收站请求路径无效");
+      String query=uri.getRawQuery();
+      return query==null||query.isEmpty()?path:path+"?"+query;
+    }catch(CloudFilesClient.CloudException error){throw error;
+    }catch(Exception error){
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,"回收站请求地址无效",
+          error);
+    }
+  }
+
+  private void checkManagementIdentity(String name,String token,String uuid,long revision)
+      throws CloudFilesClient.CloudException{
+    synchronized(sessionLock){
+      Vault vault;
+      try{
+        vault=loadVault();
+      }catch(CloudException error){
+        throw CloudFilesClient.translate(error);
+      }
+      String current=vault.current;
+      Credentials currentCredentials=vault.accounts.get(name);
+      requireSameManagementIdentity(revision,selectionRevision,name,current,
+          currentCredentials!=null&&token.equals(currentCredentials.appToken),
+          uuid.equals(preferences.getString(PREF_UUID,"")));
+    }
+  }
+
+  /**
+   * Pure epoch check: a same-provider A->B->A switch bumps the revision even
+   * though the current name returns to A, so the old handle must still fail.
+   * Package-private for a controlled verification hook.
+   */
+  static void requireSameManagementIdentity(long capturedRevision,long currentRevision,
+                                            String capturedName,String currentName,
+                                            boolean tokenSame,boolean uuidSame)
+      throws CloudFilesClient.CloudException{
+    if(capturedRevision!=currentRevision||!capturedName.equals(currentName)
+        ||!tokenSame||!uuidSame)
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,
+          "账号已切换，管理请求已取消");
+  }
+
+  /**
+   * Binds the premium account protocol to the account, token, device uuid and
+   * selection epoch captured now. Raw replies are returned unchanged so the
+   * protocol can treat a pending payment (code -1) as a valid result.
+   */
+  CloudPremiumAccountProtocol.Account premiumAccountSettings()
+      throws CloudException,CloudFilesClient.CloudException{
+    final String name=requiredCurrentAccount();
+    final String token=tokenFor(name);
+    final String uuid=ensureUuid();
+    final LoginState state=ensureLoggedIn(name);
+    if(state.userId.isEmpty())throw new CloudException(ERROR_PROTOCOL,"优享账号缺少真实用户标识");
+    final String userId=state.userId;
+    final long revision;
+    synchronized(sessionLock){revision=selectionRevision;}
+    checkManagementIdentity(name,token,uuid,revision);
+    CloudPremiumAccountProtocol.Transport transport=new CloudPremiumAccountProtocol.Transport(){
+      @Override public CloudPremiumAccountProtocol.Reply get(String path)
+          throws CloudFilesClient.CloudException{
+        return sendManagement("GET",path,null,name,token,uuid,revision);
+      }
+      @Override public CloudPremiumAccountProtocol.Reply postJson(String path,JSONObject body)
+          throws CloudFilesClient.CloudException{
+        return sendManagement("POST",path,body,name,token,uuid,revision);
+      }
+    };
+    CloudPremiumAccountProtocol.PasswordChangeCommit commit=new CloudPremiumAccountProtocol.PasswordChangeCommit(){
+      @Override public void commit(String newPassword)throws CloudFilesClient.CloudException{
+        commitChangedPassword(name,token,uuid,revision,newPassword);
+      }
+    };
+    return CloudPremiumAccountProtocol.account(transport,userId,commit);
+  }
+
+  /**
+   * The official password change already succeeded; persist it for auto relogin.
+   * Never re-send the change request from here.
+   */
+  private void commitChangedPassword(String name,String token,String uuid,long revision,
+                                     String newPassword)throws CloudFilesClient.CloudException{
+    try{
+      synchronized(accountLock(name)){
+        synchronized(sessionLock){
+          checkManagementIdentity(name,token,uuid,revision);
+          Vault vault=loadVault();
+          Credentials current=vault.accounts.get(name);
+          if(current==null)
+            throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"所选账号已删除");
+          vault.accounts.put(name,
+              new Credentials(current.loginName,newPassword,current.appToken));
+          persist(vault);
+          sessions.remove(name);
+          selectionRevision++;
+        }
+      }
+    }catch(CloudFilesClient.CloudException error){
+      throw localCredentialFailure(error);
+    }catch(CloudException error){
+      throw localCredentialFailure(error);
+    }
+  }
+
+  private static CloudFilesClient.CloudException localCredentialFailure(Exception error){
+    int code=error instanceof CloudFilesClient.CloudException
+        ?((CloudFilesClient.CloudException)error).code()
+        :ERROR_CREDENTIALS_UNREADABLE;
+    String reason=code==CloudFilesClient.ERROR_ACCOUNT_CHANGED
+        ?"本地账号已切换，未更新凭据": "本地凭据更新失败，请重新登录";
+    return new CloudFilesClient.CloudException(code,
+        "官方改密已确认，但"+reason,error);
+  }
+
+  private CloudPremiumAccountProtocol.Reply sendManagement(String method,String path,
+                                                           JSONObject body,String name,
+                                                           String token,String uuid,long revision)
+      throws CloudFilesClient.CloudException{
+    checkManagementIdentity(name,token,uuid,revision);
+    String officialPath=officialManagementPath(path);
+    try{
+      ApiReply reply=requestWithUuid(method,officialPath,body,token,uuid);
+      checkManagementIdentity(name,token,uuid,revision);
+      return new CloudPremiumAccountProtocol.Reply(reply.httpStatus,reply.root.toString());
+    }catch(CloudException error){
+      throw CloudFilesClient.translate(error);
+    }
+  }
+
+  /** Only the official API path (plus its own query) may be requested. */
+  private String officialManagementPath(String path)throws CloudFilesClient.CloudException{
+    String text=path==null?"":path.trim();
+    if(!text.startsWith("/"))
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,
+          "账号设置请求路径无效");
+    try{
+      URI uri=new URI(API_ORIGIN+text);
+      URI base=new URI(API_ORIGIN);
+      if(uri.getHost()==null||!uri.getHost().equalsIgnoreCase(base.getHost()))
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,
+            "账号设置请求目标不是优享官方接口");
+      String rawPath=uri.getRawPath();
+      if(rawPath==null||rawPath.isEmpty())
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,
+            "账号设置请求路径无效");
+      String query=uri.getRawQuery();
+      return query==null||query.isEmpty()?rawPath:rawPath+"?"+query;
+    }catch(CloudFilesClient.CloudException error){throw error;
+    }catch(Exception error){
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_INVALID,
+          "账号设置请求地址无效",error);
+    }
   }
 
   CloudFilesClient.CloudPage cloudListFolder(String folderId,int page,int pageSize)
@@ -1578,6 +1787,7 @@ final class PremiumCloudClient {
   }
 
   private void clearStoredLogin(){
+    selectionRevision++;
     preferences.edit().remove(PREF_IV).remove(PREF_SECRET).apply();sessions.clear();accountLocks.clear();
         try{KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);if(store.containsAlias(KEY_ALIAS))store.deleteEntry(KEY_ALIAS);}catch(Exception error){throw new IllegalStateException("无法清理蓝奏云优享登录密钥",error);}
 

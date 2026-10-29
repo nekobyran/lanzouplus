@@ -5,9 +5,10 @@ tasks.withType<JavaCompile>().configureEach { options.compilerArgs.add("-g:none"
 android {
  namespace = "cc.nkbr.lanzouplus"
  compileSdk = 36
+ compileOptions { isCoreLibraryDesugaringEnabled = true }
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2000000; versionName = "2.0.0" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2000001; versionName = "2.0.1alpha" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {
@@ -25,6 +26,7 @@ android {
 }
 
 dependencies {
+ coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
  implementation("org.apache.commons:commons-compress:1.28.0")
  implementation("org.tukaani:xz:1.10")
  implementation("org.commonmark:commonmark:0.21.0")

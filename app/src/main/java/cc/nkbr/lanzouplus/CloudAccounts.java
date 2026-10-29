@@ -155,6 +155,15 @@ final class CloudAccounts {
     }
     stage.addView(actions,new LinearLayout.LayoutParams(-1,owner.dp(50)));
 
+    if(!current.isEmpty()){
+      final String account=current;
+      final CloudFilesClient.Provider target=provider;
+      Button manage=owner.toolbarTextButton("管理当前账号");
+      manage.setEnabled(!busy);
+      manage.setOnClickListener(v->manageAccount(target,account));
+      stage.addView(manage,new LinearLayout.LayoutParams(-1,owner.dp(48)));
+    }
+
     verifySummary=owner.text("",11,owner.MUTED);
     verifySummary.setMaxLines(2);
     verifySummary.setVisibility(View.GONE);
@@ -222,6 +231,45 @@ final class CloudAccounts {
             :problem,false);
       });
     });
+  }
+
+  private void manageAccount(CloudFilesClient.Provider target,String name){
+    Runnable passwordChanged=()->{
+      if(owner.activityClosing())return;
+      owner.refreshSettingsFade("密码已更新，请重新登录");
+      showLogin(target,null);
+    };
+    if(target==CloudFilesClient.Provider.PREMIUM){
+      CloudPremiumAccountUi.choose(owner,()->{
+        synchronized(client){
+          client.selectProvider(target);
+          if(!client.selectAccount(target,name))
+            throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,"账号已移除，请重新选择");
+          return client.premiumAccountSettings();
+        }
+      },()->{if(!owner.activityClosing())owner.refreshSettingsFade("密码已更新");});
+      return;
+    }
+    AlertDialog menu=new AlertDialog.Builder(owner).setTitle("普通蓝奏云账号管理")
+        .setItems(new String[]{"账号、会员与订单","域名与共享"},(dialog,which)->{
+          if(which==0)CloudAccountPagesUi.choose(owner,()->{
+            synchronized(client){
+              client.selectProvider(target);
+              if(!client.selectAccount(target,name))
+                throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,"账号已移除，请重新选择");
+              return client.ordinaryAccountPages();
+            }
+          },passwordChanged);
+          else CloudOrdinaryDomainUi.show(owner,()->{
+            synchronized(client){
+              client.selectProvider(target);
+              if(!client.selectAccount(target,name))
+                throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,"账号已移除，请重新选择");
+              return client.ordinaryAccountSettings();
+            }
+          });
+        }).setNegativeButton("取消",null).create();
+    owner.showRounded(menu);
   }
 
   private void confirmRemove(String name){

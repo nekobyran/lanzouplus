@@ -114,7 +114,7 @@ final class OrdinaryCloudClient {
   private final Map<String,SessionEntry> sessions=new HashMap<>();
   private final Map<String,Object> accountLocks=new HashMap<>();
   private final CookieJar jar=new CookieJar();
-  private Session active;
+  private volatile Session active;
 
   OrdinaryCloudClient(Context context){
     this.context=context.getApplicationContext();
@@ -271,6 +271,211 @@ final class OrdinaryCloudClient {
     if(active==null)
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_CREDENTIALS_REQUIRED,"请先登录蓝奏云账号");
     return active;
+  }
+
+  /**
+   * Binds the recycle protocol to the session that is active right now.
+   * The returned handle uses a throwaway transport client with its own cookie
+   * jar, so a later account switch in the shared instance cannot leak cookies
+   * into this account's requests.
+   */
+  CloudRecycleProtocol.Bin recycleBin()throws CloudFilesClient.CloudException{
+    final Session captured;
+    final String cookie;
+    synchronized(networkLock){
+      captured=requireSession();
+      synchronized(vaultLock){
+        if(active!=captured)
+          throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,
+              "账号已切换，回收站请求已取消");
+        cookie=mergeCookie(captured.cookie,jar.cookiesFor(PC_ORIGIN+"/mydisk.php"));
+      }
+    }
+    final OrdinaryCloudClient transportClient=new OrdinaryCloudClient(context);
+    CloudRecycleProtocol.OrdinaryTransport transport=new CloudRecycleProtocol.OrdinaryTransport(){
+      @Override public CloudRecycleProtocol.Reply get(String url)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured);
+        // GET may redirect to the login page; follow so ensureSessionHtml can detect it.
+        Response response=transportClient.getWithCookie(url,cookie,true,recycleReferer());
+        checkActive(captured);
+        return new CloudRecycleProtocol.Reply(response.status,response.text);
+      }
+      @Override public CloudRecycleProtocol.Reply postForm(String url,Map<String,String> form)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured);
+        // Rust recycle_form uses post_form with default redirect policy (follow).
+        Response response=transportClient.postForm(url,cookie,form,recycleReferer(),true);
+        checkActive(captured);
+        return new CloudRecycleProtocol.Reply(response.status,response.text);
+      }
+    };
+    return CloudRecycleProtocol.ordinaryBin(transport,PC_ORIGIN);
+  }
+
+  private void checkActive(Session captured)throws CloudFilesClient.CloudException{
+    checkActive(captured,"账号已切换，回收站请求已取消");
+  }
+
+  private void checkActive(Session captured,String message)throws CloudFilesClient.CloudException{
+    synchronized(vaultLock){
+      if(active!=captured)
+        throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,message);
+    }
+  }
+
+  private static String recycleReferer(){
+    return PC_ORIGIN+"/mydisk.php?item=recycle&action=files";
+  }
+
+  /**
+   * Binds domain/sharing settings to the session captured now. The fixed task
+   * URL is built from the captured uid/vei, never from a later current account.
+   */
+  CloudAccountSettingsProtocol.Settings accountSettings()
+      throws CloudFilesClient.CloudException{
+    final Session captured;
+    final String cookie;
+    synchronized(networkLock){
+      captured=requireSession();
+      synchronized(vaultLock){
+        if(active!=captured)
+          throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,
+              "账号已切换，账号设置请求已取消");
+        cookie=mergeCookie(captured.cookie,jar.cookiesFor(PC_ORIGIN+"/doupload.php"));
+      }
+    }
+    final String taskUrl=PC_ORIGIN+"/doupload.php?uid="+encode(captured.uid)
+        +"&vei="+encode(captured.vei);
+    final CloudAccountSettingsProtocol.Session session=
+        new CloudAccountSettingsProtocol.Session(taskUrl);
+    final OrdinaryCloudClient transportClient=new OrdinaryCloudClient(context);
+    CloudAccountSettingsProtocol.Transport transport=new CloudAccountSettingsProtocol.Transport(){
+      @Override public CloudAccountSettingsProtocol.Reply postForm(String url,
+                                                                   Map<String,String> form)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured);
+        Response response=transportClient.postFormRaw(url,cookie,form,taskUrl);
+        checkActive(captured);
+        return new CloudAccountSettingsProtocol.Reply(response.status,response.text);
+      }
+      @Override public CloudAccountSettingsProtocol.Reply getPage(String url)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured);
+        Response response=transportClient.getRaw(url,cookie,url);
+        checkActive(captured);
+        return new CloudAccountSettingsProtocol.Reply(response.status,response.text);
+      }
+    };
+    return CloudAccountSettingsProtocol.settings(transport,session);
+  }
+
+  /**
+   * Binds the eight ordinary account pages to the session captured now. Each
+   * request re-checks that this account is still active, and the transport uses
+   * its own client so a later account switch cannot leak cookies.
+   *
+   * <p>A confirmed official password change makes the captured credentials
+   * unusable. The account's stored entry is then dropped while this session is
+   * still the active one, and the UI asks for the new password.</p>
+   */
+  CloudOrdinaryAccountPages.Pages accountPages()throws CloudFilesClient.CloudException{
+    final Session captured;
+    final String cookie;
+    synchronized(networkLock){
+      captured=requireSession();
+      synchronized(vaultLock){
+        if(active!=captured)
+          throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,
+              "账号已切换，账号管理请求已取消");
+        cookie=mergeCookie(captured.cookie,jar.cookiesFor(PC_ORIGIN+"/mydisk.php"));
+      }
+    }
+    final OrdinaryCloudClient transportClient=new OrdinaryCloudClient(context);
+    CloudOrdinaryAccountPages.Transport transport=new CloudOrdinaryAccountPages.Transport(){
+      @Override public CloudOrdinaryAccountPages.Reply get(String url,String referer)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        Response response=transportClient.getRaw(url,cookie,referer);
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        return new CloudOrdinaryAccountPages.Reply(response.status,response.text,
+            response.location);
+      }
+      @Override public CloudOrdinaryAccountPages.Reply postForm(String url,
+                                                                Map<String,String> form,
+                                                                String referer)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        Response response=transportClient.postFormRaw(url,cookie,form,referer);
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        return new CloudOrdinaryAccountPages.Reply(response.status,response.text,
+            response.location);
+      }
+    };
+    final CloudOrdinaryAccountPages.Pages delegate=
+        CloudOrdinaryAccountPages.pages(transport,PC_ORIGIN);
+    return new CloudOrdinaryAccountPages.Pages(){
+      @Override public CloudOrdinaryAccountPages.Page read(
+          CloudOrdinaryAccountPages.Section section)throws CloudFilesClient.CloudException{
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        CloudOrdinaryAccountPages.Page page=delegate.read(section);
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        return page;
+      }
+      @Override public CloudOrdinaryAccountPages.Result submit(
+          CloudOrdinaryAccountPages.Section section,String formId,Map<String,String> fields)
+          throws CloudFilesClient.CloudException{
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        CloudOrdinaryAccountPages.Result result=delegate.submit(section,formId,fields);
+        if(section==CloudOrdinaryAccountPages.Section.PASSWORD&&result.succeeded){
+          discardStalePassword(captured);
+          return result;
+        }
+        checkActive(captured,"账号已切换，账号管理请求已取消");
+        return result;
+      }
+    };
+  }
+
+  /**
+   * Removes only this account's stored entry after an official password change.
+   * The change is applied while the captured session is still the active one,
+   * so a concurrent account switch cannot delete the wrong credentials.
+   */
+  private void discardStalePassword(Session captured)throws CloudFilesClient.CloudException{
+    synchronized(vaultLock){
+      Vault vault=loadVault();
+      if(!clearCapturedAccount(vault,captured))return;
+      if(vault.accounts.isEmpty()){clearStoredLogin();return;}
+      persist(vault);
+    }
+  }
+
+  /**
+   * Applies the password-change identity rules to a vault: the captured session
+   * must still be the active one, and only its account is dropped. Other
+   * accounts keep their credentials and order. Returns false when the captured
+   * account is no longer stored.
+   */
+  boolean clearCapturedAccount(Vault vault,Session captured)
+      throws CloudFilesClient.CloudException{
+    if(active!=captured)
+      throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,
+          "账号已切换，密码修改结果未应用到本机凭据");
+    if(!dropAccount(vault,captured.loginName))return false;
+    sessions.remove(captured.loginName);
+    accountLocks.remove(captured.loginName);
+    active=null;
+    jar.clear();
+    return true;
+  }
+
+  /** Drops one stored account; the current falls back to the first survivor. */
+  static boolean dropAccount(Vault vault,String name){
+    if(vault==null||name==null||vault.accounts.remove(name)==null)return false;
+    if(vault.accounts.isEmpty()){vault.current="";return true;}
+    if(name.equals(vault.current))vault.current=vault.accounts.keySet().iterator().next();
+    return true;
   }
 
   CloudFilesClient.CloudPage listFolder(String folderId,int page,int pageSize)
@@ -1389,8 +1594,8 @@ final class OrdinaryCloudClient {
     if(directory.contains("..")||directory.startsWith("/")||directory.startsWith("\\"))
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"图标上传目录无效");
     String host=value.optString("host","");
-    String lower=host.toLowerCase(Locale.ROOT);
-    if(!lower.startsWith("https://")||!(lower.contains(".aliyuncs.com")||lower.contains("dmpdmp")))
+    String lower=host.toLowerCase(Locale.ROOT),hostname=android.net.Uri.parse(host).getHost();
+    if(!lower.startsWith("https://")||hostname==null||!(hostname.equals("imgup.woozooo.com")||hostname.endsWith(".aliyuncs.com")||hostname.equals("image.dmpdmp.com")))
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"图标上传地址不受信任");
     return new IconPolicy(host,value.optString("policy"),value.optString("accessid"),
         value.optString("signature"),value.optString("callback"),directory);
@@ -1414,6 +1619,24 @@ final class OrdinaryCloudClient {
     return request("GET",url,cookie,null,null,follow,referer);
   }
 
+  /** Returns redirects and error statuses instead of following them. */
+  private Response getRaw(String url,String cookie,String referer)
+      throws CloudFilesClient.CloudException{
+    return request("GET",url,cookie,null,null,false,referer,true);
+  }
+
+  /** Returns redirects and error statuses instead of following them. */
+  private Response postFormRaw(String url,String cookie,Map<String,String> form,String referer)
+      throws CloudFilesClient.CloudException{
+    StringBuilder body=new StringBuilder();
+    for(Map.Entry<String,String> entry:form.entrySet()){
+      if(body.length()>0)body.append('&');
+      body.append(encode(entry.getKey())).append('=').append(encode(entry.getValue()));
+    }
+    return request("POST",url,cookie,body.toString().getBytes(StandardCharsets.UTF_8),
+        "application/x-www-form-urlencoded;charset=UTF-8",false,referer,true);
+  }
+
   private Response postForm(String url,String cookie,Map<String,String> form,String referer,boolean follow)
       throws CloudFilesClient.CloudException{
     StringBuilder body=new StringBuilder();
@@ -1427,6 +1650,12 @@ final class OrdinaryCloudClient {
 
   private Response request(String method,String url,String cookie,byte[] body,String contentType,
                             boolean follow,String referer)throws CloudFilesClient.CloudException{
+    return request(method,url,cookie,body,contentType,follow,referer,false);
+  }
+
+  private Response request(String method,String url,String cookie,byte[] body,String contentType,
+                            boolean follow,String referer,boolean returnRedirect)
+      throws CloudFilesClient.CloudException{
     String current=url;
     redirects: for(int hop=0;hop<=MAX_REDIRECTS;hop++){
       for(int attempt=0;attempt<3;attempt++){
@@ -1467,9 +1696,16 @@ final class OrdinaryCloudClient {
         String challenge=LanzouCore.acwCookie(text);
         if(!challenge.isEmpty()){
           jar.absorbCookie(new URL(current).getHost(),"acw_sc__v2="+challenge+"; Path=/");
+          // A management POST must never be replayed: the cookie is kept for the
+          // caller's next explicit attempt, and this request reports the block.
+          if(returnRedirect&&!"GET".equals(method))
+            throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,
+                "蓝奏云要求重新验证，请刷新后重试");
           if(attempt<2)continue;
           throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_PROTOCOL,"蓝奏云 ACW 验证未完成，请稍后重试");
         }
+        if(returnRedirect)
+          return new Response(status,text,connection.getHeaderField("Location"),current);
         if(status<200||status>=300)
           throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_NETWORK,
               "蓝奏云服务返回 HTTP "+status);
@@ -2181,7 +2417,7 @@ final class OrdinaryCloudClient {
       "img","appimage","7z","rplib","lolgezi","exe","azw3","zip","conf","tar","dll","flac","xpa",
       "lua","cad","hwt","accdb","ce","xmind","enc","bds","bdi","ssf","it","gz"));
 
-  private static final class Credentials {
+  static final class Credentials {
     final String loginName;
     final String password;
     final String cookie;
@@ -2197,7 +2433,7 @@ final class OrdinaryCloudClient {
     }
   }
 
-  private static final class Vault {
+  static final class Vault {
     final LinkedHashMap<String,Credentials> accounts=new LinkedHashMap<>();
     String current="";
   }
@@ -2214,7 +2450,7 @@ final class OrdinaryCloudClient {
     }
   }
 
-  private static final class Session {
+  static final class Session {
     final String loginName;
     final String account;
     final String password;

@@ -5,6 +5,7 @@ import android.content.Context;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Unified, synchronous file-management API for both LanZou account families.
@@ -22,6 +23,7 @@ final class CloudFilesClient {
   static final int ERROR_NOT_FOUND=-10005;
   static final int ERROR_INVALID=-10006;
   static final int ERROR_UNSUPPORTED=-10007;
+  static final int ERROR_ACCOUNT_CHANGED=-10008;
   static final int ERROR_SESSION_EXPIRED=-2;
 
   private static volatile CloudFilesClient shared;
@@ -371,6 +373,8 @@ final class CloudFilesClient {
   private final OrdinaryCloudClient ordinary;
   private final PremiumCloudClient premium;
   private volatile Provider selection=Provider.ORDINARY;
+  private final Object selectionLock=new Object();
+  private long selectionRevision;
 
   CloudFilesClient(Context context){
     Context application=context.getApplicationContext();
@@ -392,11 +396,280 @@ final class CloudFilesClient {
 
   Provider provider(){return selection;}
 
+  /**
+   * Captures the current provider revision and returns a guarded recycle handle.
+   * The handle is invalid after any later provider switch or account change in
+   * the underlying backend; every operation fails with ERROR_ACCOUNT_CHANGED.
+   */
+  CloudRecycleProtocol.Bin recycleBin()throws CloudException{
+    final Provider capturedProvider;
+    final long capturedRevision;
+    synchronized(selectionLock){
+      capturedProvider=selection;
+      capturedRevision=selectionRevision;
+    }
+    final CloudRecycleProtocol.Bin delegate;
+    if(capturedProvider==Provider.PREMIUM){
+      try{
+        delegate=premium.recycleBin();
+      }catch(PremiumCloudClient.CloudException error){
+        throw translate(error);
+      }
+    }else{
+      delegate=ordinary.recycleBin();
+    }
+    guardSelection(capturedProvider,capturedRevision);
+    return guardedRecycleBin(delegate,capturedProvider,capturedRevision);
+  }
+
+  /** Package-private so the facade guard can be verified with a controlled delegate. */
+  CloudRecycleProtocol.Bin guardedRecycleBin(final CloudRecycleProtocol.Bin delegate,
+                                             final Provider provider,
+                                             final long revision){
+    return new CloudRecycleProtocol.Bin(){
+      @Override public CloudRecycleProtocol.Page list(int page,int limit)throws CloudException{
+        guardSelection(provider,revision);
+        CloudRecycleProtocol.Page result=delegate.list(page,limit);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public CloudRecycleProtocol.ActionResult restore(String id,boolean folder)
+          throws CloudException{
+        guardSelection(provider,revision);
+        CloudRecycleProtocol.ActionResult result=delegate.restore(id,folder);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public CloudRecycleProtocol.ActionResult purge(String id,boolean folder)
+          throws CloudException{
+        guardSelection(provider,revision);
+        CloudRecycleProtocol.ActionResult result=delegate.purge(id,folder);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public CloudRecycleProtocol.ActionResult empty()throws CloudException{
+        guardSelection(provider,revision);
+        CloudRecycleProtocol.ActionResult result=delegate.empty();
+        guardSelection(provider,revision);
+        return result;
+      }
+    };
+  }
+
+  /**
+   * Returns domain/sharing settings for the current ordinary account.
+   * The handle is invalid after a provider switch; premium has no matching API.
+   */
+  CloudAccountSettingsProtocol.Settings ordinaryAccountSettings()throws CloudException{
+    final Provider capturedProvider;
+    final long capturedRevision;
+    synchronized(selectionLock){
+      capturedProvider=selection;
+      capturedRevision=selectionRevision;
+    }
+    if(capturedProvider!=Provider.ORDINARY)
+      throw new CloudException(ERROR_UNSUPPORTED,"优享版不支持该域名共享设置接口");
+    final CloudAccountSettingsProtocol.Settings delegate=ordinary.accountSettings();
+    guardSelection(capturedProvider,capturedRevision);
+    return guardedSettings(delegate,capturedProvider,capturedRevision);
+  }
+
+  /**
+   * Returns premium profile/order settings for the current premium account.
+   * The handle dies after a provider switch or account change; ordinary has no
+   * matching API.
+   */
+  CloudPremiumAccountProtocol.Account premiumAccountSettings()throws CloudException{
+    final Provider capturedProvider;
+    final long capturedRevision;
+    synchronized(selectionLock){
+      capturedProvider=selection;
+      capturedRevision=selectionRevision;
+    }
+    if(capturedProvider!=Provider.PREMIUM)
+      throw new CloudException(ERROR_UNSUPPORTED,"普通版不支持该优享账号设置接口");
+    final CloudPremiumAccountProtocol.Account delegate;
+    try{
+      delegate=premium.premiumAccountSettings();
+    }catch(PremiumCloudClient.CloudException error){
+      throw translate(error);
+    }
+    guardSelection(capturedProvider,capturedRevision);
+    return guardedPremiumSettings(delegate,capturedProvider,capturedRevision);
+  }
+
+  /**
+   * Returns the eight ordinary account pages for the current ordinary account.
+   * The handle dies after a provider switch or account change; premium has no
+   * matching API. A confirmed password change invalidates that account's stored
+   * credential, so the UI must ask for the new password afterwards.
+   */
+  CloudOrdinaryAccountPages.Pages ordinaryAccountPages()throws CloudException{
+    final Provider capturedProvider;
+    final long capturedRevision;
+    synchronized(selectionLock){
+      capturedProvider=selection;
+      capturedRevision=selectionRevision;
+    }
+    if(capturedProvider!=Provider.ORDINARY)
+      throw new CloudException(ERROR_UNSUPPORTED,"优享版不支持该账号管理接口");
+    final CloudOrdinaryAccountPages.Pages delegate=ordinary.accountPages();
+    guardSelection(capturedProvider,capturedRevision);
+    return guardedAccountPages(delegate,capturedProvider,capturedRevision);
+  }
+
+  /** Package-private so the facade guard can be verified with a controlled delegate. */
+  CloudOrdinaryAccountPages.Pages guardedAccountPages(
+      final CloudOrdinaryAccountPages.Pages delegate,final Provider provider,
+      final long revision){
+    return new CloudOrdinaryAccountPages.Pages(){
+      @Override public CloudOrdinaryAccountPages.Page read(
+          CloudOrdinaryAccountPages.Section section)throws CloudException{
+        guardSelection(provider,revision);
+        CloudOrdinaryAccountPages.Page result=delegate.read(section);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public CloudOrdinaryAccountPages.Result submit(
+          CloudOrdinaryAccountPages.Section section,String formId,Map<String,String> fields)
+          throws CloudException{
+        guardSelection(provider,revision);
+        CloudOrdinaryAccountPages.Result result=delegate.submit(section,formId,fields);
+        guardSelection(provider,revision);
+        return result;
+      }
+    };
+  }
+
+  private CloudPremiumAccountProtocol.Account guardedPremiumSettings(
+      final CloudPremiumAccountProtocol.Account delegate,final Provider provider,
+      final long revision){
+    return new CloudPremiumAccountProtocol.Account(){
+      @Override public org.json.JSONObject profile()throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.profile();
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject setNickname(String name)throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.setNickname(name);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject changePassword(String oldPassword,String newPassword,
+                                                          String confirmation)
+          throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.changePassword(oldPassword,newPassword,confirmation);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject vipPackages()throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.vipPackages();
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject paymentWays()throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.paymentWays();
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject orderHistory(int page,int pageSize)
+          throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.orderHistory(page,pageSize);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject createOrder(String packageId,String paymentWayId)
+          throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.createOrder(packageId,paymentWayId);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject queryOrder(String orderId)throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.queryOrder(orderId);
+        guardSelection(provider,revision);
+        return result;
+      }
+    };
+  }
+
+  private void guardSelection(Provider provider,long revision)throws CloudException{
+    synchronized(selectionLock){
+      if(selection!=provider||selectionRevision!=revision)
+        throw new CloudException(ERROR_ACCOUNT_CHANGED,"账号或服务已切换，管理句柄已失效");
+    }
+  }
+
+  private CloudAccountSettingsProtocol.Settings guardedSettings(
+      final CloudAccountSettingsProtocol.Settings delegate,final Provider provider,
+      final long revision){
+    return new CloudAccountSettingsProtocol.Settings(){
+      @Override public org.json.JSONObject domainList()throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.domainList();
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject setDomain(String domain)throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.setDomain(domain);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject setDefaultDomain(String domainId)throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.setDefaultDomain(domainId);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject setSharing(boolean enabled)throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.setSharing(enabled);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public String phoneStatus()throws CloudException{
+        guardSelection(provider,revision);
+        String result=delegate.phoneStatus();
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject requestPhoneChange(String currentPhone,String newPhone)
+          throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.requestPhoneChange(currentPhone,newPhone);
+        guardSelection(provider,revision);
+        return result;
+      }
+      @Override public org.json.JSONObject confirmPhoneChange(String currentPhone,String newPhone,
+                                                               String verificationCode)
+          throws CloudException{
+        guardSelection(provider,revision);
+        org.json.JSONObject result=delegate.confirmPhoneChange(currentPhone,newPhone,verificationCode);
+        guardSelection(provider,revision);
+        return result;
+      }
+    };
+  }
+
   /** The single premium client used by this process, shared with the settings and file pages. */
   PremiumCloudClient premiumClient(){return premium;}
 
   void selectProvider(Provider provider){
-    if(provider!=null)selection=provider;
+    if(provider==null)return;
+    synchronized(selectionLock){
+      if(selection!=provider){
+        selection=provider;
+        selectionRevision++;
+      }
+    }
   }
 
   boolean hasStoredLogin(Provider provider){
@@ -689,7 +962,7 @@ final class CloudFilesClient {
     if(items==null||items.isEmpty())throw new CloudException(ERROR_INVALID,"请选择要操作的项目");
   }
 
-  private static CloudException translate(PremiumCloudClient.CloudException error){
+  static CloudException translate(PremiumCloudClient.CloudException error){
     return new CloudException(error.code(),error.getMessage());
   }
 }

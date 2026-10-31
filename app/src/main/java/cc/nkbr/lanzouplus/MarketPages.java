@@ -36,9 +36,9 @@ final class MarketPages {
       File file=new File(owner.getFilesDir(),"market-index.json");
       final MarketIndex cached=readIndexOrEmpty(file);
       if(!cached.entries.isEmpty())owner.runOnUiThread(()->catalog.render(cached.entries));
-      /* One bounded GitHub read; scrolling and search only page the in-memory snapshot. */
-      final List<MarketRepositoryClient.CatalogEntry> latest=owner.core.marketRepositories().catalogAll(force);
       boolean auto=owner.getSharedPreferences("market",Context.MODE_PRIVATE).getBoolean("auto_update",true);
+      /* Refresh on entry in auto mode; paging and search still use the loaded snapshot. */
+      final List<MarketRepositoryClient.CatalogEntry> latest=owner.core.marketRepositories().catalogAll(auto||force);
       final String current=new MarketRepositoryClient.Catalog(latest,latest.size(),0,latest.size()).fingerprint();
       Runnable apply=()->{owner.io.execute(()->{try{JSONArray rows=new JSONArray();for(MarketRepositoryClient.CatalogEntry entry:latest)rows.put(entry.json());JSONObject saved=new JSONObject().put("fingerprint",current).put("repositories",rows);writeIndex(file,saved);}catch(Exception error){owner.runOnUiThread(()->owner.showNotice("市场缓存保存失败："+owner.friendlyError(error),true));}});catalog.render(latest);};
       owner.runOnUiThread(()->{if(session!=owner.navigationSession)return;if(auto||force||cached.entries.isEmpty())apply.run();else if(!cached.fingerprint.equals(current)){AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("市场有更新").setMessage("已发现新的仓库目录，现在更新？").setNegativeButton("稍后",null).setPositiveButton("更新",(dialog,which)->apply.run()).create();owner.showRounded(prompt);}});

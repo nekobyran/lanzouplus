@@ -1012,7 +1012,12 @@ final class OrdinaryCloudClient {
       String icon="";
       if(!folder){
         custom=valueAsLong(entry.opt("is_ico"),valueAsLong(entry.opt("p_ico"),0))==1;
-        if(custom)icon=trustedIconUrl(string(entry,"ico"));
+        if(custom){
+          String rawIcon=string(entry,"ico");
+          icon=trustedIconUrl(rawIcon);
+          if(icon.isEmpty()&&!rawIcon.isEmpty()&&!rawIcon.contains("://")&&!rawIcon.startsWith("//"))
+            icon=trustedIconUrl("https://image.dmpdmp.com/image/ico/"+rawIcon.replaceFirst("^/+",""));
+        }
       }
       items.add(new CloudFilesClient.CloudItem(id,name,folder,size,modified,description,
           hasPassword,downloads,"",custom,icon));

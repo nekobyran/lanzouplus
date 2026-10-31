@@ -1,7 +1,14 @@
 package cc.nkbr.lanzouplus;
 
 import android.content.Context;
+import android.util.AtomicFile;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -375,9 +382,103 @@ final class CloudFilesClient {
   private volatile Provider selection=Provider.ORDINARY;
   private final Object selectionLock=new Object();
   private long selectionRevision;
+  private final List<FolderCacheEntry> folderCache=new ArrayList<>();
+  private final AtomicFile folderCacheFile;
+  private boolean folderCacheLoaded;
+  private long folderCacheRevision;
+
+  private static final class FolderCacheEntry {
+    final Provider provider;
+    final String account,folder;
+    final int page,pageSize;
+    final CloudPage value;
+    FolderCacheEntry(Provider provider,String account,String folder,int page,int pageSize,CloudPage value){
+      this.provider=provider;this.account=account;this.folder=folder;this.page=page;this.pageSize=pageSize;this.value=value;
+    }
+    boolean matches(Provider p,String a,String f,int n,int size){
+      return provider==p&&account.equals(a)&&folder.equals(f)&&page==n&&pageSize==size;
+    }
+  }
+
+  // Folder data is disposable, private to the process, and isolated by account.
+  CloudPage cachedFolder(Provider provider,String folderId,int page,int pageSize)throws CloudException{
+    String account=currentAccountName(provider);
+    if(account==null||account.isEmpty())return null;
+    synchronized(folderCache){
+      loadFolderCache();
+      for(int i=folderCache.size()-1;i>=0;i--){
+        FolderCacheEntry entry=folderCache.get(i);
+        if(entry.matches(provider,account,folderId,page,pageSize)){
+          folderCache.remove(i);folderCache.add(entry);return entry.value;
+        }
+      }
+    }
+    return null;
+  }
+
+  void clearFolderCache(Provider provider){
+    synchronized(folderCache){loadFolderCache();folderCacheRevision++;folderCache.removeIf(entry->entry.provider==provider);saveFolderCache();}
+  }
+
+  private void cacheFolder(Provider provider,String account,String folderId,int page,int pageSize,CloudPage value,long revision){
+    if(account==null||account.isEmpty())return;
+    synchronized(folderCache){
+      if(revision!=folderCacheRevision)return;
+      loadFolderCache();
+      folderCache.removeIf(entry->entry.matches(provider,account,folderId,page,pageSize));
+      folderCache.add(new FolderCacheEntry(provider,account,folderId,page,pageSize,value));
+      if(folderCache.size()>80)folderCache.remove(0);
+      saveFolderCache();
+    }
+  }
+
+  private void loadFolderCache(){
+    if(folderCacheLoaded)return;
+    folderCacheLoaded=true;
+    try{
+      JSONArray records=new JSONArray(new String(folderCacheFile.readFully(),StandardCharsets.UTF_8));
+      for(int i=Math.max(0,records.length()-80);i<records.length();i++){
+        JSONObject record=records.getJSONObject(i);JSONArray data=record.getJSONArray("items");
+        List<CloudItem> items=new ArrayList<>();
+        for(int j=0;j<data.length();j++){
+          JSONObject item=data.getJSONObject(j);
+          items.add(new CloudItem(item.getString("id"),item.getString("name"),item.getBoolean("folder"),
+              item.getLong("size"),item.getString("modified"),item.getString("description"),
+              item.getBoolean("hasPassword"),item.getLong("downloads"),item.getString("path"),
+              item.getBoolean("customIcon"),item.getString("iconUrl")));
+        }
+        int page=record.getInt("page");
+        folderCache.add(new FolderCacheEntry(Provider.valueOf(record.getString("provider")),record.getString("account"),
+            record.getString("folder"),page,record.getInt("pageSize"),
+            new CloudPage(items,page,record.getBoolean("hasMore"),record.getInt("total"))));
+      }
+    }catch(Exception ignored){folderCache.clear();}
+  }
+
+  private void saveFolderCache(){
+    FileOutputStream output=null;
+    try{
+      JSONArray records=new JSONArray();
+      for(FolderCacheEntry entry:folderCache){
+        JSONArray items=new JSONArray();
+        for(CloudItem item:entry.value.items){
+          JSONObject value=new JSONObject();
+          value.put("id",item.id);value.put("name",item.name);value.put("folder",item.folder);value.put("size",item.size);
+          value.put("modified",item.modifiedAt);value.put("description",item.description);value.put("hasPassword",item.hasPassword);
+          value.put("downloads",item.downloads);value.put("path",item.path);value.put("customIcon",item.hasCustomIcon);
+          value.put("iconUrl",item.iconUrl);items.put(value);
+        }
+        JSONObject record=new JSONObject();record.put("provider",entry.provider.name());record.put("account",entry.account);
+        record.put("folder",entry.folder);record.put("page",entry.page);record.put("pageSize",entry.pageSize);
+        record.put("hasMore",entry.value.hasMore);record.put("total",entry.value.total);record.put("items",items);records.put(record);
+      }
+      output=folderCacheFile.startWrite();output.write(records.toString().getBytes(StandardCharsets.UTF_8));folderCacheFile.finishWrite(output);
+    }catch(Exception ignored){if(output!=null)folderCacheFile.failWrite(output);}
+  }
 
   CloudFilesClient(Context context){
     Context application=context.getApplicationContext();
+    folderCacheFile=new AtomicFile(new File(application.getCacheDir(),"cloud-folder-pages.json"));
     ordinary=new OrdinaryCloudClient(application);
     premium=new PremiumCloudClient(application);
   }
@@ -698,6 +799,7 @@ final class CloudFilesClient {
   }
 
   LoginState login(Provider provider,String account,String password)throws CloudException{
+    clearFolderCache(provider);
     if(provider==Provider.PREMIUM){
       try{
         PremiumCloudClient.LoginState state=premium.loginAndRemember(account,password);
@@ -729,6 +831,7 @@ final class CloudFilesClient {
   }
 
   boolean selectAccount(Provider provider,String account)throws CloudException{
+    clearFolderCache(provider);
     try{
       return provider==Provider.PREMIUM?premium.selectAccount(account):ordinary.selectAccount(account);
     }catch(PremiumCloudClient.CloudException error){
@@ -737,6 +840,7 @@ final class CloudFilesClient {
   }
 
   boolean removeAccount(Provider provider,String account)throws CloudException{
+    clearFolderCache(provider);
     try{
       return provider==Provider.PREMIUM?premium.removeAccount(account):ordinary.removeAccount(account);
     }catch(PremiumCloudClient.CloudException error){
@@ -745,6 +849,7 @@ final class CloudFilesClient {
   }
 
   void logout(Provider provider)throws CloudException{
+    clearFolderCache(provider);
     if(provider==Provider.PREMIUM){premium.clearLogin();return;}
     ordinary.clearLogin();
   }
@@ -763,10 +868,17 @@ final class CloudFilesClient {
   }
 
   CloudPage listFolder(String folderId,int page,int pageSize)throws CloudException{
+    Provider provider=selection;
+    String account=currentAccountName(provider);
+    long revision;
+    synchronized(folderCache){revision=folderCacheRevision;}
     try{
-      return selection==Provider.PREMIUM
+      CloudPage result=provider==Provider.PREMIUM
           ?premium.cloudListFolder(folderId,page,pageSize)
           :ordinary.listFolder(folderId,page,pageSize);
+      if(provider==selection&&account.equals(currentAccountName(provider)))
+        cacheFolder(provider,account,folderId,page,pageSize,result,revision);
+      return result;
     }catch(PremiumCloudClient.CloudException error){
       throw translate(error);
     }
@@ -781,6 +893,7 @@ final class CloudFilesClient {
   }
 
   String createFolder(String parentId,String name,String description)throws CloudException{
+    clearFolderCache(selection);
     try{
       return selection==Provider.PREMIUM
           ?premium.cloudCreateFolder(parentId,name,description)
@@ -792,6 +905,7 @@ final class CloudFilesClient {
 
   void rename(CloudItem item,String name)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudRename(item,name);
       else ordinary.rename(item,name);
@@ -802,6 +916,7 @@ final class CloudFilesClient {
 
   void move(CloudItem item,String targetId)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudMove(item,targetId);
       else ordinary.move(item,targetId);
@@ -812,6 +927,7 @@ final class CloudFilesClient {
 
   CopyResult copy(CloudItem item,String targetId,String tempDirectory)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     try{
       return selection==Provider.PREMIUM
           ?premium.cloudCopy(item,targetId,tempDirectory)
@@ -823,6 +939,7 @@ final class CloudFilesClient {
 
   void delete(CloudItem item)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudDelete(item);
       else ordinary.delete(item);
@@ -833,6 +950,7 @@ final class CloudFilesClient {
 
   void moveMany(List<CloudItem> items,String targetId)throws CloudException{
     checkItems(items);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudMoveMany(items,targetId);
       else ordinary.moveMany(items,targetId);
@@ -843,6 +961,7 @@ final class CloudFilesClient {
 
   void deleteMany(List<CloudItem> items)throws CloudException{
     checkItems(items);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudDeleteMany(items);
       else ordinary.deleteMany(items);
@@ -871,6 +990,7 @@ final class CloudFilesClient {
 
   void setPassword(CloudItem item,String password)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudSetPassword(item,password);
       else ordinary.setPassword(item,password);
@@ -881,6 +1001,7 @@ final class CloudFilesClient {
 
   void setDescription(CloudItem item,String description)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     try{
       if(selection==Provider.PREMIUM)premium.cloudSetDescription(item,description);
       else ordinary.setDescription(item,description);
@@ -890,6 +1011,7 @@ final class CloudFilesClient {
   }
 
   UploadResult upload(String folderId,String path,UploadOptions options)throws CloudException{
+    clearFolderCache(selection);
     try{
       UploadOptions use=options==null?UploadOptions.defaults():options;
       return selection==Provider.PREMIUM
@@ -901,6 +1023,7 @@ final class CloudFilesClient {
   }
 
   UploadResult uploadFragmented(String folderId,String path,UploadOptions options)throws CloudException{
+    clearFolderCache(selection);
     UploadOptions use=options==null?UploadOptions.defaults():options;
     if(selection==Provider.PREMIUM){
       try{return premium.cloudUploadFragmented(folderId,path,use);}
@@ -910,6 +1033,7 @@ final class CloudFilesClient {
   }
 
   DirectoryUploadResult uploadDirectory(String folderId,String path,UploadOptions options)throws CloudException{
+    clearFolderCache(selection);
     try{
       UploadOptions use=options==null?UploadOptions.defaults():options;
       return selection==Provider.PREMIUM
@@ -921,6 +1045,7 @@ final class CloudFilesClient {
   }
 
   void setIcon(String fileId,String path)throws CloudException{
+    clearFolderCache(selection);
     if(selection==Provider.PREMIUM)
       throw new CloudException(ERROR_UNSUPPORTED,"蓝奏云优享版不支持自定义文件图标");
     ordinary.setIcon(fileId,path);
@@ -940,6 +1065,7 @@ final class CloudFilesClient {
 
   ReplaceResult replaceApk(CloudItem item,String parentFolderId,String path,UploadOptions options)throws CloudException{
     checkItem(item);
+    clearFolderCache(selection);
     if(item.folder||!item.name.toLowerCase(java.util.Locale.ROOT).endsWith(".apk"))
       throw new CloudException(ERROR_INVALID,"只能替换 APK 文件");
     String folder=parentFolderId==null?"":parentFolderId.trim();

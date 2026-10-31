@@ -35,8 +35,9 @@ final class CloudManagement {
   private LinearLayout breadcrumbs;
   private TextView status;
   private EditText filterField;
-  private Button selectedActions;
-  private HorizontalScrollView actionScroll;
+  private LinearLayout selectionBar;
+  private TextView selectionSummary;
+  private Button selectionAll;
   private FileAdapter adapter;
   private String query="";
   private int page;
@@ -74,7 +75,7 @@ final class CloudManagement {
     owner.primaryHeader("管理");controls.clear();
     ImageButton back=owner.iconButton(R.drawable.ic_back,"返回主页");back.setOnClickListener(v->owner.navigateHome());owner.pageHeaderRow.addView(back,0,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
     ImageButton accountSettings=owner.iconButton(R.drawable.ic_settings,"云盘账号设置");accountSettings.setOnClickListener(v->owner.openCloudAccountSettings());owner.pageHeaderRow.addView(accountSettings);controls.add(accountSettings);
-    ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
+    ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false,true));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
     ImageButton entry=owner.iconButton(R.drawable.ic_add,"上传文件或新建文件夹");entry.setOnClickListener(v->entryMenu());owner.pageHeaderRow.addView(entry);controls.add(entry);
     LinearLayout providers=new LinearLayout(owner);
     providers.setGravity(Gravity.CENTER_VERTICAL);
@@ -96,14 +97,9 @@ final class CloudManagement {
     filterField=owner.sourceInput("搜索当前文件夹",android.text.InputType.TYPE_CLASS_TEXT);filterField.setSingleLine(true);filterField.setText(query);
     filterField.setBackgroundColor(Color.TRANSPARENT);filterField.setPadding(owner.dp(14),0,owner.dp(12),0);
     searchBox.addView(filterField,new FrameLayout.LayoutParams(-1,-1));
-    filterField.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int b,int c){}public void afterTextChanged(Editable e){}public void onTextChanged(CharSequence s,int a,int b,int c){query=s.toString();if(adapter!=null)adapter.refilter();if(list!=null)list.post(CloudManagement.this::loadMoreIfViewportFilled);}});
+    filterField.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int b,int c){}public void afterTextChanged(Editable e){}public void onTextChanged(CharSequence s,int a,int b,int c){query=s.toString();if(adapter!=null)update();if(list!=null)list.post(CloudManagement.this::loadMoreIfViewportFilled);}});
     owner.root.addView(searchBox,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     HorizontalScrollView pathScroll=new HorizontalScrollView(owner);pathScroll.setHorizontalScrollBarEnabled(false);breadcrumbs=new LinearLayout(owner);pathScroll.addView(breadcrumbs);renderBreadcrumbs();
-    selectedActions=owner.toolbarTextButton("所选项目");selectedActions.setOnClickListener(v->selectionMenu());
-    controls.add(selectedActions);
-    actionScroll=new HorizontalScrollView(owner);actionScroll.setHorizontalScrollBarEnabled(false);
-    actionScroll.addView(selectedActions,new android.widget.HorizontalScrollView.LayoutParams(-2,owner.dp(48)));
-    actionScroll.setVisibility(View.GONE);
     status=owner.text("",12,owner.MUTED);status.setSingleLine(true);
     status.setEllipsize(android.text.TextUtils.TruncateAt.END);status.setMaxWidth(owner.dp(150));
     status.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);status.setPadding(owner.dp(8),0,owner.dp(2),0);
@@ -118,7 +114,6 @@ final class CloudManagement {
     recycle.setOnClickListener(v->showRecycle());controls.add(recycle);
     providerRow.addView(recycle,new LinearLayout.LayoutParams(owner.dp(48),owner.dp(48)));
     owner.root.addView(providerRow,new LinearLayout.LayoutParams(-1,owner.dp(48)));
-    owner.root.addView(actionScroll,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     list=new ListView(owner);list.setDivider(new android.graphics.drawable.ColorDrawable(owner.DIV));list.setDividerHeight(owner.dp(1));
     list.setItemsCanFocus(false);
     adapter=new FileAdapter();
@@ -128,6 +123,7 @@ final class CloudManagement {
     Button emptyUpload=owner.button("上传到当前目录");emptyUpload.setOnClickListener(v->uploadMenu());empty.addView(emptyUpload,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(emptyUpload);
     Button loginAction=owner.button("前往设置登录");loginAction.setOnClickListener(v->owner.openCloudAccountSettings());empty.addView(loginAction,new LinearLayout.LayoutParams(-2,owner.dp(48)));controls.add(loginAction);body.addView(empty,new android.widget.FrameLayout.LayoutParams(-1,-1));list.setEmptyView(empty);owner.root.addView(body,new LinearLayout.LayoutParams(-1,0,1));
     list.setOnItemClickListener((p,v,position,id)->{
+      if(mutating)return;
       CloudFilesClient.CloudItem item=itemAt(position);
       if(item==null)return;
       if(!selected.isEmpty()){toggle(item);return;}
@@ -146,6 +142,22 @@ final class CloudManagement {
         if(totalCount>0&&firstVisible+visibleCount>=totalCount-2)loadMore();
       }
     });
+    selectionSummary=owner.text("已选 0",11,owner.TEXT);
+    selectionAll=owner.toolbarTextButton("全选");selectionAll.setOnClickListener(v->{
+      List<CloudFilesClient.CloudItem> visible=adapter.visible();boolean all=!visible.isEmpty();
+      for(CloudFilesClient.CloudItem item:visible)if(!selected.contains(item.id)){all=false;break;}
+      for(CloudFilesClient.CloudItem item:visible)if(all)selected.remove(item.id);else selected.add(item.id);
+      update();
+    });
+    ImageButton move=owner.iconButton(R.drawable.ic_folder_open,"移动所选项目");move.setOnClickListener(v->target(selectedItems(),false));
+    ImageButton copy=owner.iconButton(R.drawable.ic_copy,"复制所选项目");copy.setOnClickListener(v->target(selectedItems(),true));
+    ImageButton download=owner.iconButton(R.drawable.ic_download,"下载所选项目");download.setOnClickListener(v->download(selectedItems()));
+    ImageButton share=owner.iconButton(R.drawable.ic_share,"分享所选项目");share.setOnClickListener(v->shareSelected(selectedItems()));
+    ImageButton delete=owner.iconButton(R.drawable.ic_delete_file,"删除所选项目");delete.setOnClickListener(v->remove(selectedItems()));
+    ImageButton close=owner.iconButton(R.drawable.ic_close,"退出多选");close.setOnClickListener(v->{selected.clear();update();});
+    controls.add(selectionAll);controls.add(move);controls.add(copy);controls.add(download);controls.add(share);controls.add(delete);controls.add(close);
+    selectionBar=owner.makeSelectionBar(selectionSummary,selectionAll,56,48,move,copy,download,share,delete,close);
+    selectionBar.setContentDescription("云盘文件多选操作");selectionBar.setVisibility(View.GONE);
     update();load(false);
   }
   private void showRecycle(){
@@ -200,15 +212,59 @@ final class CloudManagement {
     AlertDialog dialog=new AlertDialog.Builder(owner).setTitle("添加到当前目录").setItems(options,(d,which)->{if(which==0)uploadMenu();else createFolder();}).setNegativeButton("取消",null).create();owner.showRounded(dialog);
   }
   private void renderBreadcrumbs(){
-    if(breadcrumbs==null)return;breadcrumbs.removeAllViews();
-    Button root=owner.toolbarTextButton("根目录");root.setOnClickListener(v->jump(-1));root.setEnabled(!mutating);breadcrumbs.addView(root);
-    for(int i=0;i<folderNames.size();i++){final int level=i;Button crumb=owner.toolbarTextButton("› "+folderNames.get(i));crumb.setOnClickListener(v->jump(level));crumb.setEnabled(!mutating);breadcrumbs.addView(crumb);}
+    if(breadcrumbs==null)return;
+    List<Object> state=new ArrayList<>(folderNames);state.add(mutating);
+    if(state.equals(breadcrumbs.getTag()))return;
+    breadcrumbs.setTag(state);breadcrumbs.removeAllViews();
+    Button root=owner.toolbarTextButton("根目录");root.setOnClickListener(v->jump(-1));root.setOnLongClickListener(v->{showBreadcrumbChildren(-1,v);return true;});root.setContentDescription("根目录，点击进入，长按选择下级目录");root.setEnabled(!mutating);breadcrumbs.addView(root);
+    for(int i=0;i<folderNames.size();i++){final int level=i;Button crumb=owner.toolbarTextButton("› "+folderNames.get(i));crumb.setOnClickListener(v->jump(level));crumb.setOnLongClickListener(v->{showBreadcrumbChildren(level,v);return true;});crumb.setContentDescription(folderNames.get(i)+"，点击进入，长按选择下级目录");crumb.setEnabled(!mutating);breadcrumbs.addView(crumb);}
+  }
+  private void showBreadcrumbChildren(int level,View anchor){
+    if(mutating)return;
+    String directory=level<0?"-1":folderIds.get(level);
+    CloudFilesClient.Provider requested=provider;int generation=listGeneration;
+    List<CloudFilesClient.CloudItem> choices=new ArrayList<>();
+    LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(6),owner.dp(5),owner.dp(6),owner.dp(5));panel.setBackground(owner.solidShape(owner.SURFACE,16));
+    TextView hint=owner.text("正在读取目录…",12,owner.MUTED);hint.setPadding(owner.dp(10),0,owner.dp(10),0);panel.addView(hint,new LinearLayout.LayoutParams(-1,owner.dp(36)));
+    ListView options=new ListView(owner);options.setDividerHeight(0);
+    BaseAdapter picker=new BaseAdapter(){
+      public int getCount(){return choices.size();}public Object getItem(int position){return choices.get(position);}public long getItemId(int position){return position;}
+      public View getView(int position,View recycled,ViewGroup parent){TextView row=recycled instanceof TextView?(TextView)recycled:owner.text("",13,owner.TEXT);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(owner.dp(14),0,owner.dp(14),0);row.setMinHeight(owner.dp(46));row.setText(choices.get(position).name);row.setContentDescription("切换到 "+choices.get(position).name);return row;}
+    };
+    options.setAdapter(picker);panel.addView(options,new LinearLayout.LayoutParams(-1,0,1));
+    int width=Math.min(owner.dp(330),Math.max(owner.dp(220),owner.safeContentWidth()-owner.dp(32)));
+    PopupWindow popup=new PopupWindow(panel,width,owner.dp(244),true);popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));popup.setOutsideTouchable(true);popup.setClippingEnabled(true);popup.setElevation(owner.dp(10));
+    java.util.concurrent.atomic.AtomicBoolean active=new java.util.concurrent.atomic.AtomicBoolean(true);popup.setOnDismissListener(()->active.set(false));
+    options.setOnItemClickListener((parent,view,position,id)->{
+      if(position<0||position>=choices.size())return;
+      CloudFilesClient.CloudItem item=choices.get(position);popup.dismiss();
+      while(folderIds.size()>level+1){folderIds.remove(folderIds.size()-1);folderNames.remove(folderNames.size()-1);}
+      folderIds.add(item.id);folderNames.add(item.name);clearFilter();clearFolderView();list.setSelection(0);load(false);
+    });
+    popup.showAsDropDown(anchor);
+    owner.io.execute(()->{
+      List<CloudFilesClient.CloudItem> loaded=new ArrayList<>();Set<String> seen=new HashSet<>();
+      try{
+        CloudFilesClient.CloudPage cached=client.cachedFolder(requested,directory,1,CLOUD_PAGE_SIZE);
+        if(cached!=null){for(CloudFilesClient.CloudItem item:cached.items)if(item.folder&&seen.add(item.id))loaded.add(item);List<CloudFilesClient.CloudItem> initial=new ArrayList<>(loaded);owner.runOnUiThread(()->{if(active.get()&&owner.pageKind==7&&generation==listGeneration){choices.clear();choices.addAll(initial);picker.notifyDataSetChanged();}});}
+        loaded.clear();seen.clear();Set<String> seenItems=new HashSet<>();int next=1;
+        while(active.get()){
+          CloudFilesClient.CloudPage pageResult;synchronized(client){client.selectProvider(requested);pageResult=client.listFolder(directory,next,CLOUD_PAGE_SIZE);}
+          int before=seenItems.size();for(CloudFilesClient.CloudItem item:pageResult.items){seenItems.add(item.id);if(item.folder&&seen.add(item.id))loaded.add(item);}
+          List<CloudFilesClient.CloudItem> current=new ArrayList<>(loaded);boolean more=pageResult.hasMore&&!pageResult.items.isEmpty()&&seenItems.size()>before;
+          owner.runOnUiThread(()->{if(active.get()&&owner.pageKind==7&&generation==listGeneration){choices.clear();choices.addAll(current);picker.notifyDataSetChanged();hint.setText(more?"正在读取目录…":current.isEmpty()?"此目录没有下级目录":"选择下级目录");}});
+          if(!more)break;next++;
+        }
+      }catch(Exception error){String message=owner.friendlyError(error);owner.runOnUiThread(()->{if(active.get()&&owner.pageKind==7&&generation==listGeneration)hint.setText("目录读取失败："+message);});}
+    });
   }
   private void update(){
     renderBreadcrumbs();
+    if(adapter!=null)adapter.refilter();
     boolean selecting=!selected.isEmpty();
-    if(actionScroll!=null)actionScroll.setVisibility(selecting?View.VISIBLE:View.GONE);
-    if(selectedActions!=null)selectedActions.setText(selecting?"所选项目 "+selected.size():"所选项目");
+    if(selectionBar!=null)selectionBar.setVisibility(selecting?View.VISIBLE:View.GONE);
+    if(selectionSummary!=null)selectionSummary.setText("已选 "+selected.size());
+    if(selectionAll!=null&&adapter!=null){boolean all=!adapter.visible().isEmpty();for(CloudFilesClient.CloudItem item:adapter.visible())if(!selected.contains(item.id)){all=false;break;}selectionAll.setText(all?"取消全选":"全选");}
     for(View control:controls)control.setEnabled(!mutating);
     if(status!=null){
       String summary=mutating?"处理中":!failure.isEmpty()?failure:items.size()+" 个项目";
@@ -216,18 +272,19 @@ final class CloudManagement {
       if(appendLoading)summary=summary+" · 正在加载更多…";
       status.setText(summary);
     }
-    if(adapter!=null)adapter.refilter();
   }
   private void work(String message,Work action,boolean refresh){
     if(mutating)return;mutating=true;failure="";update();final CloudFilesClient.Provider requested=provider;
-    owner.io.execute(()->{String result="",error="";boolean loginRequired=false;try{synchronized(client){client.selectProvider(requested);result=action.run();}}catch(CloudFilesClient.CloudException failed){loginRequired=failed.needsCredentials()||failed.sessionExpired();error=loginRequired&&message==null?"登录后查看私人文件":failed.getMessage();}catch(Exception failed){error=owner.friendlyError(failed);}final String done=result,problem=error;final boolean quietLogin=loginRequired&&message==null;owner.runOnUiThread(()->{mutating=false;failure=problem;if(owner.pageKind!=7)return;update();if(!problem.isEmpty()){if(!quietLogin)owner.showNotice(problem,true);}else{if(message!=null)owner.showNotice(done.isEmpty()?message:done,false);if(refresh)load(false);}});});
+    owner.io.execute(()->{String result="",error="";boolean loginRequired=false;try{synchronized(client){client.selectProvider(requested);result=action.run();if(refresh)client.clearFolderCache(requested);}}catch(CloudFilesClient.CloudException failed){loginRequired=failed.needsCredentials()||failed.sessionExpired();error=loginRequired&&message==null?"登录后查看私人文件":failed.getMessage();}catch(Exception failed){error=owner.friendlyError(failed);}final String done=result,problem=error;final boolean quietLogin=loginRequired&&message==null;owner.runOnUiThread(()->{mutating=false;failure=problem;if(owner.pageKind!=7)return;update();if(!problem.isEmpty()){if(!quietLogin)owner.showNotice(problem,true);}else{if(message!=null)owner.showNotice(done.isEmpty()?message:done,false);if(refresh)load(false);}});});
   }
-  private void load(boolean append){
+  private void load(boolean append){load(append,false);}
+  private void load(boolean append,boolean forceRefresh){
     if(append&&(listLoading||appendLoading||!hasMore||items.isEmpty()))return;
     final String directory=folder();
     final CloudFilesClient.Provider requested=provider;
     final int generation=append?listGeneration:++listGeneration;
     final int targetPage=append?page+1:1;
+    final int appendStart=append?items.size():0;
     if(append)appendLoading=true;
     else{listLoading=true;appendLoading=false;}
     failure="";
@@ -237,6 +294,14 @@ final class CloudManagement {
       boolean loginRequired=false;
       CloudFilesClient.CloudPage found=null;
       try{
+        if(forceRefresh)client.clearFolderCache(requested);
+        else{
+          CloudFilesClient.CloudPage cached=client.cachedFolder(requested,directory,targetPage,CLOUD_PAGE_SIZE);
+          if(cached!=null)owner.runOnUiThread(()->{
+            if(generation!=listGeneration||owner.pageKind!=7)return;
+            applyPage(cached,append,appendStart,false);update();
+          });
+        }
         synchronized(client){client.selectProvider(requested);found=client.listFolder(directory,targetPage,CLOUD_PAGE_SIZE);}
       }catch(CloudFilesClient.CloudException failed){
         loginRequired=failed.needsCredentials()||failed.sessionExpired();
@@ -257,22 +322,20 @@ final class CloudManagement {
           if(!problem.isEmpty()&&!quietLogin)owner.showNotice(problem,true);
           return;
         }
-        int before=items.size();
-        if(!appended)items.clear();
-        Set<String> seen=new HashSet<>();
-        for(CloudFilesClient.CloudItem item:items)seen.add(item.id);
-        for(CloudFilesClient.CloudItem item:result.items)if(seen.add(item.id))items.add(item);
-        page=result.page;
-        hasMore=morePagesAvailable(result.hasMore,result.items,appended,before,items.size());
-        if(!appended){
-          Set<String> present=new HashSet<>();
-          for(CloudFilesClient.CloudItem item:items)present.add(item.id);
-          selected.retainAll(present);
-        }
+        applyPage(result,appended,appendStart,true);
         update();
         list.post(CloudManagement.this::loadMoreIfViewportFilled);
       });
     });
+  }
+  private void applyPage(CloudFilesClient.CloudPage result,boolean append,int appendStart,boolean authoritative){
+    if(!append)items.clear();
+    else while(items.size()>appendStart)items.remove(items.size()-1);
+    int before=items.size();Set<String> seen=new HashSet<>();
+    for(CloudFilesClient.CloudItem item:items)seen.add(item.id);
+    for(CloudFilesClient.CloudItem item:result.items)if(seen.add(item.id))items.add(item);
+    page=result.page;hasMore=morePagesAvailable(result.hasMore,result.items,append,before,items.size());
+    if(authoritative){Set<String> present=new HashSet<>();for(CloudFilesClient.CloudItem item:items)present.add(item.id);selected.retainAll(present);}
   }
   private void loadMoreIfViewportFilled(){
     if(mutating||!hasMore||listLoading||appendLoading||items.isEmpty())return;
@@ -445,42 +508,19 @@ final class CloudManagement {
     }
   }
 
-  private void selectionMenu(){
-    List<CloudFilesClient.CloudItem> chosen=selectedItems();
-    String[] choices={"全选当前列表","取消选择","移动","复制","下载","分享","删除"};
-    AlertDialog dialog=new AlertDialog.Builder(owner).setTitle("所选项目 · "+chosen.size()).setItems(choices,(d,which)->{
-      if(which==0){
-        for(CloudFilesClient.CloudItem item:adapter.visible())selected.add(item.id);
-        update();
-      }else if(which==1){
-        selected.clear();
-        update();
-      }else if(chosen.isEmpty()){
-        owner.showNotice("请先长按选择项目",false);
-      }else if(which==2){
-        target(chosen,false);
-      }else if(which==3){
-        target(chosen,true);
-      }else if(which==4){
-        download(chosen);
-      }else if(which==5){
-        work(null,()->{
-          StringBuilder links=new StringBuilder();
-          for(CloudFilesClient.CloudItem item:chosen){
-            CloudFilesClient.ShareInfo info=client.shareInfo(item);
-            if(links.length()>0)links.append("\n\n");
-            links.append(item.name).append("\n").append(info.shareUrl);
-            if(!info.password.isEmpty())links.append(" 密码：").append(info.password);
-            if(!info.directUrl.isEmpty())links.append("\n直链：").append(info.directUrl);
-          }
-          owner.runOnUiThread(()->owner.shareText(links.toString(),"分享云盘项目"));
-          return "";
-        },false);
-      }else{
-        remove(chosen);
+  private void shareSelected(List<CloudFilesClient.CloudItem> chosen){
+    work(null,()->{
+      StringBuilder links=new StringBuilder();
+      for(CloudFilesClient.CloudItem item:chosen){
+        CloudFilesClient.ShareInfo info=client.shareInfo(item);
+        if(links.length()>0)links.append("\n\n");
+        links.append(item.name).append("\n").append(info.shareUrl);
+        if(!info.password.isEmpty())links.append(" 密码：").append(info.password);
+        if(!info.directUrl.isEmpty())links.append("\n直链：").append(info.directUrl);
       }
-    }).setNegativeButton("关闭",null).create();
-    owner.showRounded(dialog);
+      owner.runOnUiThread(()->owner.shareText(links.toString(),"分享云盘项目"));
+      return "";
+    },false);
   }
 
   private void remove(List<CloudFilesClient.CloudItem> chosen){

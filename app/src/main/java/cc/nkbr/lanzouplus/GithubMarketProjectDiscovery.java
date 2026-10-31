@@ -55,7 +55,7 @@ final class GithubMarketProjectDiscovery {
         GithubMarketProjectDiscovery discovery=new GithubMarketProjectDiscovery(owner,account,
             new File(owner.getFilesDir(),"market-projects"),
             new File(owner.getCacheDir(),"github-project-discovery"),MarketRepositoryClient::httpGet);
-        Result result=discovery.scan(profile.login);
+        Result result=discovery.scan(profile.login,force);
         owner.runOnUiThread(()->{if(!owner.activityClosing())owner.showNotice(result.message(),result.failed>0);});
       }catch(Exception error){
         owner.runOnUiThread(()->{if(!owner.activityClosing())owner.showNotice("GitHub 工程查找失败："+owner.friendlyError(error),true);});
@@ -69,7 +69,7 @@ final class GithubMarketProjectDiscovery {
     });
   }
 
-  Result scan(String login)throws Exception{
+  Result scan(String login,boolean force)throws Exception{
     Result result=new Result();Set<Long> seen=new HashSet<>();
     for(int page=1;;page++){
       JSONArray rows=account.apiArrayForAccount(login,
@@ -80,7 +80,7 @@ final class GithubMarketProjectDiscovery {
         account.whileSignedIn(login,()->{});
         result.found++;
         try{
-          importRepository(login,repo,result);
+          importRepository(login,repo,result,force);
         }catch(Exception failure){
           account.whileSignedIn(login,()->{});
           result.failed++;
@@ -98,11 +98,11 @@ final class GithubMarketProjectDiscovery {
         &&name.startsWith("lzpmarket-")&&name.length()>10;
   }
 
-  private void importRepository(String login,JSONObject repo,Result result)throws Exception{
+  private void importRepository(String login,JSONObject repo,Result result,boolean force)throws Exception{
     String url=MarketRepository.canonicalUrl(repo.getString("html_url"));
     String owner=repo.getJSONObject("owner").getString("login"),name=repo.getString("name");
     if(!url.equalsIgnoreCase("https://github.com/"+owner+"/"+name))throw new IOException("GitHub 仓库信息不一致");
-    MarketRepositoryClient.Document document=new MarketRepositoryClient(cache,transport).load(url,false);
+    MarketRepositoryClient.Document document=new MarketRepositoryClient(cache,transport).load(url,force);
     document.metadata.validateSubmission(url);
     LinkedHashSet<String> managed=new LinkedHashSet<>();
     managed.add(MarketProject.METADATA_ENTRY);managed.add(document.metadata.sources);managed.add(document.metadata.readme);

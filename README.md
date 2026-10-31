@@ -8,7 +8,7 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 
 ## 正式版本
 
-- 当前版本：`2.0.1alpha`
+- 当前版本：`2.0.2`
 - 包名：`cc.nkbr.lanzouplus`
 - 最低系统：Android 7.0（API 24）
 - 正式下载：[lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -28,6 +28,9 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 - 更新通道区分稳定与测试两条清单，并按 SemVer 规则比较版本
 - 下载历史、失败重试、系统安装及文件管理器联动
 - 跟随系统的明暗主题与横竖屏自适应布局
+- 设置页“意见反馈”：同一随机设备码每天（北京时间）可提交一次，登录 GitHub 时以账号名公开身份；历史分“我的反馈/全部反馈”，显示待处理、已读、已完成
+- 设置页“赞助支持”：赞助码按需从公开仓库读取，不打包进安装包
+- 本地工程一键更新到 GitHub 并投稿市场；市场提交失败时只重试投稿，不重复推送
 
 ## 构建
 
@@ -60,6 +63,8 @@ LanzouPlus 是一个轻量原生 Android 蓝奏目录浏览、全源搜索与下
 - [AppIntro](https://github.com/AppIntro/AppIntro)（Apache-2.0）：引导入场借鉴按方向组合位移、透明度与恢复交互状态的思路，逐元素时序和主页形变使用 Android 原生 Animator 实现。
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot)：资源市场借鉴以 GitHub 仓库登记信息、读取上游描述与配图的组织方式。
 - [GitHub CLI](https://github.com/cli/cli)（MIT）：正式发布复用 Release 创建、文件上传和回读命令，Alpha 使用 prerelease 且不更新稳定 latest。
+- [rm3l/maoni](https://github.com/rm3l/maoni)：参考 Android 反馈入口与历史列表的交互做法；本项目使用公开静态 JSON 与管理端手动发布，未引入该 SDK。
+- [Instabug/Instabug-Android](https://github.com/Instabug/Instabug-Android)：参考反馈表单与处理状态的产品形态；未引入其 SDK 或服务。
 
 上游内容与权利归原作者所有。
 
@@ -90,10 +95,13 @@ This public repository contains only the **empty-source edition with no home rec
 - Update channels keep separate stable and test manifests and compare versions with SemVer rules
 - Download history with retry, system installer hand-off, and file manager integration
 - Follows the system light and dark theme with portrait and landscape layouts
+- Settings "Feedback": one submission per random device code per Beijing day, GitHub login as the public identity, and "My feedback" / "All feedback" history with pending, read and done states
+- Settings "Sponsor": the sponsor code image is fetched from the public repository on demand and is not bundled in the APK
+- One-click update of a local project to GitHub and submission to the market, with a retry that repeats only the market submission
 
 ### Release
 
-- Version: `2.0.1alpha`
+- Version: `2.0.2`
 - Package: `cc.nkbr.lanzouplus`
 - Minimum Android: 7.0 (API 24)
 - Official page and download: [lanzouplus.nkbr.cc](https://lanzouplus.nkbr.cc/)
@@ -121,6 +129,8 @@ The empty flavor is the only public build. `app/src/empty/assets/s`, `r`, `u`, a
 - [AppIntro](https://github.com/AppIntro/AppIntro) (Apache-2.0): onboarding follows its directional translation, opacity and interaction-restoration approach; Android Animator implements the stagger and home morph.
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot): the market follows its organization of GitHub repository entries with upstream descriptions and images.
 - [GitHub CLI](https://github.com/cli/cli) (MIT): releases use its create, asset upload and download commands; alpha releases are prereleases and do not replace stable latest.
+- [rm3l/maoni](https://github.com/rm3l/maoni): reference for an Android feedback entry and history list; this project uses a public static JSON file with manual admin publishing and does not bundle that SDK.
+- [Instabug/Instabug-Android](https://github.com/Instabug/Instabug-Android): reference for a feedback form and processing states; neither its SDK nor its service is bundled.
 
 Upstream content and rights stay with the original authors.
 

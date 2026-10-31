@@ -119,6 +119,11 @@ final class MarketProjects implements MarketProjectEditor.Host {
             title.setMaxLines(3);
             title.setEllipsize(android.text.TextUtils.TruncateAt.END);
             row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+            ImageButton publish = owner.iconButton(
+                R.drawable.ic_refresh, "更新插件并提交市场");
+            publish.setOnClickListener(v -> MarketPublishFlow.start(
+                owner, project, this::refreshProjects));
+            row.addView(publish, new LinearLayout.LayoutParams(owner.dp(48), owner.dp(48)));
             ImageButton more = owner.iconButton(R.drawable.ic_more, "工程操作");
             row.addView(more, new LinearLayout.LayoutParams(owner.dp(48), owner.dp(48)));
             row.setClickable(true);
@@ -178,6 +183,7 @@ final class MarketProjects implements MarketProjectEditor.Host {
   private void actions(MarketProject project, String repositoryUrl) {
     final java.util.List<String> labels = new ArrayList<>();
     labels.add("编辑工程");
+    labels.add("一键更新插件并提交市场");
     labels.add("发布或更新GitHub仓库");
     if (!repositoryUrl.isEmpty()) labels.add("上传或更新市场资料");
     labels.add("导出明文工程");
@@ -191,6 +197,8 @@ final class MarketProjects implements MarketProjectEditor.Host {
               String action = labels.get(index);
               if ("编辑工程".equals(action)) {
                 edit(project);
+              } else if ("一键更新插件并提交市场".equals(action)) {
+                MarketPublishFlow.start(owner, project, this::refreshProjects);
               } else if ("发布或更新GitHub仓库".equals(action)) {
                 GithubProjectPublisher.publish(owner, project);
               } else if ("上传或更新市场资料".equals(action)) {
@@ -217,6 +225,10 @@ final class MarketProjects implements MarketProjectEditor.Host {
             })
         .create();
     owner.showRounded(prompt);
+  }
+
+  private void refreshProjects() {
+    if (owner.pageKind == 6 && !owner.isFinishing() && !owner.isDestroyed()) show();
   }
 
   private void edit(MarketProject existing) {
@@ -355,7 +367,11 @@ final class MarketProjects implements MarketProjectEditor.Host {
         if (!directory.isDirectory() && !directory.mkdirs()) {
           throw new IOException("无法创建工程目录");
         }
-        project.save(new File(directory, project.id + ".json"));
+        File target = new File(directory, project.id + ".json");
+        if (target.exists()) {
+          throw new IOException("本机已有同标识工程，已停止导入以避免覆盖；请先删除现有工程或重新导出为新工程");
+        }
+        project.save(target);
         owner.runOnUiThread(() -> {
           owner.showNotice("已导入明文工程", false);
           show();

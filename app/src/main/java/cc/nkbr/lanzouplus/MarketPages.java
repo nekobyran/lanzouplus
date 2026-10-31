@@ -33,13 +33,14 @@ final class MarketPages {
       public void afterTextChanged(android.text.Editable value){}
     });
     owner.io.execute(()->{try{
-      File file=new File(owner.getFilesDir(),"market-index.json");MarketIndex cached=readIndex(file);
+      File file=new File(owner.getFilesDir(),"market-index.json");
+      final MarketIndex cached=readIndexOrEmpty(file);
       if(!cached.entries.isEmpty())owner.runOnUiThread(()->catalog.render(cached.entries));
       /* One bounded GitHub read; scrolling and search only page the in-memory snapshot. */
-      List<MarketRepositoryClient.CatalogEntry> latest=owner.core.marketRepositories().catalogAll(force);
+      final List<MarketRepositoryClient.CatalogEntry> latest=owner.core.marketRepositories().catalogAll(force);
       boolean auto=owner.getSharedPreferences("market",Context.MODE_PRIVATE).getBoolean("auto_update",true);
-      String current=new MarketRepositoryClient.Catalog(latest,latest.size(),0,latest.size()).fingerprint();
-      Runnable apply=()->{owner.io.execute(()->{try{JSONArray rows=new JSONArray();for(MarketRepositoryClient.CatalogEntry entry:latest)rows.put(entry.json());JSONObject saved=new JSONObject().put("fingerprint",current).put("repositories",rows);try(FileOutputStream output=new FileOutputStream(file)){output.write(saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));}}catch(Exception error){owner.runOnUiThread(()->owner.showNotice("市场缓存保存失败",true));}});catalog.render(latest);};
+      final String current=new MarketRepositoryClient.Catalog(latest,latest.size(),0,latest.size()).fingerprint();
+      Runnable apply=()->{owner.io.execute(()->{try{JSONArray rows=new JSONArray();for(MarketRepositoryClient.CatalogEntry entry:latest)rows.put(entry.json());JSONObject saved=new JSONObject().put("fingerprint",current).put("repositories",rows);writeIndex(file,saved);}catch(Exception error){owner.runOnUiThread(()->owner.showNotice("市场缓存保存失败："+owner.friendlyError(error),true));}});catalog.render(latest);};
       owner.runOnUiThread(()->{if(session!=owner.navigationSession)return;if(auto||force||cached.entries.isEmpty())apply.run();else if(!cached.fingerprint.equals(current)){AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("市场有更新").setMessage("已发现新的仓库目录，现在更新？").setNegativeButton("稍后",null).setPositiveButton("更新",(dialog,which)->apply.run()).create();owner.showRounded(prompt);}});
     }catch(Exception error){owner.runOnUiThread(()->{if(session==owner.navigationSession){status.setText("GitHub 市场暂时无法读取");owner.showNotice(owner.friendlyError(error),true);}});}});
   }
@@ -47,11 +48,11 @@ final class MarketPages {
    * The cached catalog page set. It keeps the snapshot fingerprint next to the links, so a
    * server re-snapshot (every seven days) is visible even when the URL list is unchanged.
    */
-  private static final class MarketIndex {
+  static final class MarketIndex {
     final String fingerprint;final List<MarketRepositoryClient.CatalogEntry> entries;
     MarketIndex(String fingerprint,List<MarketRepositoryClient.CatalogEntry> entries){this.fingerprint=fingerprint;this.entries=entries;}
   }
-  private MarketIndex readIndex(File file)throws Exception{
+  private static MarketIndex readIndex(File file)throws Exception{
     List<MarketRepositoryClient.CatalogEntry> entries=new ArrayList<>();
     if(!file.isFile())return new MarketIndex("",entries);
     String raw;try(InputStream input=new FileInputStream(file)){raw=new String(MarketRepositoryClient.bytes(input,512*1024),java.nio.charset.StandardCharsets.UTF_8);}
@@ -59,6 +60,22 @@ final class MarketPages {
     JSONArray array=value.optJSONArray("repositories");
     if(array!=null)for(int i=0;i<array.length();i++)entries.add(MarketRepositoryClient.CatalogEntry.parse(array.getJSONObject(i)));
     return new MarketIndex(value.optString("fingerprint"),entries);
+  }
+  static MarketIndex readIndexOrEmpty(File file){
+    try{return readIndex(file);}catch(Exception malformed){return new MarketIndex("",new ArrayList<>());}
+  }
+  /** A malformed cache is disposable; a completed snapshot is swapped in atomically. */
+  static void writeIndex(File file,JSONObject value)throws Exception{
+    File temp=new File(file.getParentFile(),file.getName()+".tmp");
+    try(FileOutputStream output=new FileOutputStream(temp)){
+      output.write(value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      output.getFD().sync();
+    }
+    try{
+      android.system.Os.rename(temp.getAbsolutePath(),file.getAbsolutePath());
+    }catch(android.system.ErrnoException error){
+      if(!temp.renameTo(file))throw new IOException("市场缓存替换失败",error);
+    }
   }
   void submitDialog(String initialUrl){
     LinearLayout panel=new LinearLayout(owner);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(owner.dp(20),owner.dp(8),owner.dp(20),owner.dp(8));

@@ -328,6 +328,11 @@ final class GithubAccountClient {
                 || (!session.refreshToken.isEmpty() && validUntil(session.refreshExpiresAt)));
     }
 
+    /** 反馈提交时的一次性 Bearer 取用点；令牌不进入反馈缓存、日志或持久化模型。 */
+    String accessTokenForFeedbackIdentity() throws IOException {
+        return sessionForRequest().accessToken;
+    }
+
     /** 授权完成后才持久化，取消或旧 Activity 永远不得调用此方法。 */
     void saveAuthorizedSession(Session session) throws IOException {
         synchronized (SESSION_LOCK) {

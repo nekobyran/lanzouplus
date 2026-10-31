@@ -95,6 +95,8 @@ final class SettingsTabs {
         addRow(body,valueRow(R.drawable.ic_refresh,owner.getString(R.string.settings_update_channel),channel,"更新通道，当前 "+channel+"，点击选择",v->owner.showUpdateChannelDialog()));
         addRow(body,owner.settingsAction(R.drawable.ic_refresh,"检查更新",v->owner.checkForUpdates(true)));
         addRow(body,owner.settingsAction(R.drawable.ic_copy,"关于软件",v->owner.showSoftwareDetailsDialog(false)));
+        addRow(body,FeedbackUi.settingsRow(owner));
+        addRow(body,SponsorUi.settingsRow(owner));
         addRow(body,valueRow(R.drawable.ic_delete_file,"清理范围",owner.cacheCleanupScopeLabel(),"清理范围，当前 "+owner.cacheCleanupScopeLabel(),v->owner.showCacheCleanupScopeDialog()));
         addRow(body,owner.settingsAction(R.drawable.ic_delete_file,"清理缓存",v->owner.showCacheCleanupDialog()));break;
       }

@@ -11,6 +11,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -21,6 +22,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
@@ -118,8 +120,8 @@ final class MarketProject {
             throw new IOException("不支持的市场工程版本");
         }
         String rawId = value.optString("id", "").trim();
-        if (rawId.isEmpty()) {
-            throw new IOException("工程缺少标识");
+        if (!safeProjectId(rawId)) {
+            throw new IOException("工程标识无效或包含路径字符");
         }
         MarketProject project = new MarketProject(rawId, validated(value.getJSONObject("metadata")),
                 value.optString("sourceJson", ""), value.optString("readme", ""));
@@ -149,6 +151,12 @@ final class MarketProject {
             }
         }
         return project;
+    }
+
+    private static boolean safeProjectId(String value) {
+        return !value.isEmpty() && value.length() <= 128 && !value.contains("..")
+                && value.indexOf('/') < 0 && value.indexOf('\\') < 0
+                && value.indexOf(':') < 0 && value.indexOf('\0') < 0;
     }
 
     /** Replaces the selected source document after the publisher edits paths in the UI. */
@@ -273,7 +281,9 @@ final class MarketProject {
             if (!description.isEmpty()) publishedReadme += description + "\n\n";
             publishedReadme += "版本：" + header.getString("version") + "\n";
         }
-        byte[] ciphertext = MarketSourceCodec.encode(sourceJson.getBytes(StandardCharsets.UTF_8));
+        JSONObject publishedSources = normalizePublishedMemberIds(sourceDocument);
+        byte[] ciphertext = MarketSourceCodec.encode(
+                publishedSources.toString().getBytes(StandardCharsets.UTF_8));
 
         ByteArrayOutputStream buffer = new ByteArrayOutputStream(Math.max(4096, ciphertext.length + 2048));
         try (ZipOutputStream zip = new ZipOutputStream(buffer)) {
@@ -286,6 +296,56 @@ final class MarketProject {
             }
         }
         return buffer.toByteArray();
+    }
+
+    /**
+     * The market validator requires every member to carry a non-empty, unique id. Legacy
+     * single-page web sources were written with an empty id; they have no children, so the
+     * fixed {@code file} id used by the client's own web importer is the only safe
+     * normalization. Composite documents are not guessed: a generated id could silently
+     * break parent references, so any missing or duplicate member id there is rejected.
+     */
+    private static JSONObject normalizePublishedMemberIds(JSONObject document)
+            throws IOException, JSONException {
+        JSONArray sources = document.getJSONArray("sources");
+        for (int index = 0; index < sources.length(); index++) {
+            JSONObject source = sources.getJSONObject(index);
+            JSONArray members = source.optJSONArray("members");
+            if (members == null) continue;
+            String sourceTitle = source.optString("title", source.optString("id", "未命名源"));
+            if (members.length() == 1) {
+                JSONObject member = members.getJSONObject(0);
+                String memberId = member.optString("id").trim();
+                boolean webpageMember = source.optInt("kind", -1) == Models.SOURCE_WEB;
+                if (memberId.isEmpty() && webpageMember) member.put("id", "file");
+            }
+            Set<String> ids = new HashSet<>();
+            for (int memberIndex = 0; memberIndex < members.length(); memberIndex++) {
+                JSONObject member = members.getJSONObject(memberIndex);
+                String id = member.optString("id").trim();
+                if (id.isEmpty()) {
+                    throw new IOException("源「" + sourceTitle
+                            + "」的成员缺少节点 ID；请在工程中重新添加或修正该成员，未写入 GitHub");
+                }
+                if (id.codePointCount(0, id.length()) > 256) {
+                    throw new IOException("源「" + sourceTitle
+                            + "」的成员节点 ID 超过 256 个字符，未写入 GitHub");
+                }
+                if (!ids.add(id)) {
+                    throw new IOException("源「" + sourceTitle
+                            + "」的成员节点 ID 重复：" + id + "；请修正后重试，未写入 GitHub");
+                }
+            }
+            for (int memberIndex = 0; memberIndex < members.length(); memberIndex++) {
+                JSONObject member = members.getJSONObject(memberIndex);
+                String parent = member.optString("parent").trim();
+                if (!parent.isEmpty() && !ids.contains(parent)) {
+                    throw new IOException("源「" + sourceTitle
+                            + "」的成员父节点不存在：" + parent + "；请修正成员关系后重试，未写入 GitHub");
+                }
+            }
+        }
+        return document;
     }
 
     /** Reads the plain members of a built ZIP; used by the gate to inspect the real payload. */

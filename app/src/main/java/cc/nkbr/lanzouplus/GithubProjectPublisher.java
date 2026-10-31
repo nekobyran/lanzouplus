@@ -165,6 +165,18 @@ final class GithubProjectPublisher {
         }
     }
 
+    /** Keeps the local project row's repository hint in sync after a successful write. */
+    static void persistProjectRepository(Context context, MarketProject project, Outcome result)
+            throws Exception {
+        if (!result.hasRepository()) return;
+        project.metadata.put("repositoryUrl", result.repositoryUrl);
+        File directory = new File(context.getFilesDir(), "market-projects");
+        if (!directory.isDirectory() && !directory.mkdirs()) {
+            throw new IOException("无法创建工程目录");
+        }
+        project.save(new File(directory, project.id + ".json"));
+    }
+
     private static String associationKey(String login, String projectId) {
         byte[] plain = (login.toLowerCase(Locale.ROOT) + "\n" + projectId)
                 .getBytes(StandardCharsets.UTF_8);
@@ -311,7 +323,7 @@ final class GithubProjectPublisher {
         return uploadForAccount(context, client, null, project, reader, cancelled, progress);
     }
 
-    private static Outcome uploadForAccount(Context context, GithubAccountClient client,
+    static Outcome uploadForAccount(Context context, GithubAccountClient client,
             String confirmedLogin, MarketProject project, MarketProject.AssetReader reader,
             AtomicBoolean cancelled, Progress progress) throws Exception {
         synchronized (PUBLISH_LOCK) {
@@ -618,7 +630,7 @@ final class GithubProjectPublisher {
         }
     }
 
-    private static byte[] assetBytes(String reference) throws Exception {
+    static byte[] assetBytes(String reference) throws Exception {
         try {
             if (reference.startsWith("https://")) {
                 // 图片为匿名素材请求，不携带 GitHub Token。

@@ -377,16 +377,36 @@ final class MarketRepositoryClient {
 
   static final class Submission{
     final String githubUrl,title,repositoryName,publisherName,description,version,versionMode,operation;
+    final String publishedVersion,publishedVersionMode;
+    final boolean serverCurrent;
     final boolean submitted;
     Submission(String githubUrl,String title,String repositoryName,String publisherName,
         String description,String version,String versionMode,String operation,boolean submitted){
+      this(githubUrl,title,repositoryName,publisherName,description,version,versionMode,
+          operation,submitted,"","",false);
+    }
+    Submission(String githubUrl,String title,String repositoryName,String publisherName,
+        String description,String version,String versionMode,String operation,boolean submitted,
+        String publishedVersion,String publishedVersionMode,boolean serverCurrent){
       this.githubUrl=githubUrl;this.title=title;this.repositoryName=repositoryName;
       this.publisherName=publisherName;this.description=description;this.version=version;
       this.versionMode=versionMode;this.operation=operation;this.submitted=submitted;
+      this.publishedVersion=publishedVersion==null?"":publishedVersion;
+      this.publishedVersionMode=publishedVersionMode==null?"":publishedVersionMode;
+      this.serverCurrent=serverCurrent;
     }
     boolean created(){return submitted&&"created".equals(operation);}
     boolean updated(){return submitted&&"updated".equals(operation);}
     boolean current(){return !submitted||"current".equals(operation);}
+  }
+
+  /** Server rejection with a stable machine code for actionable UI copy. */
+  static final class SubmissionRejected extends IOException{
+    final int status;
+    final String code;
+    SubmissionRejected(int status,String code,String message){
+      super(message);this.status=status;this.code=code;
+    }
   }
 
   static String automaticSubmissionDescription(MarketRepository metadata){
@@ -395,6 +415,31 @@ final class MarketRepositoryClient {
     if(value.isEmpty())value=metadata.name;
     if(value.codePointCount(0,value.length())<=30)return value;
     return value.substring(0,value.offsetByCodePoints(0,30));
+  }
+
+  /**
+   * Reads the published catalog once before a GitHub write. A same/lower version or a
+   * changed version mode is rejected here, so one-click publishing does not create a
+   * repository commit only to have the market report that nothing can be submitted.
+   */
+  Submission precheck(String raw,JSONObject metadataValue)throws Exception{
+    String url=MarketRepository.canonicalUrl(raw),key=catalogKey(url);
+    MarketRepository metadata=new MarketRepository(new JSONObject(metadataValue.toString()));
+    metadata.validateSubmission(url);
+    String versionMode=MarketRepository.resolveVersionMode(metadata.versionMode,metadata.version);
+    CatalogEntry listed=null;
+    for(CatalogEntry entry:catalogAll(true))if(catalogKey(entry.githubUrl).equals(key)){listed=entry;break;}
+    if(listed==null||!listed.hasVersion())return null;
+    if(!versionMode.equals(listed.versionMode))throw new SubmissionRejected(409,
+        "repository_version_mode_changed",
+        "市场已收录版本格式为 "+listed.versionMode+"，当前工程为 "+versionMode
+            +"；同一仓库不能切换版本格式，请恢复原格式后再提交");
+    if(MarketRepository.compareVersions(versionMode,metadata.version,listed.version)<=0){
+      return new Submission(url,metadata.title,metadata.name,metadata.publisher,
+          automaticSubmissionDescription(metadata),metadata.version,versionMode,"current",false,
+          listed.version,listed.versionMode,false);
+    }
+    return null;
   }
 
   Submission upload(String raw,SubmissionProgress progress)throws Exception{
@@ -412,11 +457,12 @@ final class MarketRepositoryClient {
     String description=automaticSubmissionDescription(metadata);
     if(listed!=null&&listed.hasVersion()){
       /* Comparing values that use different version modes would order unrelated formats. */
-      if(!versionMode.equals(listed.versionMode))throw new IOException(
+      if(!versionMode.equals(listed.versionMode))throw new SubmissionRejected(409,
+          "repository_version_mode_changed",
           "市场已收录的版本格式与当前仓库不同，请合并这两条记录后再上传");
       if(MarketRepository.compareVersions(versionMode,metadata.version,listed.version)<=0){
         return new Submission(url,metadata.title,metadata.name,publisher,description,
-            metadata.version,versionMode,"current",false);
+            metadata.version,versionMode,"current",false,listed.version,listed.versionMode,false);
       }
     }
     if(progress!=null)progress.status("版本有更新，正在验证源与 README…");
@@ -439,12 +485,13 @@ final class MarketRepositoryClient {
     String operation=saved.optString("operation",saved.optBoolean("created")?"created":"updated");
     if("current".equals(operation)){
       return new Submission(url,metadata.title,metadata.name,publisher,description,
-          metadata.version,versionMode,"current",false);
+          metadata.version,versionMode,"current",false,
+          saved.optString("version",""),saved.optString("versionMode",""),true);
     }
     return new Submission(url,saved.optString("title",metadata.title),
         saved.optString("repositoryName",metadata.name),saved.optString("publisherName",publisher),
-        saved.optString("description",description),saved.optString("version",metadata.version),
-        saved.optString("versionMode",versionMode),operation,true);
+        saved.optString("description",description),metadata.version,versionMode,operation,true,
+        saved.optString("version",""),saved.optString("versionMode",""),false);
   }
 
   private static String ownerLogin(String repositoryUrl){
@@ -467,12 +514,13 @@ final class MarketRepositoryClient {
     }finally{connection.disconnect();}
   }
 
-  static IOException submissionFailure(int status,byte[] response){
-    String detail="";
+  static SubmissionRejected submissionFailure(int status,byte[] response){
+    String detail="",code="";
     try{JSONObject error=new JSONObject(new String(response,StandardCharsets.UTF_8)).optJSONObject("error");
-      if(error!=null)detail=error.optString("message").trim();
+      if(error!=null){detail=error.optString("message").trim();code=error.optString("code").trim();}
     }catch(JSONException ignored){}
-    return new IOException("无法上传市场（HTTP "+status+"）"+(detail.isEmpty()?"，请稍后重试":"："+detail));
+    return new SubmissionRejected(status,code,
+        "无法上传市场（HTTP "+status+"）"+(detail.isEmpty()?"，请稍后重试":"："+detail));
   }
 
   private File cacheFile(String raw)throws Exception{return new File(directory,MarketRepository.canonicalUrl(raw).substring("https://github.com/".length()).replace('/','_')+".json");}

@@ -87,9 +87,10 @@ final class MarketPages {
     panel.addView(input,new LinearLayout.LayoutParams(-1,owner.dp(56)));
     TextView status=owner.text("链接已收录时会比较远端版本，仅上传更高版本。",12,owner.MUTED);
     status.setPadding(0,owner.dp(6),0,0);panel.addView(status);
-    AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("上传到市场").setView(panel).setNegativeButton("取消",null).setPositiveButton("检测并上传",null).create();int session=owner.navigationSession;
+    AlertDialog prompt=new AlertDialog.Builder(owner).setTitle("上传到市场").setView(SharedPopupSurface.dialogScroll(owner,panel,580)).setNegativeButton("取消",null).setPositiveButton("检测并上传",null).create();int session=owner.navigationSession;
     prompt.setOnShowListener(dialog->prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
       Button action=prompt.getButton(AlertDialog.BUTTON_POSITIVE);action.setEnabled(false);action.setText("处理中…");final String link=input.getText().toString();
+      input.setError(null);status.setText("正在验证仓库链接…");
       owner.io.execute(()->{try{
         MarketRepositoryClient.Submission result=owner.core.marketRepositories().upload(link,message->owner.runOnUiThread(()->{
           if(owner.navigationSession==session&&prompt.isShowing())status.setText(message);
@@ -105,8 +106,13 @@ final class MarketPages {
       }catch(Exception error){owner.runOnUiThread(()->{
         if(owner.navigationSession!=session)return;
         action.setEnabled(true);action.setText("检测并上传");
-        status.setText(owner.friendlyError(error));
-        input.setError(owner.friendlyError(error));
+        String detail=MarketPublishFlow.actionableDetail(error);
+        if(error instanceof MarketRepositoryClient.SubmissionRejected){
+          String code=((MarketRepositoryClient.SubmissionRejected)error).code;
+          if(!code.isEmpty())detail+="\n错误码："+code;
+        }
+        status.setText(status.getText()+"\n"+detail);
+        input.setError(detail);
       });}});
     }));owner.showRounded(prompt);
   }

@@ -465,15 +465,11 @@ final class MarketRepositoryClient {
             metadata.version,versionMode,"current",false,listed.version,listed.versionMode,false);
       }
     }
-    if(progress!=null)progress.status("版本有更新，正在验证源与 README…");
+    if(progress!=null)progress.status("正在验证源与 README…");
     String sourceJson=new String(MarketSourceCodec.decode(
         transport.get(freshUrl(root+metadata.sources),ENCRYPTED_LIMIT)),StandardCharsets.UTF_8);
     if(LanzouCore.parseSourceDocument(sourceJson).isEmpty())throw new IOException("仓库至少需要一个有效源");
     transport.get(freshUrl(root+metadata.readme),README_LIMIT);
-    if(!metadata.icon.isEmpty())
-      transport.get(freshUrl(metadata.assetUrl(root,metadata.icon)),2*1024*1024);
-    if(!metadata.publisherAvatar.isEmpty())
-      transport.get(freshUrl(metadata.assetUrl(root,metadata.publisherAvatar)),2*1024*1024);
     if(progress!=null)progress.status("正在申请市场检测码…");
     JSONObject preflight=transport.post(MARKET_ORIGIN+"/api/v1/repositories/preflight",
         new JSONObject().put("githubUrl",url));

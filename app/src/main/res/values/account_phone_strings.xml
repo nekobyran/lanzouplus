@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="account_phone_title">手机号</string>
+    <string name="account_phone_reading">正在读取接收短信手机号…</string>
+    <string name="account_phone_status">接收短信手机号：%1$s</string>
+    <string name="account_phone_old">当前手机号</string>
+    <string name="account_phone_new">新手机号</string>
+    <string name="account_phone_code">验证码</string>
+    <string name="account_phone_request">发送验证请求</string>
+    <string name="account_phone_confirm">确认换绑</string>
+    <string name="account_phone_confirm_title">更换接收短信手机号？</string>
+    <string name="account_phone_confirm_message">当前号码：%1$s\n新号码：%2$s\n提交后按官方提示填写验证码，登录用户名保持不变。</string>
+    <string name="account_phone_required">请填写当前手机号和新手机号</string>
+    <string name="account_phone_code_required">请填写验证码</string>
+    <string name="account_phone_updated">手机号已更新：%1$s</string>
+    <string name="account_phone_invalid_response">官方未确认手机号变更</string>
+    <string name="account_phone_close">关闭</string>
+    <string name="account_phone_refresh">刷新</string>
+    <string name="account_phone_cancel">取消</string>
+</resources>

@@ -19,6 +19,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLDecoder;
@@ -90,6 +92,7 @@ final class PremiumCloudClient {
   private final Object sessionLock=new Object();
   private final Map<String,SessionEntry> sessions=new HashMap<>();
   private final Map<String,Object> accountLocks=new HashMap<>();
+  private final Map<String,CookieManager> apiCookies=new HashMap<>();
   /** Monotonic account-selection/credential epoch. A->B->A still changes it. */
   private long selectionRevision;
 
@@ -194,7 +197,9 @@ final class PremiumCloudClient {
     String name=normalizedName(loginName);
     synchronized(sessionLock){
       Vault vault=loadVault();
-      if(vault.accounts.remove(name)==null)return false;
+      Credentials removed=vault.accounts.remove(name);
+      if(removed==null)return false;
+      apiCookies.remove(removed.appToken);
       sessions.remove(name);accountLocks.remove(name);
       selectionRevision++;
       if(vault.accounts.isEmpty()){clearStoredLogin();return true;}
@@ -212,7 +217,9 @@ final class PremiumCloudClient {
       Credentials credentials=login(name,loginPassword);
       LoginState state=readLoginState(credentials.appToken);
       synchronized(sessionLock){
-        Vault vault=loadVault();vault.accounts.put(name,credentials);vault.current=name;persist(vault);
+        Vault vault=loadVault();Credentials previous=vault.accounts.put(name,credentials);
+        if(previous!=null&&!previous.appToken.equals(credentials.appToken))apiCookies.remove(previous.appToken);
+        vault.current=name;persist(vault);
         selectionRevision++;
         sessions.put(name,new SessionEntry(state,System.currentTimeMillis()));
       }
@@ -246,6 +253,7 @@ final class PremiumCloudClient {
           Vault vault=loadVault();
           if(!vault.accounts.containsKey(name))throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"所选账号已删除");
           vault.accounts.put(name,renewed);persist(vault);
+          if(!credentials.appToken.equals(renewed.appToken))apiCookies.remove(credentials.appToken);
           selectionRevision++;
           sessions.put(name,new SessionEntry(state,System.currentTimeMillis()));
         }
@@ -320,11 +328,13 @@ final class PremiumCloudClient {
     if(reply.expired()){
       synchronized(accountLock(loginName)){
         credentials=credentials(loginName);
+        String previousToken=credentials.appToken;
         credentials=login(credentials.loginName,credentials.loginPassword);
         synchronized(sessionLock){
           Vault vault=loadVault();
           if(!vault.accounts.containsKey(loginName))throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"所选账号已删除");
           vault.accounts.put(loginName,credentials);persist(vault);sessions.remove(loginName);
+          if(!previousToken.equals(credentials.appToken))apiCookies.remove(previousToken);
         }
       }
       check(cancel);reply=transfer(auth,credentials.appToken,cancel);
@@ -1224,6 +1234,24 @@ final class PremiumCloudClient {
 
   private CloudFilesClient.UploadResult premiumUpload(String token,String account,String folder,
                                                       String path)throws CloudException{
+    return premiumUpload(token,account,folder,path,new UploadTransport(){
+      @Override public ApiReply request(String method,String path,JSONObject body,String token)
+          throws CloudException{return PremiumCloudClient.this.request(method,path,body,token);}
+      @Override public HttpReply rawHttp(String method,String url,byte[] body,
+          Map<String,String> headers,int timeout)throws CloudException{
+        return PremiumCloudClient.this.rawHttp(method,url,body,headers,timeout);
+      }
+    });
+  }
+
+  interface UploadTransport {
+    ApiReply request(String method,String path,JSONObject body,String token)throws CloudException;
+    HttpReply rawHttp(String method,String url,byte[] body,Map<String,String> headers,int timeout)
+        throws CloudException;
+  }
+
+  CloudFilesClient.UploadResult premiumUpload(String token,String account,String folder,String path,
+      UploadTransport transport)throws CloudException{
     File file=new File(path);
     if(!file.isFile()||file.length()==0)
       throw new CloudException(ERROR_PROTOCOL,"待上传文件必须是非空普通文件");
@@ -1231,10 +1259,10 @@ final class PremiumCloudClient {
     JSONObject requestBody=new JSONObject();
     try{
       requestBody.put("fileName",name).put("type",1)
-          .put("fileSize",Long.toString(Math.max(1L,Math.round(file.length()/1024.0))))
+          .put("fileSize",(file.length()-1)/1024+1)
           .put("folderId",folder).put("fileId","");
     }catch(Exception impossible){throw new CloudException(ERROR_PROTOCOL,"上传参数无效");}
-    ApiReply granted=request("POST","/proved/7n/getUpToken",requestBody,token);
+    ApiReply granted=transport.request("POST","/proved/7n/getUpToken",requestBody,token);
     requireSuccess(granted,"获取上传令牌失败");
     JSONObject map=granted.root.optJSONObject("map");
     String upToken=granted.root.optString("upToken","");
@@ -1257,7 +1285,7 @@ final class PremiumCloudClient {
     }catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"官方上传策略无效",error);}
     if(bucket.isEmpty()||!bucket.matches("[A-Za-z0-9-]+"))
       throw new CloudException(ERROR_PROTOCOL,"官方上传策略缺少存储空间");
-    HttpReply query=rawHttp("GET","https://api.qiniu.com/v2/query?ak="+encodeQuery(tokenParts[0])
+    HttpReply query=transport.rawHttp("GET","https://api.qiniu.com/v2/query?ak="+encodeQuery(tokenParts[0])
         +"&bucket="+encodeQuery(bucket),null,null,15_000);
     if(query.status<200||query.status>=300)throw new CloudException(ERROR_NETWORK,"七牛区域查询失败");
     String host;
@@ -1276,7 +1304,7 @@ final class PremiumCloudClient {
     String base="https://"+host+"/buckets/"+bucket+"/objects/"+object+"/uploads";
     Map<String,String> headers=new LinkedHashMap<>();
     headers.put("Authorization","UpToken "+upToken);
-    HttpReply started=rawHttp("POST",base,null,headers,30_000);
+    HttpReply started=transport.rawHttp("POST",base,null,headers,30_000);
     if(started.status<200||started.status>=300)throw new CloudException(ERROR_NETWORK,"七牛上传任务创建失败");
     String uploadId;
     try{uploadId=new JSONObject(started.text).optString("uploadId","");}
@@ -1292,7 +1320,7 @@ final class PremiumCloudClient {
         System.arraycopy(buffer,0,chunk,0,read);
         Map<String,String> partHeaders=new LinkedHashMap<>(headers);
         partHeaders.put("Content-Type","application/octet-stream");
-        HttpReply uploaded=rawHttp("PUT",uploadUrl+"/"+partNumber,chunk,partHeaders,900_000);
+        HttpReply uploaded=transport.rawHttp("PUT",uploadUrl+"/"+partNumber,chunk,partHeaders,900_000);
         if(uploaded.status<200||uploaded.status>=300)throw new CloudException(ERROR_NETWORK,"七牛分片上传失败");
         String etag;
         try{etag=new JSONObject(uploaded.text).optString("etag","");}
@@ -1306,18 +1334,18 @@ final class PremiumCloudClient {
     JSONObject completeBody=new JSONObject();
     try{completeBody.put("parts",parts).put("fname",name);}
     catch(Exception impossible){throw new CloudException(ERROR_PROTOCOL,"上传完成参数无效");}
-    HttpReply completed=rawHttp("POST",uploadUrl,completeBody.toString().getBytes(StandardCharsets.UTF_8),
+    HttpReply completed=transport.rawHttp("POST",uploadUrl,completeBody.toString().getBytes(StandardCharsets.UTF_8),
         headers,30_000);
     if(completed.status<200||completed.status>=300)throw new CloudException(ERROR_NETWORK,"七牛合并分片失败");
     String callback;
     try{callback=new JSONObject(completed.text).optString("token","");}
     catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"七牛完成响应无效",error);}
     if(callback.isEmpty())throw new CloudException(ERROR_PROTOCOL,"七牛未返回官方入库确认令牌");
-    String tokenTime=rfc3339();
+    String tokenTime=browserTime();
     String resultPath="/unproved/7n/results?tokenList="+encodeQuery(callback)+"&tokenTime="+encodeQuery(tokenTime);
     long deadline=System.currentTimeMillis()+120_000L;
     while(true){
-      ApiReply result=request("GET",resultPath,null,token);
+      ApiReply result=transport.request("POST",resultPath,null,token);
       requireSuccess(result,"官方入库确认失败");
       JSONArray list=result.root.optJSONArray("list");
       if(list!=null)for(int index=0;index<list.length();index++){
@@ -1355,10 +1383,39 @@ final class PremiumCloudClient {
     Map<String,String> headers=new LinkedHashMap<>();
     headers.put("Referer",WEB_ORIGIN+"/");
     headers.put("Origin",WEB_ORIGIN);
-    HttpReply reply=rawHttp("GET",url,null,headers,15_000);
-    if(reply.status>=300&&reply.status<400&&reply.location!=null&&!reply.location.isEmpty())
-      return reply.location;
-    throw new CloudException(ERROR_PROTOCOL,"下载重定向失败，未返回 Location 头部");
+    HttpReply reply=rawHttpWithCookies("GET",url,null,headers,15_000,cookiesFor(token),null,true);
+    return downloadTarget(reply);
+  }
+
+  static String downloadTarget(HttpReply reply)throws CloudException{
+    if(reply.status!=200&&(reply.status<300||reply.status>=400))
+      throw new CloudException(ERROR_NETWORK,"优享下载服务返回 HTTP "+reply.status);
+    String target=reply.location;
+    if(target==null||target.isEmpty()){
+      if(reply.status!=200)throw new CloudException(ERROR_PROTOCOL,"优享下载响应缺少地址");
+      try{
+        JSONObject root=new JSONObject(reply.text);
+        if(root.has("code")&&root.optInt("code",-1)!=200)
+          throw new CloudException(ERROR_PROTOCOL,"优享下载请求失败");
+        Object value=root.opt("url");
+        target=value instanceof String?(String)value:"";
+        if(target.isEmpty()){
+          JSONObject data=root.optJSONObject("data");
+          if(data!=null){value=data.opt("url");if(value instanceof String)target=(String)value;}
+        }
+      }catch(CloudException error){throw error;
+      }catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"优享下载响应无效",error);}
+    }
+    if(target==null||target.trim().isEmpty())throw new CloudException(ERROR_PROTOCOL,"优享下载地址为空");
+    try{
+      URI resolved=new URI(reply.url).resolve(target);
+      String scheme=resolved.getScheme();
+      if(!("http".equalsIgnoreCase(scheme)||"https".equalsIgnoreCase(scheme))
+          ||resolved.getHost()==null||resolved.getUserInfo()!=null)
+        throw new CloudException(ERROR_PROTOCOL,"优享下载地址无效");
+      return resolved.toString();
+    }catch(CloudException error){throw error;
+    }catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"优享下载地址无效",error);}
   }
 
   private long downloadAbsolute(String url,File destination)throws CloudException{
@@ -1387,19 +1444,56 @@ final class PremiumCloudClient {
 
   private HttpReply rawHttp(String method,String url,byte[] body,Map<String,String> headers,int readTimeout)
       throws CloudException{
+    return rawHttpWithCookies(method,url,body,headers,readTimeout,null,null,true);
+  }
+
+  CookieManager cookiesFor(String token){
+    if(token==null||token.isEmpty())return new CookieManager(null,CookiePolicy.ACCEPT_ORIGINAL_SERVER);
+    synchronized(sessionLock){
+      String key=token;
+      CookieManager cookies=apiCookies.get(key);
+      if(cookies==null){cookies=new CookieManager(null,CookiePolicy.ACCEPT_ORIGINAL_SERVER);apiCookies.put(key,cookies);}
+      return cookies;
+    }
+  }
+
+  static HttpReply rawHttpWithCookies(String method,String url,byte[] body,Map<String,String> headers,
+      int readTimeout,CookieManager cookies,CancelToken cancel,boolean desktop)throws CloudException{
+    HttpReply reply=rawHttpOnce(method,url,body,headers,readTimeout,cookies,cancel,desktop);
+    if(cookies!=null&&"GET".equals(method)&&reply.status==409
+        &&reply.contentType.toLowerCase(Locale.ROOT).contains("text/html")
+        &&reply.text.contains("403"))
+      return rawHttpOnce(method,url,body,headers,readTimeout,cookies,cancel,desktop);
+    return reply;
+  }
+
+  private static HttpReply rawHttpOnce(String method,String url,byte[] body,Map<String,String> headers,
+      int readTimeout,CookieManager cookies,CancelToken cancel,boolean desktop)throws CloudException{
     HttpURLConnection connection=null;
     try{
-      connection=(HttpURLConnection)new URL(url).openConnection();
-      connection.setInstanceFollowRedirects(false);
+      check(cancel);
+      URI uri=new URI(url);
+      connection=(HttpURLConnection)uri.toURL().openConnection();
+      if(cancel!=null)cancel.register(connection);
+      connection.setInstanceFollowRedirects(!desktop);
       connection.setConnectTimeout(15_000);
       connection.setReadTimeout(readTimeout);
       connection.setRequestMethod(method);
-      connection.setRequestProperty("User-Agent",desktopUserAgent());
+      connection.setRequestProperty("User-Agent",desktop?desktopUserAgent():userAgent());
       connection.setRequestProperty("Accept","application/json");
       connection.setRequestProperty("Origin",WEB_ORIGIN);
       connection.setRequestProperty("Referer",WEB_ORIGIN+"/");
       if(headers!=null)for(Map.Entry<String,String> entry:headers.entrySet())
         connection.setRequestProperty(entry.getKey(),entry.getValue());
+      if(cookies!=null){
+        Map<String,List<String>> stored=cookies.get(uri,Collections.emptyMap());
+        for(Map.Entry<String,List<String>> entry:stored.entrySet())
+          if(entry.getKey()!=null&&!entry.getValue().isEmpty()){
+            StringBuilder value=new StringBuilder();
+            for(String part:entry.getValue()){if(value.length()>0)value.append("; ");value.append(part);}
+            connection.setRequestProperty(entry.getKey(),value.toString());
+          }
+      }
       if(body!=null){
         connection.setDoOutput(true);
         connection.setRequestProperty("Content-Type","application/json;charset=UTF-8");
@@ -1407,21 +1501,27 @@ final class PremiumCloudClient {
         try(OutputStream output=connection.getOutputStream()){output.write(body);}
       }
       int status=connection.getResponseCode();
+      if(cookies!=null)cookies.put(uri,connection.getHeaderFields());
       InputStream input=status>=400?connection.getErrorStream():connection.getInputStream();
       String text=input==null?"":read(input,MAX_JSON_BYTES);
-      return new HttpReply(status,text,connection.getHeaderField("Location"),url);
+      return new HttpReply(status,text,connection.getHeaderField("Location"),url,connection.getContentType());
     }catch(CloudException error){throw error;
     }catch(Exception error){throw new CloudException(ERROR_NETWORK,"网络请求失败，请稍后重试",error);
-    }finally{if(connection!=null)connection.disconnect();}
+    }finally{if(cancel!=null)cancel.unregister(connection);if(connection!=null)connection.disconnect();}
   }
 
-  private static final class HttpReply {
+  static final class HttpReply {
     final int status;
     final String text;
     final String location;
     final String url;
+    final String contentType;
     HttpReply(int status,String text,String location,String url){
+      this(status,text,location,url,"");
+    }
+    HttpReply(int status,String text,String location,String url,String contentType){
       this.status=status;this.text=text==null?"":text;this.location=location;this.url=url;
+      this.contentType=contentType==null?"":contentType;
     }
   }
 
@@ -1551,7 +1651,7 @@ final class PremiumCloudClient {
     }catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"官方上传策略格式无效",error);}
   }
 
-  private static String encryptDownloadPayload(String payload)throws CloudException{
+  static String encryptDownloadPayload(String payload)throws CloudException{
     try{
       Cipher cipher=Cipher.getInstance("AES/ECB/PKCS5Padding");
       cipher.init(Cipher.ENCRYPT_MODE,new SecretKeySpec(WEB_CIPHER_KEY.getBytes(StandardCharsets.UTF_8),"AES"));
@@ -1566,8 +1666,8 @@ final class PremiumCloudClient {
     }catch(Exception error){throw new CloudException(ERROR_PROTOCOL,"下载授权生成失败",error);}
   }
 
-  private static String rfc3339(){
-    SimpleDateFormat format=new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",Locale.ROOT);
+  private static String browserTime(){
+    SimpleDateFormat format=new SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (UTC)'",Locale.US);
     format.setTimeZone(TimeZone.getTimeZone("UTC"));
     return format.format(new java.util.Date());
   }
@@ -1671,28 +1771,19 @@ final class PremiumCloudClient {
   }
 
   private ApiReply requestWithUuid(String method,String path,JSONObject body,String token,String uuid,CancelToken cancel)throws CloudException{
-    HttpURLConnection connection=null;
     try{
-      connection=(HttpURLConnection)new URL(apiRequestUrl(path,uuid,token,System.currentTimeMillis())).openConnection();if(cancel!=null)cancel.register(connection);
-      connection.setConnectTimeout(15_000);connection.setReadTimeout(30_000);connection.setRequestMethod(method);
-      connection.setRequestProperty("Accept","application/json");connection.setRequestProperty("User-Agent",userAgent());
-      connection.setRequestProperty("Origin",WEB_ORIGIN);connection.setRequestProperty("Referer",WEB_ORIGIN+"/");
-      if(body!=null){
-        byte[] bytes=body.toString().getBytes(StandardCharsets.UTF_8);
-        connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json;charset=UTF-8");
-        connection.setFixedLengthStreamingMode(bytes.length);
-        try(OutputStream output=connection.getOutputStream()){output.write(bytes);}
-      }
-      int status=connection.getResponseCode();
-      InputStream stream=status>=400?connection.getErrorStream():connection.getInputStream();
-      String text=stream==null?"{}":read(stream,MAX_JSON_BYTES);
+      byte[] bytes=body==null?null:body.toString().getBytes(StandardCharsets.UTF_8);
+      HttpReply response=rawHttpWithCookies(method,apiRequestUrl(path,uuid,token,System.currentTimeMillis()),
+          bytes,null,30_000,cookiesFor(token),cancel,false);
+      int status=response.status;
+      String text=response.text;
       JSONObject root=text.trim().isEmpty()?new JSONObject():new JSONObject(text);
       int code=root.has("code")?root.optInt("code",status>=200&&status<300?200:status):(status>=200&&status<300?200:status);
       String message=root.optString("msg",root.optString("message",""));
       return new ApiReply(status,code,message,root);
     }catch(CloudException error){throw error;
     }catch(Exception error){throw new CloudException(ERROR_NETWORK,"网络请求失败，请稍后重试",error);
-    }finally{if(cancel!=null)cancel.unregister(connection);if(connection!=null)connection.disconnect();}
+    }
   }
 
   private static void check(CancelToken cancel)throws CloudException{if(cancel!=null)cancel.check();}
@@ -1788,7 +1879,7 @@ final class PremiumCloudClient {
 
   private void clearStoredLogin(){
     selectionRevision++;
-    preferences.edit().remove(PREF_IV).remove(PREF_SECRET).apply();sessions.clear();accountLocks.clear();
+    preferences.edit().remove(PREF_IV).remove(PREF_SECRET).apply();sessions.clear();accountLocks.clear();apiCookies.clear();
         try{KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);if(store.containsAlias(KEY_ALIAS))store.deleteEntry(KEY_ALIAS);}catch(Exception error){throw new IllegalStateException("无法清理蓝奏云优享登录密钥",error);}
 
   }
@@ -1945,7 +2036,7 @@ final class PremiumCloudClient {
 
   private interface AccountWork<T>{T run(String accountName);}
 
-  private static final class ApiReply {
+  static final class ApiReply {
     final int httpStatus,code;final String message;final JSONObject root;
     ApiReply(int httpStatus,int code,String message,JSONObject root){this.httpStatus=httpStatus;this.code=code;this.message=message==null?"":message;this.root=root;}
     boolean expired(){return code==-2||message.contains("登录过期");}

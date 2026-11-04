@@ -251,7 +251,7 @@ final class CloudAccounts {
       return;
     }
     AlertDialog menu=new AlertDialog.Builder(owner).setTitle("普通蓝奏云账号管理")
-        .setItems(new String[]{"账号、会员与订单","域名与共享"},(dialog,which)->{
+        .setItems(new String[]{"账号、会员与订单","域名与共享",owner.getString(R.string.account_phone_title)},(dialog,which)->{
           if(which==0)CloudAccountPagesUi.choose(owner,()->{
             synchronized(client){
               client.selectProvider(target);
@@ -260,7 +260,15 @@ final class CloudAccounts {
               return client.ordinaryAccountPages();
             }
           },passwordChanged);
-          else CloudOrdinaryDomainUi.show(owner,()->{
+          else if(which==1)CloudOrdinaryDomainUi.show(owner,()->{
+            synchronized(client){
+              client.selectProvider(target);
+              if(!client.selectAccount(target,name))
+                throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_ACCOUNT_CHANGED,"账号已移除，请重新选择");
+              return client.ordinaryAccountSettings();
+            }
+          });
+          else CloudAccountPhoneUi.show(owner,()->{
             synchronized(client){
               client.selectProvider(target);
               if(!client.selectAccount(target,name))

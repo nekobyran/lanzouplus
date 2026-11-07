@@ -183,6 +183,42 @@ final class PremiumCloudClient {
     synchronized(sessionLock){return loadVault().current;}
   }
 
+  /** Portable credentials are returned only to the encrypted backup boundary. */
+  JSONObject backupAccounts()throws CloudException{
+    synchronized(sessionLock){
+      try{
+        Vault vault=loadVault();JSONArray values=new JSONArray();
+        for(Credentials value:vault.accounts.values())values.put(new JSONObject()
+            .put("loginName",value.loginName).put("loginPwd",value.loginPassword));
+        return new JSONObject().put("current",vault.current).put("accounts",values);
+      }catch(org.json.JSONException error){throw new CloudException(
+          ERROR_CREDENTIALS_UNREADABLE,"无法导出云账号",error);}
+    }
+  }
+
+  /** Existing local entries win; the return value counts conflicting accounts. */
+  int mergeBackupAccounts(JSONObject backup)throws CloudException{
+    synchronized(sessionLock){
+      try{
+        JSONArray values=backup.getJSONArray("accounts");Vault vault=loadVault();int conflicts=0;
+        for(int i=0;i<values.length();i++){
+          JSONObject value=values.getJSONObject(i);String name=value.getString("loginName").trim();
+          String password=value.getString("loginPwd");
+          if(name.isEmpty()||password.isEmpty())throw new org.json.JSONException("invalid account");
+          Credentials existing=vault.accounts.get(name);
+          if(existing==null)vault.accounts.put(name,new Credentials(name,password,""));
+          else if(!existing.loginPassword.equals(password))conflicts++;
+        }
+        if(vault.current.isEmpty()&&!vault.accounts.isEmpty()){
+          String saved=backup.optString("current","");
+          vault.current=vault.accounts.containsKey(saved)?saved:vault.accounts.keySet().iterator().next();
+        }
+        if(!vault.accounts.isEmpty()){persist(vault);selectionRevision++;}
+        return conflicts;
+      }catch(org.json.JSONException error){throw new CloudException(
+          ERROR_CREDENTIALS_UNREADABLE,"备份中的云账号格式无效",error);}
+    }
+  }
   boolean selectAccount(String loginName)throws CloudException{
     String name=normalizedName(loginName);
     synchronized(sessionLock){
@@ -957,6 +993,18 @@ final class PremiumCloudClient {
     return new CloudFilesClient.ManagedDescription(item.id,item.folder,item.name,desc);
   }
 
+  /** Captures the requested account and token; switching the UI account cannot redirect this upload. */
+  CloudFilesClient.UploadResult cloudUploadForAccount(String account,String folderId,String path,
+      CloudFilesClient.UploadOptions options)throws CloudException{
+    String name=normalizedName(account);
+    String token=tokenFor(name);
+    LoginState state=ensureLoggedIn(name);
+    String uploadAccount=state.account.isEmpty()?name:state.account;
+    CloudFilesClient.UploadResult result=premiumUpload(token,uploadAccount,premiumFolder(folderId),path);
+    if(options!=null&&options.autoIcon)
+      return result.withWarning("优享云上传接口不支持自动设置图标");
+    return result;
+  }
   CloudFilesClient.UploadResult cloudUpload(String folderId,String path,CloudFilesClient.UploadOptions options)
       throws CloudException{
     if(options!=null&&options.compatibilityWrap)throw new CloudException(ERROR_PROTOCOL,"优享版上传不使用普通版兼容包装");
@@ -1861,7 +1909,16 @@ final class PremiumCloudClient {
     }
   }
 
+  private final ThreadLocal<String> boundAccount=new ThreadLocal<>();
+  interface BoundWork<T>{T run()throws CloudException;}
+  <T> T forAccount(String account,BoundWork<T> work)throws CloudException{
+    String previous=boundAccount.get();boundAccount.set(normalizedName(account));
+    try{return work.run();}finally{
+      if(previous==null)boundAccount.remove();else boundAccount.set(previous);
+    }
+  }
   private String requiredCurrentAccount()throws CloudException{
+    String bound=boundAccount.get();if(bound!=null)return bound;
     synchronized(sessionLock){
       String current=loadVault().current;
       if(current.isEmpty())throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"请先登录蓝奏云优享版");

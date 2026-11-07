@@ -8,7 +8,7 @@ android {
  compileOptions { isCoreLibraryDesugaringEnabled = true }
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2000006; versionName = "2.0.6" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2000007; versionName = "2.0.7alpha" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {
@@ -28,6 +28,7 @@ android {
 dependencies {
  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
  implementation("org.apache.commons:commons-compress:1.28.0")
+ implementation("net.lingala.zip4j:zip4j:2.11.5")
  implementation("org.tukaani:xz:1.10")
  implementation("org.commonmark:commonmark:0.21.0")
  implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")

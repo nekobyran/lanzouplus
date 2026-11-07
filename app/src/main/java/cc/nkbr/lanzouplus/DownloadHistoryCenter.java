@@ -472,6 +472,10 @@ final class DownloadHistoryCenter {
     if (host == null || row.uriString.isEmpty()) return false;
     try {
       Uri uri = Uri.parse(row.uriString);
+      if ("file".equals(uri.getScheme()) && uri.getPath()!=null) {
+        String token=android.util.Base64.encodeToString(new File(uri.getPath()).getAbsolutePath().getBytes(java.nio.charset.StandardCharsets.UTF_8),android.util.Base64.URL_SAFE|android.util.Base64.NO_WRAP|android.util.Base64.NO_PADDING);
+        uri=new Uri.Builder().scheme("content").authority(host.getPackageName()+".downloads").appendPath("shared").appendPath(token).build();
+      }
       Intent intent = new Intent(Intent.ACTION_VIEW);
       intent.setDataAndType(uri, persistedMime(row));
       intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);

@@ -26,6 +26,7 @@ import java.util.*;
 final class CloudManagement {
   private final MainActivity owner;
   private final CloudFilesClient client;
+  private final CloudSyncUi syncUi;
   private CloudFilesClient.Provider provider=CloudFilesClient.Provider.ORDINARY;
   private final List<String> folderIds=new ArrayList<>(),folderNames=new ArrayList<>();
   private final List<CloudFilesClient.CloudItem> items=new ArrayList<>();
@@ -50,7 +51,7 @@ final class CloudManagement {
   private static final int CLOUD_PAGE_SIZE=50;
   interface Work { String run()throws Exception; }
   CloudManagement(MainActivity owner){
-    this.owner=owner;client=CloudFilesClient.shared(owner);
+    this.owner=owner;client=CloudFilesClient.shared(owner);syncUi=new CloudSyncUi(owner,client);
     client.setVerificationPrompt(url->{
       java.util.concurrent.CountDownLatch finished=new java.util.concurrent.CountDownLatch(1);
       java.util.concurrent.atomic.AtomicBoolean passed=new java.util.concurrent.atomic.AtomicBoolean();
@@ -64,9 +65,9 @@ final class CloudManagement {
     });
     if(owner.getSharedPreferences("cloud_management",0).getBoolean("premium",false))provider=CloudFilesClient.Provider.PREMIUM;
   }
-  void saveState(Bundle state){state.putBoolean("cloudPremium",provider==CloudFilesClient.Provider.PREMIUM);state.putStringArrayList("cloudIds",new ArrayList<>(folderIds));state.putStringArrayList("cloudNames",new ArrayList<>(folderNames));state.putString("cloudQuery",query);state.putBoolean("cloudRecycleView",recycleView);if(recyclePage!=null)recyclePage.saveState(state);}
-  void restoreState(Bundle state){if(state==null)return;provider=state.getBoolean("cloudPremium",false)?CloudFilesClient.Provider.PREMIUM:CloudFilesClient.Provider.ORDINARY;folderIds.clear();folderNames.clear();if(state.getStringArrayList("cloudIds")!=null)folderIds.addAll(state.getStringArrayList("cloudIds"));if(state.getStringArrayList("cloudNames")!=null)folderNames.addAll(state.getStringArrayList("cloudNames"));query=state.getString("cloudQuery","");recycleView=state.getBoolean("cloudRecycleView",false);recycleState=new Bundle();recycleState.putInt("cloudRecycleFirst",state.getInt("cloudRecycleFirst",0));recycleState.putInt("cloudRecycleTop",state.getInt("cloudRecycleTop",0));}
-  boolean onActivityResult(int request,int result,Intent data){return false;}
+  void saveState(Bundle state){syncUi.saveState(state);state.putBoolean("cloudPremium",provider==CloudFilesClient.Provider.PREMIUM);state.putStringArrayList("cloudIds",new ArrayList<>(folderIds));state.putStringArrayList("cloudNames",new ArrayList<>(folderNames));state.putString("cloudQuery",query);state.putBoolean("cloudRecycleView",recycleView);if(recyclePage!=null)recyclePage.saveState(state);}
+  void restoreState(Bundle state){if(state==null)return;syncUi.restoreState(state);provider=state.getBoolean("cloudPremium",false)?CloudFilesClient.Provider.PREMIUM:CloudFilesClient.Provider.ORDINARY;folderIds.clear();folderNames.clear();if(state.getStringArrayList("cloudIds")!=null)folderIds.addAll(state.getStringArrayList("cloudIds"));if(state.getStringArrayList("cloudNames")!=null)folderNames.addAll(state.getStringArrayList("cloudNames"));query=state.getString("cloudQuery","");recycleView=state.getBoolean("cloudRecycleView",false);recycleState=new Bundle();recycleState.putInt("cloudRecycleFirst",state.getInt("cloudRecycleFirst",0));recycleState.putInt("cloudRecycleTop",state.getInt("cloudRecycleTop",0));}
+  boolean onActivityResult(int request,int result,Intent data){return syncUi.onActivityResult(request,result,data);}
   private String folder(){return folderIds.isEmpty()?"-1":folderIds.get(folderIds.size()-1);}
   void show(){
     if(recycleView){showRecycle();return;}
@@ -77,6 +78,8 @@ final class CloudManagement {
     ImageButton accountSettings=owner.iconButton(R.drawable.ic_settings,"云盘账号设置");accountSettings.setOnClickListener(v->owner.openCloudAccountSettings());owner.pageHeaderRow.addView(accountSettings);controls.add(accountSettings);
     ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false,true));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
     ImageButton entry=owner.iconButton(R.drawable.ic_add,"上传文件或新建文件夹");entry.setOnClickListener(v->entryMenu());owner.pageHeaderRow.addView(entry);controls.add(entry);
+    ImageButton uploads=owner.iconButton(R.drawable.ic_history,"上传列表");uploads.setOnClickListener(v->syncUi.showUploads());owner.pageHeaderRow.addView(uploads);controls.add(uploads);
+    ImageButton sync=owner.iconButton(R.drawable.ic_refresh,"同步管理");sync.setOnClickListener(v->syncUi.show(provider,folder(),folderNames.isEmpty()?"根目录":folderNames.get(folderNames.size()-1)));owner.pageHeaderRow.addView(sync);controls.add(sync);
     LinearLayout providers=new LinearLayout(owner);
     providers.setGravity(Gravity.CENTER_VERTICAL);
     for(CloudFilesClient.Provider value:CloudFilesClient.Provider.values()){
@@ -127,7 +130,7 @@ final class CloudManagement {
       CloudFilesClient.CloudItem item=itemAt(position);
       if(item==null)return;
       if(!selected.isEmpty()){toggle(item);return;}
-      if(item.folder)openFolder(item);else showFileDetails(item);
+      if(item.folder)openFolder(item);else if(CloudImageGallery.isImage(item))CloudImageGallery.show(owner,client,provider,new ArrayList<>(items),item);else if(CloudImageGallery.isArchive(item))CloudImageGallery.showArchive(owner,client,provider,item,()->showFileDetails(item));else showFileDetails(item);
     });
     list.setOnItemLongClickListener((p,v,position,id)->{
       if(mutating)return false;
@@ -533,7 +536,8 @@ final class CloudManagement {
       int count=0;
       for(CloudFilesClient.CloudItem item:chosen){
           if(item.folder&&!client.shareInfo(item).fragmented)continue;
-          client.download(item,directory.getAbsolutePath()+File.separator);
+          CloudFilesClient.DownloadResult result=client.download(item,directory.getAbsolutePath()+File.separator);
+          owner.runOnUiThread(()->owner.recordCloudDownload(item,result));
           count++;
       }
       return count==0?"所选项目没有可下载的文件":"已下载 "+count+" 个文件至 "+directory.getAbsolutePath();
@@ -543,7 +547,8 @@ final class CloudManagement {
   private void downloadFragment(CloudFilesClient.CloudItem item){
     File directory=owner.selectedDownloadDirectory();
     work("下载完成",()->{
-      client.download(item,directory.getAbsolutePath()+File.separator);
+      CloudFilesClient.DownloadResult result=client.download(item,directory.getAbsolutePath()+File.separator);
+      owner.runOnUiThread(()->owner.recordCloudDownload(item,result));
       return "已下载原文件至 "+directory.getAbsolutePath();
     },false);
   }
@@ -585,7 +590,7 @@ final class CloudManagement {
         dialog.dismiss();boolean w=wrap.isChecked(),image=icon.isChecked();
         if(action==0)pickLocalFiles(true,"",files->uploadFiles(files,w,image));
         else if(action==1)pickLocalFiles(false,".apk",files->uploadFiles(files,w,image));
-        else if(action==2)localDirectory(file->{String target=folder();work("上传完成",()->{CloudFilesClient.DirectoryUploadResult result=client.uploadDirectory(target,file.getAbsolutePath(),CloudFilesClient.UploadOptions.defaults().compatibilityWrap(w).autoIcon(image));return "已上传 "+result.filesUploaded+" 个文件"+(result.warning.isEmpty()?"":"；"+result.warning);},true);});
+        else if(action==2)localDirectory(file->{String target=folder();CloudFilesClient.Provider requested=provider;work("上传完成",()->{String account=client.currentAccountName(requested);try{recordManualUpload(account,requested,target,file,"上传中","");CloudFilesClient.DirectoryUploadResult result=client.uploadDirectory(target,file.getAbsolutePath(),CloudFilesClient.UploadOptions.defaults().compatibilityWrap(w).autoIcon(image));recordManualUpload(account,requested,target,file,"完成","");return "已上传 "+result.filesUploaded+" 个文件"+(result.warning.isEmpty()?"":"；"+result.warning);}catch(Exception error){recordManualUpload(account,requested,target,file,"失败","上传失败");throw error;}},true);});
         else if(action==3)pickLocalFiles(false,"",files->showFragmentUploadDialog(files.get(0),w,image));
         else smartSourceUpload();
       });
@@ -596,22 +601,30 @@ final class CloudManagement {
   private void uploadFiles(List<File> files,boolean wrap,boolean autoIcon){
     if(files.isEmpty())return;
     String target=folder();
+    CloudFilesClient.Provider requested=provider;
     CloudFilesClient.UploadOptions options=CloudFilesClient.UploadOptions.defaults()
         .compatibilityWrap(wrap)
         .autoIcon(autoIcon);
     work("上传完成",()->{
       int success=0;
       List<String> warnings=new ArrayList<>();
+      String account=client.currentAccountName(requested);
       for(File file:files){
-        CloudFilesClient.UploadResult result=client.upload(target,file.getAbsolutePath(),options);
-        success++;
-        if(!result.warning.isEmpty())warnings.add(file.getName()+"："+result.warning);
+        try {
+          recordManualUpload(account,requested,target,file,"上传中","");
+          CloudFilesClient.UploadResult result=client.uploadForAccount(requested,account,target,file.getAbsolutePath(),options);
+          recordManualUpload(account,requested,target,file,"完成","");success++;
+          if(!result.warning.isEmpty())warnings.add(file.getName()+"："+result.warning);
+        } catch(Exception error){recordManualUpload(account,requested,target,file,"失败","上传失败");throw error;}
       }
       String message="已上传 "+success+" 个文件";
       return warnings.isEmpty()?message:message+"；"+String.join("；",warnings);
     },true);
   }
 
+  private void recordManualUpload(String account,CloudFilesClient.Provider provider,String target,File file,String state,String message){
+    new CloudSyncTasks(owner).recordManualUpload(account,provider==CloudFilesClient.Provider.PREMIUM?"premium":"ordinary",target,file.getName(),state,message,file.length());
+  }
   private void showFragmentUploadDialog(File file,boolean wrap,boolean autoIcon){
     LinearLayout panel=panel();
     panel.addView(owner.text(file.getName()+" · "+formatBytes(file.length()),14,owner.TEXT));
@@ -646,7 +659,7 @@ final class CloudManagement {
         }
       }catch(NumberFormatException error){parameter.setError(size.isChecked()?"请输入大于零的单片大小":"请输入 2～4096 的分片数量");return;}
       dialog.dismiss();String target=folder();
-      work("分片上传完成",()->{CloudFilesClient.UploadResult result=client.uploadFragmented(target,file.getAbsolutePath(),options);return "已上传 "+result.fragmentPartCount+" 个分片";},true);
+      CloudFilesClient.Provider requested=provider;work("分片上传完成",()->{String account=client.currentAccountName(requested);try{recordManualUpload(account,requested,target,file,"上传中","");CloudFilesClient.UploadResult result=client.uploadFragmented(target,file.getAbsolutePath(),options);recordManualUpload(account,requested,target,file,"完成","");return "已上传 "+result.fragmentPartCount+" 个分片";}catch(Exception error){recordManualUpload(account,requested,target,file,"失败","上传失败");throw error;}},true);
     });
   }
 
@@ -795,9 +808,11 @@ final class CloudManagement {
     CheckBox autoIcon=new CheckBox(owner);autoIcon.setText("从新 APK 提取并设置图标");autoIcon.setTextColor(owner.TEXT);autoIcon.setButtonTintList(ColorStateList.valueOf(owner.PRIMARY));
     autoIcon.setChecked(provider==CloudFilesClient.Provider.ORDINARY);autoIcon.setEnabled(provider==CloudFilesClient.Provider.ORDINARY);panel.addView(autoIcon);
     panel.addView(owner.text("新版上传并回读确认标题、简介与图标后，旧文件才移入回收站。新版会生成新的分享链接，旧分享链接继续指向已被替换的旧文件。",12,owner.MUTED));
+    final String target=folder();final CloudFilesClient.Provider requested=provider;
     AlertDialog dialog=new AlertDialog.Builder(owner).setTitle("智能换源（上传新版 APK）").setView(owner.limitedDialogScroll(panel,420)).setNegativeButton("取消",null).setPositiveButton("上传新版",(d,w)->work("智能换源完成",()->{
-      CloudFilesClient.ReplaceResult result=client.replaceApk(item,folder(),file.getAbsolutePath(),
-          CloudFilesClient.UploadOptions.defaults().autoIcon(autoIcon.isChecked()));
+      String account=client.currentAccountName(requested);CloudFilesClient.ReplaceResult result;
+      try{recordManualUpload(account,requested,target,file,"上传中","");result=client.replaceApk(item,target,file.getAbsolutePath(),CloudFilesClient.UploadOptions.defaults().autoIcon(autoIcon.isChecked()));recordManualUpload(account,requested,target,file,"完成","");}
+      catch(Exception error){recordManualUpload(account,requested,target,file,"失败","换源未完成，请检查云端文件");throw error;}
       CloudFilesClient.CloudItem fresh=new CloudFilesClient.CloudItem(result.newFileId,result.name,false,0,"","",false,0,"",false,"");
       CloudFilesClient.ShareInfo share=client.shareInfo(fresh);
       owner.runOnUiThread(()->{

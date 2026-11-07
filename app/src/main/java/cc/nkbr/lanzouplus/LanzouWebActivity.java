@@ -20,6 +20,14 @@ import java.util.concurrent.*;
 import java.util.regex.*;
 
 public final class LanzouWebActivity extends Activity{
+  @Override public android.content.Context createDeviceProtectedStorageContext(){
+    return BackupPreferences.wrapContext(super.createDeviceProtectedStorageContext());
+  }
+  @Override public android.content.Context createConfigurationContext(android.content.res.Configuration configuration){
+    return BackupPreferences.wrapContext(super.createConfigurationContext(configuration));
+  }  @Override public android.content.SharedPreferences getSharedPreferences(String name,int mode){
+    return BackupPreferences.wrap(name,super.getSharedPreferences(name,mode));
+  }
     static final String EXTRA_URL="u",EXTRA_HISTORY_SCROLL="history_scroll",EXTRA_CHALLENGE="challenge",EXTRA_VERIFICATION_URL="verification_url",EXTRA_VERIFICATION_COOKIE="verification_cookie",PREFS="web-browser-v2",HISTORY="history",SEARCH_HISTORY="search_queries",HOME_URL=WebNavigationPolicy.HOME_URL,TIMING_TAG="LanzouWeb182"; static final int FILE_PICK=401,MAX_HISTORY=120,MAX_SEARCH_HISTORY=30,TOOLBAR_COMPACT_WIDTH_DP=480,MENU_ROW_HEIGHT_DP=48,MENU_MIN_HEIGHT_DP=160,TIMING_SAMPLES=8;
 
     WebView web;EditText address,suggestionInput;TextView title;ImageView siteIcon;ProgressBar progress;FrameLayout shell,noticeLayer,suggestionLayer,contextLayer;LinearLayout suggestionResults;PopupWindow menuPopup;String currentUrl="",currentTitle="";int BG,SURFACE,TEXT,MUTED,DIV,PRIMARY,topInset,bottomInset;float lastTouchX,lastTouchY;ValueCallback<Uri[]> fileCallback;boolean syncingSuggestionInput,challengeMode,verificationFinishing,automaticVerificationAttempted;int pendingHistoryScroll;String pendingHistoryUrl="";LanzouSliderVerification automaticVerification;

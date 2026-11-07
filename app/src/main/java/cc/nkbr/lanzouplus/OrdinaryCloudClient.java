@@ -109,15 +109,17 @@ final class OrdinaryCloudClient {
 
   private final Context context;
   private final SharedPreferences preferences;
-  private final Object vaultLock=new Object();
+  private final String boundName;
+  private static final Object vaultLock=new Object();
   private final Object networkLock=new Object();
   private final Map<String,SessionEntry> sessions=new HashMap<>();
   private final Map<String,Object> accountLocks=new HashMap<>();
   private final CookieJar jar=new CookieJar();
   private volatile Session active;
 
-  OrdinaryCloudClient(Context context){
-    this.context=context.getApplicationContext();
+  OrdinaryCloudClient(Context context){this(context,"");}
+  private OrdinaryCloudClient(Context context,String boundName){
+    this.context=context.getApplicationContext();this.boundName=boundName;
     preferences=this.context.getSharedPreferences(PREFS,Context.MODE_PRIVATE);
   }
 
@@ -131,6 +133,42 @@ final class OrdinaryCloudClient {
     synchronized(vaultLock){return loadVault().current;}
   }
 
+  /** Portable credentials are returned only to the encrypted backup boundary. */
+  JSONObject backupAccounts()throws CloudFilesClient.CloudException{
+    synchronized(vaultLock){
+      try{
+        Vault vault=loadVault();JSONArray values=new JSONArray();
+        for(Credentials value:vault.accounts.values())values.put(new JSONObject()
+            .put("loginName",value.loginName).put("loginPwd",value.password));
+        return new JSONObject().put("current",vault.current).put("accounts",values);
+      }catch(org.json.JSONException error){throw new CloudFilesClient.CloudException(
+          CloudFilesClient.ERROR_CREDENTIALS_UNREADABLE,"无法导出云账号",error);}
+    }
+  }
+
+  /** Existing local entries win; the return value counts conflicting accounts. */
+  int mergeBackupAccounts(JSONObject backup)throws CloudFilesClient.CloudException{
+    synchronized(vaultLock){
+      try{
+        JSONArray values=backup.getJSONArray("accounts");Vault vault=loadVault();int conflicts=0;
+        for(int i=0;i<values.length();i++){
+          JSONObject value=values.getJSONObject(i);String name=value.getString("loginName").trim();
+          String password=value.getString("loginPwd");
+          if(name.isEmpty()||password.isEmpty())throw new org.json.JSONException("invalid account");
+          Credentials existing=vault.accounts.get(name);
+          if(existing==null)vault.accounts.put(name,new Credentials(name,password,"","",""));
+          else if(!existing.password.equals(password))conflicts++;
+        }
+        if(vault.current.isEmpty()&&!vault.accounts.isEmpty()){
+          String saved=backup.optString("current","");
+          vault.current=vault.accounts.containsKey(saved)?saved:vault.accounts.keySet().iterator().next();
+        }
+        if(!vault.accounts.isEmpty())persist(vault);
+        return conflicts;
+      }catch(org.json.JSONException error){throw new CloudFilesClient.CloudException(
+          CloudFilesClient.ERROR_CREDENTIALS_UNREADABLE,"备份中的云账号格式无效",error);}
+    }
+  }
   boolean selectAccount(String account)throws CloudFilesClient.CloudException{
     String name=normalizedName(account);
     synchronized(vaultLock){
@@ -264,7 +302,7 @@ final class OrdinaryCloudClient {
   private Session requireSession()throws CloudFilesClient.CloudException{
     if(active!=null&&!active.cookie.isEmpty()&&!active.uid.isEmpty())return active;
     String current;
-    synchronized(vaultLock){current=loadVault().current;}
+    synchronized(vaultLock){current=boundName.isEmpty()?loadVault().current:boundName;}
     if(current.isEmpty())
       throw new CloudFilesClient.CloudException(CloudFilesClient.ERROR_CREDENTIALS_REQUIRED,"请先登录蓝奏云账号");
     ensureLoggedIn(current);
@@ -1302,6 +1340,17 @@ final class OrdinaryCloudClient {
     return result;
   }
 
+  OrdinaryCloudClient boundClient(String account)throws CloudFilesClient.CloudException{
+    OrdinaryCloudClient worker=new OrdinaryCloudClient(context,normalizedName(account));
+    worker.verificationPrompt=verificationPrompt;
+    worker.ensureLoggedIn(worker.boundName);
+    return worker;
+  }
+  /** Owns a separate cookie jar bound to the named account for the entire upload. */
+  CloudFilesClient.UploadResult uploadForAccount(String account,String folderId,String path,
+      CloudFilesClient.UploadOptions options)throws CloudFilesClient.CloudException{
+    return boundClient(account).upload(folderId,path,options);
+  }
   CloudFilesClient.UploadResult upload(String folderId,String path,CloudFilesClient.UploadOptions options)
       throws CloudFilesClient.CloudException{
     validId(folderId,"folderId");

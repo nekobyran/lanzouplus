@@ -44,7 +44,7 @@ final class GithubAccountUi {
         code.setTextIsSelectable(true);
         code.setPadding(0, owner.dp(14), 0, owner.dp(14));
         TextView instructions = owner.text(
-                "授权步骤：复制验证码 → 打开 github.com/login/device → 输入验证码并同意公开仓库权限。\n"
+                "授权步骤：复制验证码 → 打开 github.com/login/device → 输入验证码并同意公开和私有仓库读写权限。\n"
                         + "登录过程在 GitHub 官网完成，本应用不要求提供密码或个人 Token。",
                 12, owner.MUTED);
         panel.addView(status, new LinearLayout.LayoutParams(-1, -2));
@@ -184,7 +184,7 @@ final class GithubAccountUi {
             panel.addView(hint);
         } else {
             String content = failure.isEmpty()
-                    ? "尚未登录 GitHub。登录将使用官方一次性设备验证码，只申请 public_repo 权限。"
+                    ? "尚未登录 GitHub。登录将使用官方一次性设备验证码，申请公开及私有仓库读写权限。"
                     : failure;
             panel.addView(owner.text(content, 14, owner.TEXT));
         }

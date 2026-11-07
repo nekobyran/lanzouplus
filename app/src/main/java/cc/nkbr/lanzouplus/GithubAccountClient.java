@@ -25,7 +25,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * GitHub 官方 OAuth Device Flow 与本机加密账户。只申请 public_repo，不需要 Client Secret。
+ * GitHub 官方 OAuth Device Flow 与本机加密账户。申请 repo 权限以访问用户的私有备份仓库，不需要 Client Secret。
  *
  * <p>OAuth 和带令牌的 API 请求仅访问 GitHub 官方 HTTPS 主机；禁止 HTTP 重定向。
  * Token/refresh token 只存在运行内存和 Android Keystore AES/GCM 密文首选项。
@@ -247,7 +247,7 @@ final class GithubAccountClient {
     DeviceCode requestDeviceCode() throws IOException {
         requireClientId();
         Response result = send("POST", OAUTH_CODE_URL,
-                form("client_id", clientId, "scope", "public_repo"), null);
+                form("client_id", clientId, "scope", "repo"), null);
         JSONObject body = json(result.body);
         if (result.status != 200 || body.has("error")) {
             throw oauthFailure(body.optString("error"), result.status);
@@ -333,6 +333,19 @@ final class GithubAccountClient {
         return sessionForRequest().accessToken;
     }
 
+    /** Atomically binds the returned token to the requested GitHub identity. */
+    String accessTokenForAccount(String expectedLogin) throws IOException {
+        if (expectedLogin == null || expectedLogin.trim().isEmpty()) {
+            throw new IOException("请选择 GitHub 账号");
+        }
+        synchronized (SESSION_LOCK) {
+            Session session = sessionForRequest();
+            if (!session.profile.login.equalsIgnoreCase(expectedLogin.trim())) {
+                throw new IOException("GitHub 账号已切换，请重新选择同步账号");
+            }
+            return session.accessToken;
+        }
+    }
     /** 授权完成后才持久化，取消或旧 Activity 永远不得调用此方法。 */
     void saveAuthorizedSession(Session session) throws IOException {
         synchronized (SESSION_LOCK) {
@@ -507,7 +520,7 @@ final class GithubAccountClient {
         String message;
         switch (result.status) {
             case 401: message = "GitHub 授权已失效，请重新登录"; break;
-            case 403: message = "GitHub 拒绝操作，请确认已授予 public_repo 权限及账户权限"; break;
+            case 403: message = "GitHub 拒绝操作；备份需要 repo 权限，请退出 GitHub 后重新授权并确认账户权限"; break;
             case 404: message = "GitHub 仓库或 API 不存在（HTTP 404）"; break;
             case 409: message = "GitHub 仓库写入冲突（HTTP 409）"; break;
             case 422:

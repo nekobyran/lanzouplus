@@ -761,6 +761,7 @@ final class CloudFilesClient {
   }
 
   /** The single premium client used by this process, shared with the settings and file pages. */
+  OrdinaryCloudClient ordinaryClient(){return ordinary;}
   PremiumCloudClient premiumClient(){return premium;}
 
   void selectProvider(Provider provider){
@@ -1010,6 +1011,66 @@ final class CloudFilesClient {
     }
   }
 
+  /** Isolates all supported operations from the mutable UI provider and account. */
+  BoundSession bindAccount(Provider provider,String account)throws CloudException{
+    if(provider==null||account==null||account.trim().isEmpty())
+      throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"请选择云账号");
+    OrdinaryCloudClient bound=provider==Provider.ORDINARY?ordinary.boundClient(account):null;
+    return new BoundSession(provider,account,bound);
+  }
+
+  final class BoundSession{
+    final Provider provider;final String account;private final OrdinaryCloudClient bound;
+    private BoundSession(Provider provider,String account,OrdinaryCloudClient bound){
+      this.provider=provider;this.account=account;this.bound=bound;
+    }
+    synchronized CloudPage listFolder(String folder,int page,int pageSize)throws CloudException{
+      try{return provider==Provider.ORDINARY?bound.listFolder(folder,page,pageSize)
+          :premium.forAccount(account,()->premium.cloudListFolder(folder,page,pageSize));}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }
+    synchronized String createFolder(String parent,String name,String description)throws CloudException{
+      clearFolderCache(provider);
+      try{return provider==Provider.ORDINARY?bound.createFolder(parent,name,description)
+          :premium.forAccount(account,()->premium.cloudCreateFolder(parent,name,description));}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }
+    synchronized void rename(CloudItem item,String name)throws CloudException{
+      checkItem(item);clearFolderCache(provider);
+      try{if(provider==Provider.ORDINARY)bound.rename(item,name);
+        else premium.forAccount(account,()->{premium.cloudRename(item,name);return null;});}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }
+    synchronized void setPassword(CloudItem item,String password)throws CloudException{
+      checkItem(item);clearFolderCache(provider);
+      try{if(provider==Provider.ORDINARY)bound.setPassword(item,password);
+        else premium.forAccount(account,()->{premium.cloudSetPassword(item,password);return null;});}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }    synchronized DownloadResult download(CloudItem item,String destination)throws CloudException{
+      checkItem(item);if(item.folder)throw new CloudException(ERROR_UNSUPPORTED,"绑定会话仅支持单文件下载");
+      try{return provider==Provider.ORDINARY?bound.download(item,destination)
+          :premium.forAccount(account,()->premium.cloudDownload(item,destination));}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }
+    synchronized UploadResult upload(String folder,String path,UploadOptions options)throws CloudException{
+      clearFolderCache(provider);
+      try{return provider==Provider.ORDINARY?bound.upload(folder,path,options)
+          :premium.cloudUploadForAccount(account,folder,path,options);}
+      catch(PremiumCloudClient.CloudException error){throw translate(error);}
+    }
+  }
+  /** Uploads using an explicit provider and account, independent of later UI selection. */
+  UploadResult uploadForAccount(Provider provider,String account,String folderId,String path,
+      UploadOptions options)throws CloudException{
+    if(provider==null||account==null||account.trim().isEmpty())
+      throw new CloudException(ERROR_CREDENTIALS_REQUIRED,"请选择云账号");
+    clearFolderCache(provider);
+    try{
+      return provider==Provider.PREMIUM
+          ?premium.cloudUploadForAccount(account,folderId,path,options)
+          :ordinary.uploadForAccount(account,folderId,path,options);
+    }catch(PremiumCloudClient.CloudException error){throw translate(error);}
+  }
   UploadResult upload(String folderId,String path,UploadOptions options)throws CloudException{
     clearFolderCache(selection);
     try{

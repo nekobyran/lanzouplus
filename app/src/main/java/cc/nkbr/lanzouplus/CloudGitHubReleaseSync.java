@@ -85,10 +85,14 @@ final class CloudGitHubReleaseSync {
     void onProgress(String repository,String name,String state,long transferred,long total,String detail);
   }
   static final class Project {
-    final String repository,folderName,keywords;
+    final String repository,folderName,keywords,releaseTag;
     Project(String repository,String folderName){this(repository,folderName,null);}
     Project(String repository,String folderName,String keywords){
+      this(repository,folderName,keywords,"");
+    }
+    Project(String repository,String folderName,String keywords,String releaseTag){
       this.repository=repository;this.folderName=folderName;this.keywords=keywords;
+      this.releaseTag=releaseTag==null?"":releaseTag.trim();
     }
   }
   private static final class SyncCancelled extends java.io.InterruptedIOException {}
@@ -184,7 +188,10 @@ final class CloudGitHubReleaseSync {
         try{
           String[] parts=repository.split("/",2);
           String base="https://api.github.com/repos/"+Uri.encode(parts[0])+"/"+Uri.encode(parts[1]);
-          JSONObject release=new JSONObject(new String(readApi(base+"/releases/latest",bearer,cancellation),StandardCharsets.UTF_8));
+          String releaseTag=project!=null&&project.releaseTag!=null?project.releaseTag.trim():"";
+          String releaseUrl=releaseTag.isEmpty()?base+"/releases/latest"
+              :base+"/releases/tags/"+Uri.encode(releaseTag);
+          JSONObject release=new JSONObject(new String(readApi(releaseUrl,bearer,cancellation),StandardCharsets.UTF_8));
           long releaseId=release.getLong("id");String assetsUrl=release.getString("assets_url");
           if(releaseId<=0||!assetsUrl.equalsIgnoreCase(base+"/releases/"+releaseId+"/assets"))
             throw new SyncFailure("GitHub 附件列表地址无效");

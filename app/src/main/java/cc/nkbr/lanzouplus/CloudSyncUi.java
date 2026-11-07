@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.widget.*;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 
 /** Sync task management for the cloud folder currently shown by CloudManagement. */
@@ -77,7 +78,46 @@ final class CloudSyncUi {
     LinearLayout panel=panel();
     panel.addView(owner.text("目标："+folderName+"。每个任务可单独设置一个仓库的匹配词和云端子目录。",13,owner.MUTED));
     EditText name=input("任务名称",InputType.TYPE_CLASS_TEXT);panel.addView(name);
-    EditText repository=input("GitHub 仓库（所有者/仓库名）",InputType.TYPE_CLASS_TEXT);panel.addView(repository);
+    EditText repository=input("GitHub 仓库链接（如 https://github.com/所有者/仓库名）",InputType.TYPE_CLASS_TEXT);
+    repository.setText("https://github.com/");
+    panel.addView(repository);
+    final String[] selectedTag={""};
+    TextView releaseLabel=owner.text("版本：最新发布",12,owner.MUTED);
+    Button readReleases=owner.button("读取仓库版本");
+    readReleases.setOnClickListener(v->{
+      String slug=repositorySlug(repository.getText().toString());
+      if(slug.isEmpty()){owner.showNotice("请先输入 GitHub 仓库链接",true);return;}
+      readReleases.setEnabled(false);releaseLabel.setText("正在读取版本…");
+      owner.io.execute(()->{
+        List<String> tags=new ArrayList<>();List<String> labels=new ArrayList<>();String error="";
+        try{
+          org.json.JSONArray values=GithubAccountClient.production(owner).apiArrayForAccount(
+              profile.login,"/repos/"+slug.replace("/","/")+"/releases?per_page=30");
+          for(int i=0;i<values.length();i++){
+            org.json.JSONObject release=values.getJSONObject(i);
+            String tag=release.optString("tag_name","").trim();
+            if(tag.isEmpty())continue;
+            tags.add(tag);
+            labels.add(tag+(release.optBoolean("prerelease",false)?"（预发布）":"")
+                +(release.optBoolean("draft",false)?"（草稿）":""));
+          }
+        }catch(Exception errorValue){error=owner.friendlyError(errorValue);}
+        final String failure=error;final List<String> found=tags;final List<String> shown=labels;
+        owner.runOnUiThread(()->{
+          readReleases.setEnabled(true);
+          if(!failure.isEmpty()){releaseLabel.setText("版本：最新发布");owner.showNotice("读取版本失败："+failure,true);return;}
+          List<String> items=new ArrayList<>();items.add("最新发布（自动跟随）");items.addAll(shown);
+          new AlertDialog.Builder(owner).setTitle("选择要同步的版本")
+              .setItems(items.toArray(new String[0]),(d,which)->{
+                selectedTag[0]=which==0?"":found.get(which-1);
+                releaseLabel.setText("版本："+(which==0?"最新发布":shown.get(which-1)));
+              }).setNegativeButton("取消",null).create().show();
+          if(found.isEmpty())owner.showNotice("该仓库没有可用的发行版本",false);
+        });
+      });
+    });
+    panel.addView(readReleases);
+    panel.addView(releaseLabel);
     EditText match=input("文件名匹配词（留空匹配全部）",InputType.TYPE_CLASS_TEXT);panel.addView(match);
     EditText subdirectory=input("云端子目录名称",InputType.TYPE_CLASS_TEXT);panel.addView(subdirectory);
     EditText extension=input("需加密压缩的文件扩展名（逗号分隔，留空不压缩）",InputType.TYPE_CLASS_TEXT);panel.addView(extension);
@@ -90,10 +130,12 @@ final class CloudSyncUi {
       char[] secret=password.getText().toString().toCharArray(), archiveSecret=archivePassword.getText().toString().toCharArray();
       try {
         if(!extension.getText().toString().trim().isEmpty()&&archiveSecret.length==0)throw new IllegalArgumentException("请输入压缩包密码");
-        String[] parts=repository.getText().toString().trim().split("/",-1);
-        if(parts.length!=2||parts[0].trim().isEmpty()||parts[1].trim().isEmpty())throw new IllegalArgumentException("请输入所有者/仓库名");
+        String slug=repositorySlug(repository.getText().toString());
+        String[] parts=slug.split("/",-1);
+        if(parts.length!=2||parts[0].isEmpty()||parts[1].isEmpty())throw new IllegalArgumentException("请输入有效的 GitHub 仓库链接");
         org.json.JSONObject item=new org.json.JSONObject();item.put("owner",parts[0].trim());item.put("repo",parts[1].trim());
         item.put("match",match.getText().toString().trim());item.put("subdirectory",subdirectory.getText().toString().trim());
+        if(!selectedTag[0].isEmpty())item.put("releaseTag",selectedTag[0]);
         org.json.JSONObject config=new org.json.JSONObject();config.put("githubLogin",profile.login);config.put("repositories",new org.json.JSONArray().put(item));config.put("archiveFormat",extension.getText().toString().trim());
         CloudSyncTasks.Task t=new CloudSyncTasks.Task();t.kind="github_release";t.configJson=config.toString();
         t.name=name.getText().toString().trim();t.accountId=account;t.cloudType=provider==CloudFilesClient.Provider.PREMIUM?"premium":"ordinary";
@@ -101,6 +143,22 @@ final class CloudSyncUi {
         password.setText("");archivePassword.setText("");dialog.dismiss();owner.showNotice("同步任务已创建",false);
       }catch(Exception e){owner.showNotice(owner.friendlyError(e),true);}finally{Arrays.fill(secret,'\0');Arrays.fill(archiveSecret,'\0');}
     });
+  }
+  /** Accepts a full GitHub URL, ssh form or owner/repo shorthand. */
+  static String repositorySlug(String raw){
+    if(raw==null)return "";
+    String value=raw.trim();
+    if(value.isEmpty())return "";
+    value=value.replaceFirst("(?i)^git@github\\.com:","");
+    value=value.replaceFirst("(?i)^(https?://)?(www\\.)?github\\.com/","");
+    int cut=value.indexOf('?');if(cut>=0)value=value.substring(0,cut);
+    cut=value.indexOf('#');if(cut>=0)value=value.substring(0,cut);
+    value=value.replaceFirst("/+$","");
+    String[] parts=value.split("/",-1);
+    if(parts.length<2)return "";
+    String owner=parts[0].trim(),repo=parts[1].trim().replaceFirst("(?i)\\.git$","");
+    if(!owner.matches("[A-Za-z0-9_.-]+")||!repo.matches("[A-Za-z0-9_.-]+"))return "";
+    return owner+"/"+repo;
   }
   private void createBackupForm() {
     final GithubAccountClient github=GithubAccountClient.production(owner);

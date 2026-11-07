@@ -79,7 +79,7 @@ final class CloudManagement {
     ImageButton refresh=owner.iconButton(R.drawable.ic_refresh,"刷新云盘文件");refresh.setOnClickListener(v->load(false,true));owner.pageHeaderRow.addView(refresh);controls.add(refresh);
     ImageButton entry=owner.iconButton(R.drawable.ic_add,"上传文件或新建文件夹");entry.setOnClickListener(v->entryMenu());owner.pageHeaderRow.addView(entry);controls.add(entry);
     ImageButton uploads=owner.iconButton(R.drawable.ic_history,"上传列表");uploads.setOnClickListener(v->syncUi.showUploads());owner.pageHeaderRow.addView(uploads);controls.add(uploads);
-    ImageButton sync=owner.iconButton(R.drawable.ic_refresh,"同步管理");sync.setOnClickListener(v->syncUi.show(provider,folder(),folderNames.isEmpty()?"根目录":folderNames.get(folderNames.size()-1)));owner.pageHeaderRow.addView(sync);controls.add(sync);
+    ImageButton sync=owner.iconButton(R.drawable.ic_add,"同步管理");sync.setOnClickListener(v->syncUi.show(provider,folder(),folderNames.isEmpty()?"根目录":folderNames.get(folderNames.size()-1)));owner.pageHeaderRow.addView(sync);controls.add(sync);
     LinearLayout providers=new LinearLayout(owner);
     providers.setGravity(Gravity.CENTER_VERTICAL);
     for(CloudFilesClient.Provider value:CloudFilesClient.Provider.values()){

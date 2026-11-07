@@ -103,7 +103,7 @@ public final class CloudSyncJobService extends JobService {
           for(int i=0;i<repos.length();i++) {
             JSONObject repo=repos.getJSONObject(i);
             projects.add(new CloudGitHubReleaseSync.Project(repo.getString("owner")+"/"+repo.getString("repo"),
-                repo.getString("subdirectory"),repo.optString("match","")));
+                repo.getString("subdirectory"),repo.optString("match",""),repo.optString("releaseTag","")));
           }
           Set<String> extensionSet=new HashSet<>();
           for(String extension:extensions.split("[,，;；\\s]+")) if(!extension.isEmpty()) extensionSet.add(extension);

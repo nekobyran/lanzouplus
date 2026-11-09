@@ -618,7 +618,7 @@ final class CloudManagement {
         } catch(Exception error){recordManualUpload(account,requested,target,file,"失败","上传失败");throw error;}
       }
       String message="已上传 "+success+" 个文件";
-      return warnings.isEmpty()?message:message+"；"+String.join("；",warnings);
+      return warnings.isEmpty()?message:message+"；"+Texts.join("；",warnings);
     },true);
   }
 

@@ -30,19 +30,19 @@ final class HomeSearchScope {
     for(SourceDestinationPopup.Destination selected:new ArrayList<>(draft.paths)){String label=selected.path.isEmpty()?selected.name():selected.path;TextView tag=owner.sourceTag(label);tag.setContentDescription("已选路径 "+label+"，长按移除");tag.setOnClickListener(v->path.performClick());tag.setOnLongClickListener(v->{draft.paths.remove(selected);HistoryPopupNavigation.switchCollection(owner,dialog[0],()->editor(known,draft));return true;});LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,owner.dp(32));p.rightMargin=owner.dp(6);pathTags.addView(tag,p);}
     path.setOnClickListener(v->HistoryPopupNavigation.switchCollection(owner,dialog[0],()->{AlertDialog picker=SourceDestinationPopup.select(owner,new SourcePathCatalog(owner,known,draft.paths),selected->{draft.paths.clear();draft.paths.addAll(selected);editor(known,draft);});returnToEditor(picker,()->editor(known,draft));}));
     CheckBox automatic=new CheckBox(owner);automatic.setText("自动索引所选路径与分类");automatic.setTextColor(owner.TEXT);automatic.setButtonTintList(android.content.res.ColorStateList.valueOf(owner.PRIMARY));automatic.setChecked(draft.autoIndex);automatic.setOnCheckedChangeListener((v,checked)->draft.autoIndex=checked);panel.addView(automatic,new LinearLayout.LayoutParams(-1,owner.dp(44)));
-    TextView index=owner.text("索引所属路径："+(draft.paths.isEmpty()?"全部路径":pathSummary(draft.paths))+(draft.tags.isEmpty()?"":" · "+String.join("、",draft.tags)),11,owner.MUTED);panel.addView(index);
+    TextView index=owner.text("索引所属路径："+(draft.paths.isEmpty()?"全部路径":pathSummary(draft.paths))+(draft.tags.isEmpty()?"":" · "+Texts.join("、",draft.tags)),11,owner.MUTED);panel.addView(index);
     dialog[0]=new AlertDialog.Builder(owner).setTitle("搜索范围").setView(SharedPopupSurface.dialogScroll(owner,panel,470)).setNegativeButton("取消",null).setNeutralButton("全部路径",null).setPositiveButton("应用",(d,w)->{paths.clear();paths.addAll(draft.paths);SourceCategories.replace(categories,draft.tags);owner.sessionSearchCategory=draft.web?"网页搜索":"全部";owner.sessionHomeSourceCategory=categories.size()==1?categories.get(0):"全部";refreshLabel();applyAutomaticIndex(known,draft);}).create();
     dialog[0].setOnShowListener(d->dialog[0].getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->{draft.paths.clear();HistoryPopupNavigation.switchCollection(owner,dialog[0],()->editor(known,draft));}));owner.showRounded(dialog[0]);
   }
-  private static String pathSummary(List<SourceDestinationPopup.Destination> paths){List<String> names=new ArrayList<>();for(SourceDestinationPopup.Destination path:paths)names.add(path.path.isEmpty()?path.name():path.path);return String.join("、",names);}
+  private static String pathSummary(List<SourceDestinationPopup.Destination> paths){List<String> names=new ArrayList<>();for(SourceDestinationPopup.Destination path:paths)names.add(path.path.isEmpty()?path.name():path.path);return Texts.join("、",names);}
   private void applyAutomaticIndex(List<Models.Source> known,Draft draft){
     owner.sessionBackgroundIndex=draft.autoIndex;owner.persistSearchSettings();
     if(!draft.autoIndex){owner.core.cancelBackgroundIndex();return;}
     owner.io.execute(()->{try{
       List<Models.Source> selected=draft.paths.isEmpty()?known:SourcePathCatalog.selectedSources(owner.core,draft.paths);
       List<Models.Source> scoped=categoryIndexSources(selected,draft.tags);List<IndexPathScope.Entry> entries=new ArrayList<>();
-      for(SourceDestinationPopup.Destination path:draft.paths)entries.add(new IndexPathScope.Entry(String.join("、",draft.tags),path.nodeId,path.path,path.composite));
-      if(entries.isEmpty()&&!draft.tags.isEmpty())entries.add(new IndexPathScope.Entry(String.join("、",draft.tags),"","全部路径 · "+String.join("、",draft.tags),null));
+      for(SourceDestinationPopup.Destination path:draft.paths)entries.add(new IndexPathScope.Entry(Texts.join("、",draft.tags),path.nodeId,path.path,path.composite));
+      if(entries.isEmpty()&&!draft.tags.isEmpty())entries.add(new IndexPathScope.Entry(Texts.join("、",draft.tags),"","全部路径 · "+Texts.join("、",draft.tags),null));
       IndexPathScope scope=IndexPathScope.of(entries,scoped);
       owner.runOnUiThread(()->{owner.applyIndexPathScope(scope);owner.requestDirectoryIndexUpdate(false,false);});
     }catch(Exception error){owner.runOnUiThread(()->owner.showNotice("自动索引范围设置失败："+owner.friendlyError(error),true));}});

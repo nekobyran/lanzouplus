@@ -8,7 +8,7 @@ android {
  compileOptions { isCoreLibraryDesugaringEnabled = true }
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2000008; versionName = "2.0.8alpha" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2000009; versionName = "2.0.9" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {

@@ -34,28 +34,31 @@ import org.json.JSONTokener;
  * <p>Only repository metadata, raw documents and owner avatars are eligible for a mirror.
  * Every request is a plain, credential-free GET; authorization, token and other non-public
  * GitHub requests must stay on their official transport and never pass through this class.
- * The mirror set is the same public gh-proxy family already used by the updater, but the
+ * The mirror set is the public gh-proxy family plus jsDelivr for repository files, but the
  * capability differs by resource: API and avatar mirrors are deliberately narrower because
- * some instances reject those paths.
+ * some instances reject those paths, and jsDelivr cannot serve either one.
  *
- * <p>All eligible routes race concurrently. The first response that passes content validation
- * wins, failures never win, and losing connections are disconnected. A small bounded pool keeps
- * simultaneous sockets predictable on a phone. When every mirror is known to be unhealthy the
- * direct GitHub route is the only route submitted, so the fallback does not wait for mirrors.
+ * <p>Eligible routes are started as a hedged request. The best route starts immediately and the
+ * next route is added after a short interval, with at most three sockets in flight. The first
+ * response that passes content validation wins, failures never win, and losing connections are
+ * disconnected. A small bounded pool keeps simultaneous sockets predictable on a phone. When
+ * every mirror is known to be unhealthy the direct GitHub route is the only route submitted.
  */
 final class GithubPublicTransport {
   private static final String[] RAW_MIRRORS={
       "https://gh-proxy.com/",
       "https://ghfast.top/",
-      "https://gh.llkk.cc/"
+      "https://ghproxy.net/",
+      "https://gh-proxy.du33169.workers.dev/",
+      "https://cdn.jsdelivr.net/"
   };
   private static final String[] API_MIRRORS={
-      "https://gh-proxy.com/",
-      "https://gh.llkk.cc/"
+      "https://gh-proxy.com/"
   };
   private static final String[] AVATAR_MIRRORS={
       "https://gh-proxy.com/"
   };
+  private static final String JSDELIVR_BASE="https://cdn.jsdelivr.net/";
 
   private static final int POOL_SIZE=8;
   private static final int QUEUE_LIMIT=64;
@@ -67,6 +70,9 @@ final class GithubPublicTransport {
   private static final long OVERALL_TIMEOUT_MS=20000L;
   private static final long RETRY_MILLIS=60L*1000L;
   private static final long BAD_MIRROR_RETRY_MILLIS=10L*60L*1000L;
+  private static final long HEDGE_DELAY_MILLIS=500L;
+  private static final long HEDGE_DELAY_NANOS=TimeUnit.MILLISECONDS.toNanos(HEDGE_DELAY_MILLIS);
+  private static final int MAX_IN_FLIGHT=3;
 
   private static final AtomicInteger THREAD_IDS=new AtomicInteger();
   private static final ExecutorService POOL=new ThreadPoolExecutor(
@@ -105,40 +111,47 @@ final class GithubPublicTransport {
     List<Attempt> attempts=new ArrayList<>();
     List<Future<Result>> futures=new ArrayList<>();
     Map<Future<Result>,Attempt> byFuture=new IdentityHashMap<>();
+    int next=0;
     boolean rejected=false;
-    for(Route route:routes){
-      Attempt attempt=new Attempt(route,limit);
-      try{
-        Future<Result> future=completion.submit(attempt);
-        attempts.add(attempt);
-        futures.add(future);
-        byFuture.put(future,attempt);
-      }catch(RejectedExecutionException busy){
-        rejected=true;
-        break;
-      }
-    }
-    if(rejected||attempts.isEmpty()){
-      abort(attempts,futures);
-      return direct(original,resource,limit);
-    }
-
     IOException first=null;
     IOException directError=null;
     long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(OVERALL_TIMEOUT_MS);
-    for(int i=0;i<attempts.size();i++){
-      long remaining=deadline-System.nanoTime();
+    long nextLaunch=System.nanoTime();
+    while(next<routes.size()||!futures.isEmpty()){
+      long now=System.nanoTime();
+      long remaining=deadline-now;
       if(remaining<=0)break;
+      if(next<routes.size()&&futures.size()<MAX_IN_FLIGHT
+          &&(futures.isEmpty()||now-nextLaunch>=0)){
+        Attempt attempt=new Attempt(routes.get(next++),limit);
+        try{
+          Future<Result> future=completion.submit(attempt);
+          attempts.add(attempt);
+          futures.add(future);
+          byFuture.put(future,attempt);
+          nextLaunch=System.nanoTime()+HEDGE_DELAY_NANOS;
+        }catch(RejectedExecutionException busy){
+          rejected=true;
+          break;
+        }
+        continue;
+      }
+      long waitNanos=remaining;
+      if(next<routes.size()&&futures.size()<MAX_IN_FLIGHT){
+        long untilLaunch=nextLaunch-System.nanoTime();
+        if(untilLaunch>0&&untilLaunch<waitNanos)waitNanos=untilLaunch;
+      }
       Future<Result> future;
       try{
-        future=completion.poll(remaining,TimeUnit.NANOSECONDS);
+        future=completion.poll(waitNanos,TimeUnit.NANOSECONDS);
       }catch(InterruptedException interrupted){
         abort(attempts,futures);
         Thread.currentThread().interrupt();
         throw new java.io.InterruptedIOException("仓库读取被中断");
       }
-      if(future==null)break;
-      Attempt attempt=byFuture.get(future);
+      if(future==null)continue;
+      Attempt attempt=byFuture.remove(future);
+      futures.remove(future);
       try{
         Result result=future.get();
         succeeded(result.route,result.elapsedNanos);
@@ -152,11 +165,13 @@ final class GithubPublicTransport {
         failed(attempt.route,error);
         if(attempt.route.base==null)directError=error;
         else if(first==null)first=error;
+        if(next<routes.size())nextLaunch=System.nanoTime();
       }catch(CancellationException ignored){
         // A route cancelled after another route won is not a transport failure.
       }
     }
     abort(attempts,futures);
+    if(rejected)return direct(original,resource,limit);
     if(directError!=null)throw directError;
     if(first!=null)throw first;
     throw new IOException("仓库读取失败（镜像与直连均无有效响应）");
@@ -173,8 +188,10 @@ final class GithubPublicTransport {
     for(String base:mirrors)if(healthy(resource,base))enabled.add(base);
     Collections.sort(enabled,(left,right)->Long.compare(score(resource,left),score(resource,right)));
     List<Route> routes=new ArrayList<>();
-    for(String base:enabled)routes.add(new Route(base,mirrorUrl(base,original,resource),resource,
-        original.getPath()));
+    for(String base:enabled){
+      String url=mirrorUrl(base,original,resource);
+      if(url!=null)routes.add(new Route(base,url,resource,original.getPath()));
+    }
     routes.add(new Route(null,original.toExternalForm(),resource,original.getPath()));
     return routes;
   }
@@ -186,12 +203,30 @@ final class GithubPublicTransport {
   }
 
   private static String mirrorUrl(String base,URL original,Kind resource){
+    if(JSDELIVR_BASE.equals(base)&&resource==Kind.RAW){
+      // jsDelivr caches branch refs; explicit refreshes must stay on the origin routes.
+      return refreshQuery(original.getQuery())?null:jsDelivrUrl(original);
+    }
     if(resource==Kind.AVATAR&&"github.com".equalsIgnoreCase(original.getHost())){
       String path=original.getPath();
       String owner=path.substring(1,path.length()-".png".length());
       return base+"https://avatars.githubusercontent.com/"+owner+"?s="+avatarSize(original.getQuery());
     }
     return base+original.toExternalForm();
+  }
+
+  /** Converts a raw.githubusercontent.com path to the jsDelivr GitHub CDN form. */
+  private static String jsDelivrUrl(URL original){
+    String[] parts=original.getPath().split("/",-1);
+    if(parts.length<5||parts[1].isEmpty()||parts[2].isEmpty()||parts[3].isEmpty())return null;
+    StringBuilder path=new StringBuilder();
+    for(int i=4;i<parts.length;i++){
+      if(i>4)path.append('/');
+      path.append(parts[i]);
+    }
+    String url=JSDELIVR_BASE+"gh/"+parts[1]+"/"+parts[2]+"@"+parts[3]+"/"+path;
+    String query=original.getQuery();
+    return query==null?url:url+"?"+query;
   }
 
   private static int avatarSize(String query){
@@ -283,7 +318,9 @@ final class GithubPublicTransport {
         ||value.equals("avatars.githubusercontent.com")
         ||value.equals("gh-proxy.com")
         ||value.equals("ghfast.top")
-        ||value.equals("gh.llkk.cc");
+        ||value.equals("ghproxy.net")
+        ||value.equals("gh-proxy.du33169.workers.dev")
+        ||value.equals("cdn.jsdelivr.net");
   }
 
   private static Kind kind(URL url){
@@ -468,20 +505,30 @@ final class GithubPublicTransport {
 
   private static long score(Kind resource,String base){
     Health health=HEALTH.get(key(resource,base));
-    return health==null||health.lastLatencyNanos<=0?Long.MAX_VALUE/2:health.lastLatencyNanos;
+    if(health==null||health.averageLatencyNanos<=0)return Long.MAX_VALUE/2;
+    long penalty=Math.min(health.unhealthyStreak,4)*HEDGE_DELAY_NANOS;
+    return health.averageLatencyNanos+penalty;
   }
 
   private static void succeeded(Route route,long elapsedNanos){
     if(route.base==null)return;
     Health health=HEALTH.computeIfAbsent(key(route.kind,route.base),ignored->new Health());
-    health.retryAt=0;
-    health.lastLatencyNanos=elapsedNanos;
+    synchronized(health){
+      long average=health.averageLatencyNanos;
+      health.averageLatencyNanos=average<=0?elapsedNanos:(average*3+elapsedNanos)/4;
+      health.unhealthyStreak=0;
+      health.retryAt=0;
+    }
   }
 
   private static void failed(Route route,IOException error){
     if(route.base==null)return;
     Health health=HEALTH.computeIfAbsent(key(route.kind,route.base),ignored->new Health());
-    health.retryAt=System.currentTimeMillis()+retryDelay(error);
+    synchronized(health){
+      health.failures=Math.min(health.failures+1,10000);
+      health.unhealthyStreak=Math.min(health.unhealthyStreak+1,100);
+      health.retryAt=System.currentTimeMillis()+retryDelay(error);
+    }
   }
 
   private static long retryDelay(IOException error){
@@ -508,7 +555,9 @@ final class GithubPublicTransport {
 
   private static final class Health{
     volatile long retryAt;
-    volatile long lastLatencyNanos;
+    volatile long averageLatencyNanos;
+    volatile int failures;
+    volatile int unhealthyStreak;
   }
 
   private static final class Route{

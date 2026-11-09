@@ -10,6 +10,21 @@ final class Models {
     final List<String> categories=new ArrayList<>();
     /** True only when this row was served by a persisted/live directory index lookup. */
     boolean folder, sourceEntry, indexHit;
+    /** Card tag labels are derived from categories on every bind, so keep the last result. */
+    private String cardTagsKey;
+    private List<String> cardTagsValue;
+    List<String> cardTags(){
+      int hash=categories.size();
+      for(String category:categories)hash=hash*31+(category==null?0:category.hashCode());
+      String key=hash+"|"+folder;
+      if(key.equals(cardTagsKey)&&cardTagsValue!=null)return cardTagsValue;
+      List<String> tags=new ArrayList<>(categories);
+      if(!tags.isEmpty()&&!tags.contains("自建合集")&&!tags.contains("GitHub源")&&!tags.contains("列表源"))tags.add(folder?"子目录":"单软件");
+      List<String> normalized=SourceCategories.normalized(tags);
+      cardTagsKey=key;
+      cardTagsValue=normalized;
+      return normalized;
+    }
   }
   static final class Folder {
     String title="", publisher="", avatarUrl="", description="", saveUrl="", url="", password="", folderId="";

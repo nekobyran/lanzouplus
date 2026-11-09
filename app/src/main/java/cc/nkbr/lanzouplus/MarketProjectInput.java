@@ -24,6 +24,6 @@ final class MarketProjectInput {
     for(int i=0;i<project.sourcePaths.length();i++)try{
       String link=new JSONObject(project.sourcePaths.getString(i)).optString("link");if(!link.isEmpty())links.add(link);
     }catch(JSONException ignored){}
-    return String.join("\n",links);
+    return Texts.join("\n",links);
   }
 }

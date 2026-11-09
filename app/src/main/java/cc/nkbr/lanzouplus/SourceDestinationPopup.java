@@ -305,7 +305,7 @@ final class SourceDestinationPopup {
         if(member.kind!=Models.MEMBER_FOLDER&&(!catalog.includeSourcePaths()||!SourcePathCatalog.pathEntry(member)))continue;
         List<String> names=new ArrayList<>();Set<String> seen=new LinkedHashSet<>();Models.SourceMember cursor=member;
         while(cursor!=null&&seen.add(cursor.id)){names.add(0,cursor.title);cursor=members.get(cursor.parentId);}
-        String full=title+" › "+String.join(" › ",names);
+        String full=title+" › "+Texts.join(" › ",names);
         Models.Source child=member.kind==Models.MEMBER_FOLDER?null:SourcePathCatalog.childSource(source,member);
         Destination destination=new Destination("全部",child==null?source:child,child==null?member.id:"",full);out.put(destination.key(),destination);
       }

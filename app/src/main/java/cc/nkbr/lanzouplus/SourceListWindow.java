@@ -16,13 +16,14 @@ final class SourceListWindow {
   int first=-1,last=-1,columns=-1,width=-1,slot=-1,generation;
   boolean posted,disposed;
   final View.OnLayoutChangeListener layout=(v,l,t,r,b,ol,ot,or_,ob)->refresh();
+  final android.view.ViewTreeObserver.OnScrollChangedListener rollWatcher=this::refresh;
   SourceListWindow(MainActivity owner,GridLayout grid,List<Models.Source> values){
     this.owner=owner;this.grid=grid;this.values=new ArrayList<>(values);scroll=owner.pageScroll;session=owner.navigationSession;
-    scroll.addOnLayoutChangeListener(layout);refresh();
+    scroll.addOnLayoutChangeListener(layout);scroll.getViewTreeObserver().addOnScrollChangedListener(rollWatcher);refresh();
   }
   void refresh(){if(disposed||posted)return;posted=true;grid.postOnAnimation(()->{posted=false;if(!disposed&&session==owner.navigationSession&&owner.sourceGrid==grid)render();});}
   void reflow(){first=-1;refresh();}
-  void dispose(){disposed=true;generation++;scroll.removeOnLayoutChangeListener(layout);mounted.clear();}
+  void dispose(){disposed=true;generation++;scroll.removeOnLayoutChangeListener(layout);android.view.ViewTreeObserver observer=scroll.getViewTreeObserver();if(observer.isAlive())observer.removeOnScrollChangedListener(rollWatcher);mounted.clear();}
   void render(){
     int count=owner.itemColumns(),available=scroll.getWidth()-scroll.getPaddingLeft()-scroll.getPaddingRight();
     if(available<=0)available=owner.root.getWidth()-owner.root.getPaddingLeft()-owner.root.getPaddingRight();if(available<=0)return;

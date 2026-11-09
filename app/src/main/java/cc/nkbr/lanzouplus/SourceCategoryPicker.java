@@ -74,7 +74,7 @@ final class SourceCategoryPicker {
   private static String memberPath(Models.Source source,Models.SourceMember member,Map<String,Models.SourceMember> members){
     LinkedList<String> parts=new LinkedList<>();parts.add(member.title);String id=member.parentId;Set<String> seen=new HashSet<>();
     while(!id.isEmpty()&&seen.add(id)){Models.SourceMember parent=members.get(id);if(parent==null)break;parts.addFirst(parent.title);id=parent.parentId;}
-    parts.addFirst(source.originPath.isEmpty()?source.title:source.originPath);return String.join(" / ",parts);
+    parts.addFirst(source.originPath.isEmpty()?source.title:source.originPath);return Texts.join(" / ",parts);
   }
   static Map<String,LinkedHashSet<String>> categoryPaths(List<Models.Source> sources){
     Map<String,LinkedHashSet<String>> out=new LinkedHashMap<>();
@@ -172,8 +172,8 @@ final class SourceCategoryPicker {
           Map<String,LinkedHashSet<String>> resolved=categoryPaths(categorySnapshot(sources));
           Map<String,String> locations=new HashMap<>(),queries=new HashMap<>();
           for(Map.Entry<String,LinkedHashSet<String>> entry:resolved.entrySet()){
-            locations.put(entry.getKey(),String.join(" · ",entry.getValue()));
-            queries.put(entry.getKey(),(entry.getKey()+" "+String.join(" ",entry.getValue())).toLowerCase(Locale.ROOT));
+            locations.put(entry.getKey(),Texts.join(" · ",entry.getValue()));
+            queries.put(entry.getKey(),(entry.getKey()+" "+Texts.join(" ",entry.getValue())).toLowerCase(Locale.ROOT));
           }
           List<String> all=new ArrayList<>(resolved.keySet());all.addAll(shortcuts);if(!onlyExisting)all.addAll(initial);
           List<String> ready=SourceCategories.normalized(all);
@@ -228,7 +228,7 @@ final class SourceCategoryPicker {
           if(member.parentId.equals(nodeId)){available.addAll(labels(member));if(member.kind==Models.MEMBER_FOLDER)entries.add(new DirectoryEntry(source,member.id,member.title));}
         }
       }else available.addAll(labels(source));
-      String heading=ancestors.isEmpty()?"本地源目录":String.join(" › ",ancestors);
+      String heading=ancestors.isEmpty()?"本地源目录":Texts.join(" › ",ancestors);
       TextView path=owner.text(heading,13,owner.MUTED);path.setMaxLines(2);panel.addView(path,new LinearLayout.LayoutParams(-1,-2));
       LinearLayout labels=new LinearLayout(owner);labels.setOrientation(LinearLayout.VERTICAL);panel.addView(labels,new LinearLayout.LayoutParams(-1,-2));
       List<String> current=SourceCategories.normalized(available);

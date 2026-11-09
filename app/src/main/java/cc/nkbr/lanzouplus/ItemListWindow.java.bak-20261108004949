@@ -1,0 +1,66 @@
+package cc.nkbr.lanzouplus;
+
+import android.view.View;
+import android.view.ViewTreeObserver;
+import android.widget.GridLayout;
+import android.widget.ScrollView;
+import java.util.*;
+
+/** Recycles the visible file and collection rows while preserving paging and selection. */
+final class ItemListWindow {
+  final MainActivity owner;final GridLayout grid;final ScrollView scroll;final int session;final boolean search;
+  List<Models.Item> values=new ArrayList<>();final Map<String,View> mounted=new LinkedHashMap<>();
+  int limit,renderedLimit=-1,firstRow=-1,lastRow=-1,columns=-1,width=-1,slot=-1;String anchorStart="",anchorEnd="";
+  boolean posted,disposed,metadataRows;
+  final View.OnLayoutChangeListener layout=(v,l,t,r,b,ol,ot,or_,ob)->refresh();
+  /** Plain ScrollViews never invalidate the window on drag, so every recycled list listens to scroll offsets. */
+  final ViewTreeObserver.OnScrollChangedListener scrollWatcher;
+  ItemListWindow(MainActivity owner,GridLayout grid){this(owner,grid,false);}
+  /** Search results keep their own grid, so the owning grid is checked through liveGrid. */
+  ItemListWindow(MainActivity owner,GridLayout grid,boolean search){this.owner=owner;this.grid=grid;this.search=search;scroll=owner.pageScroll;session=owner.navigationSession;scrollWatcher=()->{owner.onListScrolled();refresh();};scroll.addOnLayoutChangeListener(layout);scroll.getViewTreeObserver().addOnScrollChangedListener(scrollWatcher);}
+  void setItems(List<Models.Item> items,int shown){values.clear();values.addAll(items);refreshMetadata();limit=Math.min(shown,values.size());reflow();}
+  /** Search results are owned by the activity list, so reference it instead of copying on every batch. */
+  void setItemsRef(List<Models.Item> items,int shown){values=items;refreshMetadata();limit=Math.min(shown,values.size());refresh();}
+  void refreshMetadata(){if(metadataRows)return;int cap=Math.min(values.size(),400);boolean rows=false;for(int i=0;i<cap;i++){Models.Item value=values.get(i);if(!value.error.isEmpty()||!value.size.isEmpty()||!value.time.isEmpty()||value.folder&&!value.description.isEmpty()){rows=true;break;}}metadataRows=rows;}
+  /** Rebinds one already-mounted row after a search result is enriched in place. */
+  void updateItem(Models.Item item){if(disposed||item==null)return;View view=mounted.get(item.url);if(view!=null){owner.bindItemCard(view,item);}}
+  void dispose(){disposed=true;scroll.removeOnLayoutChangeListener(layout);ViewTreeObserver observer=scroll.getViewTreeObserver();if(observer.isAlive())observer.removeOnScrollChangedListener(scrollWatcher);mounted.clear();}
+  void reflow(){firstRow=-1;refresh();}
+  /** Re-binds the mounted cards once scrolling settles so deferred icons can load then. */
+  void rebindMounted(){if(disposed)return;for(int i=0;i<grid.getChildCount();i++){View view=grid.getChildAt(i);Object tag=view.getTag();if(tag instanceof MainActivity.ItemCard)owner.bindItemCard(view,((MainActivity.ItemCard)tag).item);}}
+  void refresh(){if(disposed||posted)return;posted=true;grid.postOnAnimation(()->{posted=false;if(!disposed&&owner.navigationSession==session&&(search?owner.liveGrid==grid:owner.itemsGrid==grid))render();});}
+  void render(){
+    int count=owner.itemColumns(),available=scroll.getWidth()-scroll.getPaddingLeft()-scroll.getPaddingRight();if(available<=0)return;
+    int height=Math.round(owner.dp((metadataRows?120:96)+(owner.showSourceLinks?32:0))*Math.max(1f,owner.getResources().getConfiguration().fontScale));
+    int offset=Math.max(0,scroll.getScrollY()-grid.getTop()),rows=(limit+count-1)/count;
+    int startRow=Math.min(Math.max(0,rows-1),Math.max(0,offset/height-3));
+    int endRow=Math.min(rows,(offset+scroll.getHeight()+height-1)/height+4);
+    int start=Math.min(limit,startRow*count),end=Math.min(limit,endRow*count);
+    String nextStart=start>=end?"":values.get(start).url,nextEnd=start>=end?"":values.get(end-1).url;
+    /* Nothing visible changed: skip all view work, which keeps drags and enrichment smooth. */
+    if(firstRow==startRow&&lastRow==endRow&&columns==count&&width==available&&slot==height&&renderedLimit==limit&&anchorStart.equals(nextStart)&&anchorEnd.equals(nextEnd))return;
+    anchorStart=nextStart;anchorEnd=nextEnd;renderedLimit=limit;
+    firstRow=startRow;lastRow=endRow;columns=count;width=available;slot=height;
+    Set<String> wanted=new LinkedHashSet<>();
+    for(int i=start;i<end;i++)wanted.add(values.get(i).url);
+    /* Detach only cards that left the window; everything inside is reused as-is. */
+    Iterator<Map.Entry<String,View>> existing=mounted.entrySet().iterator();
+    while(existing.hasNext()){Map.Entry<String,View> entry=existing.next();if(!wanted.contains(entry.getKey())){if(entry.getValue().getParent()==grid)grid.removeView(entry.getValue());existing.remove();}}
+    if(!search)owner.selectionChecks.keySet().retainAll(wanted);
+    int topPad=(int)Math.min(Integer.MAX_VALUE/2L,(long)startRow*height),bottomPad=(int)Math.min(Integer.MAX_VALUE/2L,(long)Math.max(0,(rows-endRow))*height),minHeight=(int)Math.min(Integer.MAX_VALUE/2L,(long)rows*height);
+    grid.setColumnCount(count);
+    if(grid.getPaddingTop()!=topPad||grid.getPaddingBottom()!=bottomPad)grid.setPadding(0,topPad,0,bottomPad);
+    if(grid.getMinimumHeight()!=minHeight)grid.setMinimumHeight(minHeight);
+    int cell=Math.max(1,(available-owner.dp(8)*count)/count);
+    int childRow=0,childColumn=0;
+    for(int i=start;i<end;i++){
+      Models.Item item=values.get(i);View view=mounted.get(item.url);
+      if(view==null){view=owner.itemRow(item);mounted.put(item.url,view);}
+      else{Object tag=view.getTag();if(!(tag instanceof MainActivity.ItemCard)||((MainActivity.ItemCard)tag).item!=item)owner.bindItemCard(view,item);}
+      GridLayout.LayoutParams p=new GridLayout.LayoutParams(GridLayout.spec(childRow),GridLayout.spec(childColumn));
+      p.width=cell;p.height=height-owner.dp(4);p.setMargins(owner.dp(4),owner.dp(2),owner.dp(4),owner.dp(2));
+      if(view.getParent()==grid)view.setLayoutParams(p);else grid.addView(view,p);
+      if(++childColumn>=count){childColumn=0;childRow++;}
+    }
+  }
+}

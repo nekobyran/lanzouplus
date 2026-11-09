@@ -111,7 +111,7 @@ final class SourceListSearch {
         if(owner.sourceListWindow!=null)owner.sourceListWindow.dispose();
         grid.removeAllViews();owner.sourceSelectionChecks.clear();owner.visibleSources.clear();owner.visibleSources.addAll(result.values);
         if(owner.inlineSourcePage!=null)owner.inlineSourcePage.applied(result.values);
-        heading.setText("列表 · "+(categories.isEmpty()?"全部":String.join(" / ",categories))+" · 蓝奏云源 "+result.lanzou+" · 非蓝奏云源 "+result.web+" · 显示 "+result.values.size());
+        heading.setText("列表 · "+(categories.isEmpty()?"全部":Texts.join(" / ",categories))+" · 蓝奏云源 "+result.lanzou+" · 非蓝奏云源 "+result.web+" · 显示 "+result.values.size());
         owner.sourceListWindow=new SourceListWindow(owner,grid,result.values);
         if(owner.sourceSelectionMode)owner.updateSourceSelectionSummary();
       });

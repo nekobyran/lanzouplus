@@ -26,10 +26,10 @@ final class ItemListWindow {
   ItemListWindow(MainActivity owner,GridLayout grid){this(owner,grid,false);}
   /** Search results keep their own grid, so the owning grid is checked through liveGrid. */
   ItemListWindow(MainActivity owner,GridLayout grid,boolean search){this.owner=owner;this.grid=grid;this.search=search;scroll=owner.pageScroll;session=owner.navigationSession;scrollWatcher=()->{owner.onListScrolled();refresh();};scroll.addOnLayoutChangeListener(layout);scroll.getViewTreeObserver().addOnScrollChangedListener(scrollWatcher);}
-  void setItems(List<Models.Item> items,int shown){values.clear();values.addAll(items);refreshMetadata();limit=Math.min(shown,values.size());reflow();}
+  void setItems(List<Models.Item> items,int shown){values.clear();values.addAll(items);refreshMetadata(shown);limit=Math.min(shown,values.size());reflow();}
   /** Search results are owned by the activity list, so reference it instead of copying on every batch. */
-  void setItemsRef(List<Models.Item> items,int shown){values=items;refreshMetadata();limit=Math.min(shown,values.size());refresh();}
-  void refreshMetadata(){if(metadataRows)return;int cap=Math.min(values.size(),400);boolean rows=false;for(int i=0;i<cap;i++){Models.Item value=values.get(i);if(!value.error.isEmpty()||!value.size.isEmpty()||!value.time.isEmpty()||value.folder&&!value.description.isEmpty()){rows=true;break;}}metadataRows=rows;}
+  void setItemsRef(List<Models.Item> items,int shown){values=items;refreshMetadata(shown);limit=Math.min(shown,values.size());refresh();}
+  void refreshMetadata(int shown){if(metadataRows)return;int cap=Math.min(values.size(),Math.max(1,Math.min(shown,64)));boolean rows=false;for(int i=0;i<cap;i++){Models.Item value=values.get(i);if(!value.error.isEmpty()||!value.size.isEmpty()||!value.time.isEmpty()||value.folder&&!value.description.isEmpty()){rows=true;break;}}metadataRows=rows;}
   /** Rebinds one already-mounted row after a search result is enriched in place. */
   void updateItem(Models.Item item){if(disposed||item==null)return;View view=mounted.get(item.url);if(view!=null){owner.bindItemCard(view,item);}}
   void dispose(){disposed=true;scroll.removeOnLayoutChangeListener(layout);ViewTreeObserver observer=scroll.getViewTreeObserver();if(observer.isAlive())observer.removeOnScrollChangedListener(scrollWatcher);mounted.clear();}

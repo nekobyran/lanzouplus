@@ -149,7 +149,7 @@ public final class CloudImageViewer {
     this.initialIndex = Math.max(0, Math.min(initialIndex, files.size() - 1));
     this.currentIndex = this.initialIndex;
     this.mainHandler = new Handler(Looper.getMainLooper());
-    this.decodeExecutor = Executors.newFixedThreadPool(2, r -> {
+    this.decodeExecutor = QuietExecutors.fixed(2, r -> {
       Thread t = new Thread(r, "cloud-image-viewer-decode");
       t.setDaemon(true);
       t.setPriority(Thread.NORM_PRIORITY - 1);

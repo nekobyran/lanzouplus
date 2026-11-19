@@ -65,6 +65,9 @@ final class DownloadAggregateView {
 
     boolean cancelled();
 
+    /** True when a completed record's local file is already gone, so hosts flag it as missing. */
+    default boolean missing() { return false; }
+
     /** True while the record still resolves its direct link. */
     boolean resolving();
 
@@ -126,6 +129,7 @@ final class DownloadAggregateView {
       @Override public boolean paused() { return row.paused(); }
       @Override public boolean failed() { return row.failed(); }
       @Override public boolean cancelled() { return row.cancelled(); }
+      @Override public boolean missing() { return row.missing; }
       @Override public boolean resolving() { return row.live && MainActivity.DOWNLOAD_RESOLVING.equals(row.state); }
       @Override public long downloadedBytes() { return row.downloadedBytes; }
       @Override public long totalBytes() { return row.totalBytes; }
@@ -184,6 +188,7 @@ final class DownloadAggregateView {
             || MainActivity.SAVE_RUNNING.equals(entry.state);
       }
       @Override public boolean resolving() { return MainActivity.DOWNLOAD_RESOLVING.equals(entry.state); }
+      @Override public boolean missing() { return entry.fileMissing && MainActivity.DOWNLOAD_COMPLETED.equals(entry.state); }
       @Override public long downloadedBytes() { return entry.downloadedBytes; }
       @Override public long totalBytes() { return entry.totalBytes; }
       @Override public int percent() { return Math.max(0, Math.min(100, entry.percent)); }
@@ -271,7 +276,7 @@ final class DownloadAggregateView {
       return transfer.isEmpty() ? item.records.get(0).metricsText()
           : item.records.get(0).metricsText() + "\n" + transfer;
     }
-    int total = item.records.size(), done = 0, active = 0, paused = 0, failed = 0, cancelled = 0;
+    int total = item.records.size(), done = 0, active = 0, paused = 0, failed = 0, cancelled = 0, missing = 0;
     long bytes = 0, totalBytes = 0;
     for (Record record : item.records) {
       if (record.completed()) done++;
@@ -279,11 +284,13 @@ final class DownloadAggregateView {
       else if (record.paused()) paused++;
       else if (record.failed()) failed++;
       else if (record.cancelled()) cancelled++;
+      if (record.missing()) missing++;
       bytes += record.downloadedBytes();
       totalBytes += record.totalBytes();
     }
     StringBuilder out = new StringBuilder();
     out.append(total).append(" 项 · ").append(done).append(" 已完成");
+    if (missing > 0) out.append(" · ").append(missing).append(" 本地文件已删除");
     if (active > 0) out.append(" · ").append(active).append(" 进行中");
     if (paused > 0) out.append(" · ").append(paused).append(" 已暂停");
     if (failed > 0) out.append(" · ").append(failed).append(" 失败");

@@ -37,6 +37,23 @@ final class LanzouSliderVerification implements AutoCloseable {
   /** Who owns the end of a transaction. */
   enum Mode{FOREGROUND,BOUNDED}
   /**
+   * Gesture shape of one attempt. Varying distance, timing and wobble between attempts is what
+   * turns a single fixed drag into a retry ladder: a rejected slide is retried on a fresh
+   * challenge with a different trajectory instead of repeating the identical gesture.
+   */
+  static final class Tuning{
+    final float distanceFactor,durationFactor,jitterPx;
+    /** After the finger lifts, how long a pass verdict may still arrive; 0 waits for the deadline. */
+    final long giveUpAfterLiftMs;
+    static final Tuning DEFAULT=new Tuning(1f,1f,0f,0L);
+    Tuning(float distanceFactor,float durationFactor,float jitterPx,long giveUpAfterLiftMs){
+      this.distanceFactor=distanceFactor>0f?distanceFactor:1f;
+      this.durationFactor=durationFactor>0f?durationFactor:1f;
+      this.jitterPx=Math.max(0f,jitterPx);
+      this.giveUpAfterLiftMs=Math.max(0L,giveUpAfterLiftMs);
+    }
+  }
+  /**
    * Reports the document plus the state of the challenge widget. "challenge" and "ready" are
    * visibility facts (rendered box, computed style, visible ancestors), so a {@code display:none}
    * remnant of an already solved slider is not reported as a live challenge.
@@ -55,6 +72,7 @@ final class LanzouSliderVerification implements AutoCloseable {
   private final long deadline;
   private final Consumer<Boolean> completed;
   private final Mode mode;
+  private final Tuning tuning;
   private boolean closed,attempted,pressed,userTouched,roundSettled;
   private int probeRound;
   private long downAt,duration,frameDelay,startedAtNanos=System.nanoTime(),failureBackoff;
@@ -63,16 +81,26 @@ final class LanzouSliderVerification implements AutoCloseable {
 
   /** A bounded attempt: its deadline is terminal and reports a failure. */
   LanzouSliderVerification(WebView web,long deadline,Consumer<Boolean> completed){
-    this(web,deadline,completed,Mode.BOUNDED);
+    this(web,deadline,completed,Mode.BOUNDED,Tuning.DEFAULT);
+  }
+
+  /** A bounded attempt with an explicit gesture shape, used by the automatic retry ladder. */
+  LanzouSliderVerification(WebView web,long deadline,Consumer<Boolean> completed,Tuning tuning){
+    this(web,deadline,completed,Mode.BOUNDED,tuning);
   }
 
   /** A dialog attempt: the deadline retires the synthetic drag, and the monitor outlives it. */
   static LanzouSliderVerification foreground(WebView web,long gestureDeadline,Consumer<Boolean> completed){
-    return new LanzouSliderVerification(web,gestureDeadline,completed,Mode.FOREGROUND);
+    return new LanzouSliderVerification(web,gestureDeadline,completed,Mode.FOREGROUND,Tuning.DEFAULT);
   }
 
   LanzouSliderVerification(WebView web,long deadline,Consumer<Boolean> completed,Mode mode){
+    this(web,deadline,completed,mode,Tuning.DEFAULT);
+  }
+
+  LanzouSliderVerification(WebView web,long deadline,Consumer<Boolean> completed,Mode mode,Tuning tuning){
     this.web=web;this.deadline=deadline;this.completed=completed;this.mode=mode;
+    this.tuning=tuning==null?Tuning.DEFAULT:tuning;
   }
 
   void start(){
@@ -169,8 +197,9 @@ final class LanzouSliderVerification implements AutoCloseable {
     double viewport=state.optDouble("viewport"),cssDistance=state.optDouble("distance");
     if(viewport<=0d||cssDistance<=0d)return;
     float scale=(float)(web.getWidth()/viewport);
-    startX=(float)state.optDouble("x")*scale;startY=(float)state.optDouble("y")*scale;distance=(float)cssDistance*scale;
-    duration=Math.min(remaining/2L,Math.max(450L,Math.round(cssDistance*3d)));
+    startX=(float)state.optDouble("x")*scale;startY=(float)state.optDouble("y")*scale;
+    distance=(float)cssDistance*scale*tuning.distanceFactor;
+    duration=Math.min(remaining/2L,Math.max(450L,Math.round(cssDistance*3d*tuning.durationFactor)));
     WindowManager manager=(WindowManager)web.getContext().getSystemService(android.content.Context.WINDOW_SERVICE);
     frameDelay=Math.max(1L,Math.round(1000d/manager.getDefaultDisplay().getRefreshRate()));
     attempted=true;
@@ -194,15 +223,19 @@ final class LanzouSliderVerification implements AutoCloseable {
     if(userTouched||System.nanoTime()>=deadline){cancelPointer();return;}
     double progress=Math.min(1d,(double)(SystemClock.uptimeMillis()-downAt)/duration);
     float x=startX+distance*(float)(1d-Math.pow(1d-progress,3d));
-    touch(MotionEvent.ACTION_MOVE,x,startY);
+    float y=startY+tuning.jitterPx*(float)(Math.sin(progress*6.283185307179586d)*(1d-progress));
+    touch(MotionEvent.ACTION_MOVE,x,y);
     if(progress<1d){handler.postDelayed(this::move,frameDelay);return;}
-    lift(startX+distance,startY);
+    lift(startX+distance,y);
   }
 
   private void lift(float x,float y){
     if(!pressed)return;
     pressed=false;
     try{touch(MotionEvent.ACTION_UP,x,y);}catch(Throwable ignored){}
+    // A rejected slide shows its error state right away, so a bounded attempt can free the page
+    // for the next retry instead of idling until the deadline.
+    if(tuning.giveUpAfterLiftMs>0L)handler.postDelayed(()->{if(!closed)finish(false);},tuning.giveUpAfterLiftMs);
   }
 
   private void cancelPointer(){
@@ -212,6 +245,8 @@ final class LanzouSliderVerification implements AutoCloseable {
   }
 
   LanzouCore.DirectLink verifiedPage(){return verifiedPage;}
+  /** Whether a synthetic drag was actually dispatched during this attempt. */
+  boolean gestureAttempted(){return attempted;}
 
   private void touch(int action,float x,float y){
     int[] origin=new int[2];web.getLocationOnScreen(origin);

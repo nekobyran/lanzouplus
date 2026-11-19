@@ -16,12 +16,14 @@ import java.util.zip.InflaterInputStream;
 final class LanzouCore {
   static final int UA_PRESET_MOBILE_CHROME=0,UA_PRESET_DESKTOP_CHROME=1,UA_PRESET_DESKTOP_EDGE=2,UA_PRESET_MOBILE_HUAWEI=3,UA_PRESET_MOBILE_FIREFOX=4;
   static final int UA_SCOPE_FILE_LIST=1,UA_SCOPE_DIRECTORY_SEARCH=2,UA_SCOPE_API_SEARCH=4,UA_SCOPE_DIRECT=8,UA_SCOPE_ALL=UA_SCOPE_FILE_LIST|UA_SCOPE_DIRECTORY_SEARCH|UA_SCOPE_API_SEARCH|UA_SCOPE_DIRECT;
-  private static final String ANDROID_UA="Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+  // 2026-11-19: Lanzou cloaks the share page by UA. Chrome/126 mobile and Firefox/126 are served a fake
+  // "来晚啦…文件取消分享" shell; Chrome/138 mobile returns the real folder page, so 138 is the default everywhere.
+  private static final String ANDROID_UA="Mozilla/5.0 (Linux; Android 14; BRQ-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36";
   private static final String DESKTOP_SEARCH_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
-  private static final String DESKTOP_RENDER_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-  private static final String DESKTOP_EDGE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0";
-  private static final String MOBILE_HUAWEI_UA="Mozilla/5.0 (Linux; Android 12; BRQ-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
-  private static final String MOBILE_COMPAT_UA="Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+  private static final String DESKTOP_RENDER_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+  private static final String DESKTOP_EDGE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0";
+  private static final String MOBILE_HUAWEI_UA="Mozilla/5.0 (Linux; Android 14; BRQ-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36";
+  private static final String MOBILE_COMPAT_UA="Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36";
   private static final String MOBILE_FIREFOX_UA="Mozilla/5.0 (Android 12; Mobile; rv:126.0) Gecko/126.0 Firefox/126.0";
     private static volatile int configuredUaPreset=UA_PRESET_MOBILE_CHROME,configuredUaScopeMask=UA_SCOPE_ALL,configuredFileListUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectorySearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredApiSearchUaPreset=UA_PRESET_MOBILE_CHROME,configuredDirectUaPreset=UA_PRESET_MOBILE_CHROME; private static volatile String configuredCustomUserAgent="";
   private static final int[] POS={15,35,29,24,33,16,1,38,10,9,19,31,40,27,22,23,25,13,6,11,39,18,20,8,14,21,32,26,2,30,7,4,17,5,3,28,34,37,12,36};
@@ -61,7 +63,12 @@ final class LanzouCore {
           private static int adaptiveSearchIndexItems(){Runtime r=Runtime.getRuntime();long maxHeap=Math.max(1L,r.maxMemory()),used=Math.max(0L,r.totalMemory()-r.freeMemory()),available=Math.max(1L,maxHeap-used);long byHeap=maxHeap/16384L,byFree=available/4096L;return(int)Math.min(12000L,Math.max(1200L,Math.min(byHeap,byFree)));}
     private static final int COMPOSITE_ICON_ENRICH_MAX=512;
     private static int searchIndexFlushItems(){Runtime runtime=Runtime.getRuntime();long maxMiB=Math.max(64L,runtime.maxMemory()/(1024L*1024L));int processors=Math.max(1,runtime.availableProcessors());long adaptive=Math.max(512L,Math.min(8192L,maxMiB*processors/2L));return(int)adaptive;}
-        private static final String[] LANZOU_BASE_ORIGINS={"https://www.lanzoux.com","https://wwc.lanzoux.com","https://wwop.lanzoul.com","https://www.lanzoul.com","https://www.lanzouw.com","https://www.lanzoup.com","https://www.lanzouo.com","https://www.lanzouz.com","https://www.lanzouq.com","https://www.lanzou.com","https://www.lanzoui.com","https://www.lanzoum.com"};
+        /**
+         * Verified 2026-11-19 with the Chrome/138 mobile UA: each host below answered 200 and served a real Lanzou
+         * share page (filemoreajax) over TLS. Dropped because they do not serve Lanzou shares at all:
+         * lanzoua/d/s/z.com (parklogic "Redirecting..." shells) and lanzoun/lanzour.com (TLS handshake failure).
+         */
+        private static final String[] LANZOU_BASE_ORIGINS={"https://www.lanzoux.com","https://wwc.lanzoux.com","https://www.lanzouq.com","https://www.lanzoui.com","https://www.lanzoul.com","https://www.lanzouw.com","https://www.lanzoup.com","https://www.lanzouo.com","https://www.lanzoum.com","https://www.lanzoub.com","https://www.lanzouc.com","https://www.lanzoue.com","https://www.lanzouf.com","https://www.lanzoug.com","https://www.lanzouh.com","https://www.lanzouj.com","https://www.lanzouk.com","https://www.lanzout.com","https://www.lanzouu.com","https://www.lanzouv.com","https://www.lanzouy.com"};
                 private static final String CANONICAL_SOURCE_ORIGIN="https://www.lanzoux.com";
                 private static final String PUBLIC_BASE_ORIGIN_PROBE_URL="https://www.lanzoux.com/b00hr9mbxg",PUBLIC_BASE_ORIGIN_PROBE_PASSWORD="";
             private static volatile String configuredPreferredBaseOrigin="";
@@ -74,7 +81,8 @@ final class LanzouCore {
         static String[] baseOrigins(){return LANZOU_BASE_ORIGINS.clone();}
     static String publicBaseOriginProbeUrl(){return PUBLIC_BASE_ORIGIN_PROBE_URL;}
     static String publicBaseOriginProbePassword(){return PUBLIC_BASE_ORIGIN_PROBE_PASSWORD;}
-        private static final char[] RANDOM_PREFIX_AUTO_SUFFIXES={'x','p','l','o','z','q','i','m','k'};
+        /** Every suffix below answered a random <prefix>.lanzouX.com probe with a real Lanzou page; parked (a/d/s/z) suffixes are excluded. */
+        private static final char[] RANDOM_PREFIX_AUTO_SUFFIXES={'x','p','l','o','m','q','i','k','b','e','g','j','t','u','v','y'};
     private static final char[] RANDOM_PREFIX_USER_COMPAT_SUFFIXES={'w'};
         private static String randomLanzouPrefixOrigin(char suffix){ThreadLocalRandom random=ThreadLocalRandom.current();char[] prefix=new char[5];for(int i=0;i<prefix.length;i++)prefix[i]=(char)('a'+random.nextInt(26));return "https://"+new String(prefix)+".lanzou"+suffix+".com";}
     private static boolean originalLanzouwReference(String referenceUrl){try{DirectLink target=parseFolderTarget(referenceUrl==null?"":referenceUrl.trim());String original=validatedRouteOrigin(target.rootUrl);if(original.isEmpty())return false;return "lanzouw.com".equals(lanzouSiteCookieKey(new URL(original).getHost()));}catch(Exception ignored){return false;}}
@@ -141,13 +149,13 @@ final class LanzouCore {
       try{
         checkDeadline(deadline);
         boolean referenceReachable;
-        if(referenceTested)referenceReachable=probeBaseOriginReference(selected,referenceTarget,referencePassword,deadline,ua,profile);
-        else{
-          try(NetworkGovernor.Lease ignored=NETWORK_GOVERNOR.acquireForeground(()->closed.get()||Thread.currentThread().isInterrupted())){
-            DirectLink page=getGuarded(target,deadline,userAgent(ua));requireLanzouPage(page.url);requireActiveShare(page);profile.observeRoute(UA_SCOPE_FILE_LIST,origin(page.url),pageUa(page,ua));
+        if(referenceTested){
+          try{referenceReachable=probeBaseOriginReference(selected,referenceTarget,referencePassword,deadline,ua,profile);}
+          catch(ShareCancelledException|PageCapabilityException deadReference){
+            // A dead or unparsable reference share says nothing about the line itself; fall back to the host home page.
+            referenceReachable=probeBaseOriginHome(selected,target,deadline,ua);
           }
-          referenceReachable=true;
-        }
+        }else referenceReachable=probeBaseOriginHome(selected,target,deadline,ua);
         if(referenceReachable)return new BaseOriginProbe(selected,elapsedMillis(started),true,false,referenceTested,true);
       }catch(InterruptedException interrupted){throw interrupted;}
       catch(Exception error){
@@ -156,6 +164,26 @@ final class LanzouCore {
       }
     }
     return new BaseOriginProbe(selected,elapsedMillis(started),false,challenged,referenceTested,false);
+  }
+  /**
+   * Origin probing without a share reference used to demand a share template from the host home page, which every
+   * Lanzou mirror fails, so "随机基础链接" never found an origin. Reachability + Lanzou branding is the right test here:
+   * the home page is not a share, but a challenge/parked/cancelled shell or an HTTP error still means unusable.
+   */
+  private boolean probeBaseOriginHome(String origin,String target,long deadline,byte ua)throws Exception{
+    try(NetworkGovernor.Lease ignored=NETWORK_GOVERNOR.acquireForeground(()->closed.get()||Thread.currentThread().isInterrupted())){
+      DirectLink page=getGuarded(target,deadline,userAgent(ua));requireLanzouPage(page.url);requireReachableBaseOrigin(page);return true;
+    }
+  }
+  private static void requireReachableBaseOrigin(DirectLink page)throws IOException{
+    String html=page==null||page.html==null?"":page.html;
+    if(isWafChallengePage(html)&&(page==null||!page.verificationComplete))throw new UserVerificationRequiredException(page==null?"":page.url);
+    if(page==null||page.httpStatus>=400)throw new PageCapabilityException("蓝奏线路返回 HTTP "+(page==null?0:page.httpStatus),false);
+    if(isCancelledShareText(html)||isUnavailableShareShell(html))throw new PageCapabilityException("蓝奏线路返回不可解析的中间页",false);
+    if(pageTemplate(html)!=TEMPLATE_UNKNOWN||isDirectorySharePage(html)||isSingleFileSharePage(html))return;
+    String lower=html.toLowerCase(Locale.ROOT);
+    if(lower.contains("bakstotre.com/assets")||lower.contains("images.bakstotre.com")||lower.contains("woozooo")||lower.contains("蓝奏"))return;
+    throw new PageCapabilityException("蓝奏线路未返回蓝奏页面",false);
   }
   private boolean probeBaseOriginReference(String origin,String referenceTarget,String referencePassword,long deadline,byte ua,SourceProfile profile)throws Exception{
     RouteCandidate route=new RouteCandidate(referenceTarget,origin,ua,UA_SCOPE_FILE_LIST);
@@ -511,7 +539,47 @@ final class LanzouCore {
   private static volatile ConnectionOpener connectionOpener;
   static void setSearchSeams(SearchSourceSeam sources,SearchLocalSeam local,ConnectionOpener opener){searchSourceSeam=sources;searchLocalSeam=local;connectionOpener=opener;}
   static void clearSearchSeams(){searchSourceSeam=null;searchLocalSeam=null;connectionOpener=null;}
-  static HttpURLConnection openHttp(java.net.URL url)throws java.io.IOException{ConnectionOpener opener=connectionOpener;return opener==null?(HttpURLConnection)url.openConnection():opener.open(url);}
+  static HttpURLConnection openHttp(java.net.URL url)throws java.io.IOException{return openHttp(url,false);}
+  static HttpURLConnection openHttp(java.net.URL url,boolean lenientTls)throws java.io.IOException{
+    ConnectionOpener opener=connectionOpener;HttpURLConnection connection=opener==null?(HttpURLConnection)url.openConnection():opener.open(url);
+    if(lenientTls&&connection instanceof javax.net.ssl.HttpsURLConnection)applyLenientLanzouTls((javax.net.ssl.HttpsURLConnection)connection,url);
+    return connection;
+  }
+  /** Structural check only: the relaxed trust scope is a known Lanzou host, never an arbitrary one. */
+  private static boolean appliesToLanzouHost(String rawHost){String host=completeLanzouHostAlias(rawHost);return !host.isEmpty()&&LANZOU_HOST.matcher(host).matches();}
+  /**
+   * Some Lanzou mirrors (lanzoux in particular) serve a certificate that does not match the requested host. That is a
+   * line-condition warning, not proof that the line is unusable, so a strict handshake failure is retried once with a
+   * trust manager scoped to Lanzou hosts only; every other host keeps the platform default.
+   */
+  private static void applyLenientLanzouTls(javax.net.ssl.HttpsURLConnection connection,java.net.URL url){
+    if(!appliesToLanzouHost(url.getHost()))return;
+    String host=completeLanzouHostAlias(url.getHost());
+    connection.setSSLSocketFactory(lanzouLenientSocketFactory());
+    connection.setHostnameVerifier((name,session)->appliesToLanzouHost(name)&&host.equalsIgnoreCase(completeLanzouHostAlias(name)));
+  }
+  private static volatile javax.net.ssl.SSLSocketFactory lanzouLenientSslFactory;
+  private static javax.net.ssl.SSLSocketFactory lanzouLenientSocketFactory(){
+    javax.net.ssl.SSLSocketFactory cached=lanzouLenientSslFactory;if(cached!=null)return cached;
+    synchronized(LanzouCore.class){
+      cached=lanzouLenientSslFactory;if(cached!=null)return cached;
+      try{
+        javax.net.ssl.SSLContext context=javax.net.ssl.SSLContext.getInstance("TLS");
+        context.init(null,new javax.net.ssl.TrustManager[]{new javax.net.ssl.X509TrustManager(){
+          @Override public void checkClientTrusted(java.security.cert.X509Certificate[] chain,String authType){}
+          @Override public void checkServerTrusted(java.security.cert.X509Certificate[] chain,String authType){}
+          @Override public java.security.cert.X509Certificate[] getAcceptedIssuers(){return new java.security.cert.X509Certificate[0];}
+        }},null);
+        cached=context.getSocketFactory();lanzouLenientSslFactory=cached;return cached;
+      }catch(Exception error){throw new IllegalStateException("无法初始化蓝奏线路 TLS 工厂",error);}
+    }
+  }
+  private static boolean lanzouTlsError(Throwable error){for(Throwable current=error;current!=null;current=current.getCause())if(current instanceof javax.net.ssl.SSLException)return true;return false;}
+  private static boolean lanzouTlsFallbackAllowed(String rawUrl,Throwable error){
+    if(!lanzouTlsError(error))return false;
+    try{return appliesToLanzouHost(new URL(rawUrl).getHost());}catch(Exception ignored){return false;}
+  }
+  private static void warnLenientLanzouTls(String rawUrl,Throwable error){try{android.util.Log.w("LZTLS","蓝奏线路证书校验失败，按蓝奏域降级重试 "+origin(rawUrl)+" "+error);}catch(Throwable ignored){}}
   static int browserRenderActiveForTest(){synchronized(BROWSER_RENDER_LOCK){return browserRenderActive;}}
   /**
    * Test seam: walks exactly one source through the same production path used by
@@ -1490,7 +1558,8 @@ final class LanzouCore {
   private static String configuredUserAgent(int scope){String custom=configuredCustomUserAgent;if(custom!=null&&!custom.isEmpty())return custom;return userAgent(uaSlotForPreset(configuredUserAgentPreset(scope)));}
   private static String defaultUserAgent(byte ua){return userAgent(ua);}
   private static String scopedUserAgent(byte ua,int scope){if((configuredUaScopeMask&scope)==0)return defaultUserAgent(ua);String custom=configuredCustomUserAgent;if(custom!=null&&!custom.isEmpty())return custom;byte primary=uaSlotForPreset(configuredUserAgentPreset(scope));if(uaIsDesktop(primary)==uaIsDesktop(ua))return userAgent(primary);return userAgent(uaIsDesktop(ua)?UA_DESKTOP_CHROME:UA_MOBILE_CHROME);}
-  private static byte[] uaCandidates(int scope,byte learned){LinkedHashSet<Byte> values=new LinkedHashSet<>();if(configuredCustomUserAgent!=null&&!configuredCustomUserAgent.isEmpty())values.add(UA_CUSTOM);if(learned!=UA_UNKNOWN)values.add(learned);values.add(UA_MOBILE_COMPAT);values.add(uaSlotForPreset(configuredUserAgentPreset(scope)));values.add(UA_MOBILE_CHROME);values.add(UA_MOBILE_HUAWEI);values.add(UA_MOBILE_FIREFOX);values.add(UA_DESKTOP_CHROME);values.add(UA_DESKTOP_EDGE);values.add(UA_DESKTOP_RENDER);byte[] out=new byte[values.size()];int i=0;for(Byte value:values)out[i++]=value;return out;}
+  /** Firefox 126 is served the cloaked shell, so it stays behind the Chrome/138 mobile and desktop slots. */
+  private static byte[] uaCandidates(int scope,byte learned){LinkedHashSet<Byte> values=new LinkedHashSet<>();if(configuredCustomUserAgent!=null&&!configuredCustomUserAgent.isEmpty())values.add(UA_CUSTOM);if(learned!=UA_UNKNOWN)values.add(learned);values.add(UA_MOBILE_COMPAT);values.add(uaSlotForPreset(configuredUserAgentPreset(scope)));values.add(UA_MOBILE_CHROME);values.add(UA_MOBILE_HUAWEI);values.add(UA_DESKTOP_CHROME);values.add(UA_DESKTOP_EDGE);values.add(UA_DESKTOP_RENDER);values.add(UA_MOBILE_FIREFOX);byte[] out=new byte[values.size()];int i=0;for(Byte value:values)out[i++]=value;return out;}
   private static byte[] learnedFirstUaCandidates(int scope,byte learned){LinkedHashSet<Byte> values=new LinkedHashSet<>();if(learned!=UA_UNKNOWN)values.add(learned);for(byte ua:uaCandidates(scope,learned))values.add(ua);byte[] out=new byte[values.size()];int i=0;for(Byte value:values)out[i++]=value;return out;}
     private static byte firstUaCandidate(int scope,byte learned){byte[] values=uaCandidates(scope,learned);return values.length==0?UA_MOBILE_CHROME:values[0];}
     private static byte firstCapableUaCandidate(int scope,byte learned,byte seen,byte available){byte[] values=learnedFirstUaCandidates(scope,learned);for(byte ua:values)if(capabilityAllowed(seen,available,ua))return ua;return values.length==0?UA_MOBILE_CHROME:values[0];}
@@ -1614,7 +1683,7 @@ final class LanzouCore {
   private static ThreadPoolExecutor newSearchPool(){return newElasticNetworkPool("lanzou-search-http-",SEARCH_THREAD_SEQUENCE,new ThreadPoolExecutor.AbortPolicy());}
     private static ThreadPoolExecutor newBackgroundPool(){ThreadPoolExecutor pool=new ThreadPoolExecutor(0,Integer.MAX_VALUE,EXECUTOR_KEEP_ALIVE_SECONDS,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{Thread thread=new Thread(null,()->{try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);}catch(Throwable ignored){}r.run();},"lanzou-background-"+BACKGROUND_THREAD_SEQUENCE.incrementAndGet(),NETWORK_WORKER_STACK_BYTES);thread.setDaemon(true);thread.setPriority(Thread.MIN_PRIORITY);return thread;},new ThreadPoolExecutor.AbortPolicy());pool.allowCoreThreadTimeOut(true);return pool;}
 
-  private static ScheduledThreadPoolExecutor newSearchScheduler(){ScheduledThreadPoolExecutor out=new ScheduledThreadPoolExecutor(1,r->{Thread thread=new Thread(r,"lanzou-search-timer");thread.setDaemon(true);return thread;});out.setRemoveOnCancelPolicy(true);out.setKeepAliveTime(30L,TimeUnit.SECONDS);out.allowCoreThreadTimeOut(true);return out;}
+  private static ScheduledThreadPoolExecutor newSearchScheduler(){ScheduledThreadPoolExecutor out=QuietExecutors.scheduled(1,r->{Thread thread=new Thread(r,"lanzou-search-timer");thread.setDaemon(true);return thread;});out.setRemoveOnCancelPolicy(true);out.setKeepAliveTime(30L,TimeUnit.SECONDS);out.allowCoreThreadTimeOut(true);return out;}
   private static String profileKey(String url){String root=parseFolderTarget(url).rootUrl;try{return normalizeUserSourceUrl(root);}catch(Exception ignored){return root;}}
     static String directRouteGroupKey(String url){String logical="";try{logical=validatedRouteOrigin(parseFolderTarget(url).rootUrl);}catch(Exception ignored){}if(logical.isEmpty())logical=profileKey(url);String custom=configuredCustomUserAgent==null?"":configuredCustomUserAgent;return logical+'\n'+configuredDirectUaPreset+'\n'+configuredUaScopeMask+'\n'+configuredPreferredBaseOrigin+'\n'+configuredBaseOriginTimeoutFailover+'\n'+custom;}
   private static SourceProfile directRouteProfile(String url){return DIRECT_ROUTE_PROFILES.computeIfAbsent(directRouteGroupKey(url),key->new SourceProfile());}
@@ -2328,11 +2397,35 @@ final class LanzouCore {
     try{DirectLink value=browseSessionUnshared(url,password,deadline,false,route);created.complete(value);return value;}catch(Exception error){created.completeExceptionally(error);throw error;}finally{browseSessionFlights.remove(key,created);}
   }
 
+  /**
+   * Lanzou cloaks the share page by UA: a blacklisted UA is served HTTP 403 with an empty body, the
+   * "来晚啦…文件取消分享" shell or the aliyun_waf slider for a perfectly live share. A single verdict therefore rotates
+   * through the Chrome/138 mobile slots before a cancellation or a capability failure is reported.
+   */
+  private DirectLink guardedSharePage(String url,long deadline,byte ua)throws Exception{
+    Exception verdict=null;
+    for(byte candidate:uaRotationCandidates(ua)){
+      DirectLink page=getGuarded(url,deadline,userAgent(candidate));
+      requireLanzouPage(page.url);
+      try{requireActiveShare(page,url);return page;}
+      catch(ShareCancelledException error){if(verdict==null)verdict=error;}
+      catch(PageCapabilityException error){if(verdict==null)verdict=error;}
+    }
+    if(verdict!=null)throw verdict;
+    throw new IOException("蓝奏目录暂不可用");
+  }
+  private static byte[] uaRotationCandidates(byte requested){
+    LinkedHashSet<Byte> values=new LinkedHashSet<>();
+    if(configuredCustomUserAgent!=null&&!configuredCustomUserAgent.isEmpty())values.add(UA_CUSTOM);
+    values.add(requested);values.add(UA_MOBILE_CHROME);values.add(UA_MOBILE_HUAWEI);values.add(UA_MOBILE_COMPAT);
+    byte[] out=new byte[values.size()];int i=0;for(Byte value:values)out[i++]=value;return out;
+  }
+
   private DirectLink browseSessionUnshared(String url,String password,long deadline,boolean force,RouteCandidate route)throws Exception{
 
     DirectLink target=parseFolderTarget(url),routed=parseFolderTarget(route.url);String key=routed.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+route.ua;long now=System.currentTimeMillis();pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);
     if(!force&&hit!=null&&now-hit.createdAt<SESSION_TTL_MS)return hit;if(hit!=null)browseSessions.remove(key,hit);
-        long routeStarted=System.nanoTime();DirectLink session=new DirectLink();session.target=target;session.page=getGuarded(routed.rootUrl,deadline,userAgent(route.ua));requireLanzouPage(session.page.url);requireActiveShare(session.page,routed.rootUrl);session.ua=pageUa(session.page,route.ua);session.routeOrigin=origin(session.page.url);SourceProfile learned=sourceProfile(url);observePageCapabilities(learned,session.page,session.ua);session.template=pageTemplate(session.page.html);learned.observeTemplate(session.ua,session.template);session.createdAt=now;
+        long routeStarted=System.nanoTime();DirectLink session=new DirectLink();session.target=target;session.page=guardedSharePage(routed.rootUrl,deadline,route.ua);session.ua=pageUa(session.page,route.ua);session.routeOrigin=origin(session.page.url);SourceProfile learned=sourceProfile(url);observePageCapabilities(learned,session.page,session.ua);session.template=pageTemplate(session.page.html);learned.observeTemplate(session.ua,session.template);session.createdAt=now;
     if(password.isEmpty()&&requiresSharePassword(session.page.html))throw new DirectPasswordException();
     String explicitEndpoint=cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?(?:file|uid)=[0-9A-Za-z_-]+[^'\"]*)['\"]"),hiddenFileId=hiddenDirectoryFileId(session.page.html);session.endpoint=sameOriginEndpoint(session.page,explicitEndpoint,"/filemoreajax.php");if(session.endpoint.isEmpty()&&!hiddenFileId.isEmpty())session.endpoint=sameOriginEndpointAny(session.page,"/filemoreajax.php?file="+hiddenFileId);session.folderEndpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/foldermoreajax.php");
     session.fid=cap(session.endpoint,"[?&]file=([^&#]+)");String uid=cap(session.endpoint,"[?&]uid=([^&#]+)");session.form=formValues(session.page.html);if(!uid.isEmpty())session.form.put("uid",uid);session.form.put("fid",uid.isEmpty()?session.fid:"1");session.form.put("lx",firstNonEmpty(session.form.get("lx"),uid.isEmpty()?"2":"1"));if(!hiddenFileId.isEmpty())session.form.put("ls","1");session.form.put("rep",firstNonEmpty(session.form.get("rep"),"0"));session.form.put("up",firstNonEmpty(session.form.get("up"),"1"));session.form.put("vip",firstNonEmpty(session.form.get("vip"),"0"));
@@ -2679,7 +2772,17 @@ final class LanzouCore {
   private static IOException acwChallengeFailure(String html,String fallbackUrl,String requestUrl){if(!isWafChallengePage(html))return null;return new UserVerificationRequiredException(firstNonEmpty(fallbackUrl,requestUrl));}
   /** A later transport failure must not hide an earlier user-verification challenge. */
   private static Exception retainRouteChallenge(Exception current,Exception challenge){if(challenge==null||userVerificationRequired(challenge)==null)return current;if(current==null)return challenge;if(current instanceof ShareCancelledException||current instanceof DirectPasswordException||userVerificationRequired(current)!=null)return current;return challenge;}
-    private static void requireActiveShare(DirectLink page,String requestedUrl)throws IOException{String html=page==null||page.html==null?"":page.html;if(isWafChallengePage(html)&&(page==null||!page.verificationComplete))throw new UserVerificationRequiredException(page==null?"":page.url);boolean same=sameHost(page==null?"":page.url,requestedUrl);if(page!=null&&page.httpStatus>=400)throw new PageCapabilityException("HTTP "+page.httpStatus,same);if(isCancelledShareText(html))throw new ShareCancelledException(same);if(isDirectorySharePage(html)||isSingleFileSharePage(html)||pageTemplate(html)!=TEMPLATE_UNKNOWN)return;if(isUnavailableShareShell(html))throw new PageCapabilityException("当前 UA 返回不可解析的蓝奏中间页",same);throw new PageCapabilityException("当前 UA 未返回可解析的蓝奏分享页",same);}
+    /**
+     * Lanzou answers a removed share with HTTP 400 plus the "来晚啦…文件取消分享" body, so the cancelled-share text must be
+     * classified before the status code; otherwise a dead link looks like a UA/line capability failure and the client
+     * retries every route before reporting failure.
+     */
+    private static void requireActiveShare(DirectLink page,String requestedUrl)throws IOException{String html=page==null||page.html==null?"":page.html;if(isWafChallengePage(html)&&(page==null||!page.verificationComplete))throw new UserVerificationRequiredException(page==null?"":page.url);boolean same=sameHost(page==null?"":page.url,requestedUrl)||sameLanzouSite(page==null?"":page.url,requestedUrl);if(isCancelledShareText(html)){if(same)throw new ShareCancelledException(true);throw new PageCapabilityException("蓝奏线路返回分享取消页",false);}if(page!=null&&page.httpStatus>=400)throw new PageCapabilityException("HTTP "+page.httpStatus,same);if(isDirectorySharePage(html)||isSingleFileSharePage(html)||pageTemplate(html)!=TEMPLATE_UNKNOWN)return;if(isUnavailableShareShell(html))throw new PageCapabilityException("当前 UA 返回不可解析的蓝奏中间页",same);throw new PageCapabilityException("当前 UA 未返回可解析的蓝奏分享页",same);}
+  /** www.lanzouq.com and vdhpl.lanzouq.com are the same Lanzou site; lanzouq.com and lanzoum.com are not. */
+  private static boolean sameLanzouSite(String left,String right){
+    try{String a=lanzouSiteCookieKey(new URL(left.trim()).getHost()),b=lanzouSiteCookieKey(new URL(right==null?"":right.trim()).getHost());return !a.isEmpty()&&a.equals(b);}
+    catch(Exception ignored){return false;}
+  }
     private static boolean sameHost(String left,String right){try{String a=new URL(left.trim()).getHost(),b=new URL(right==null?"":right.trim()).getHost();return a!=null&&b!=null&&a.equalsIgnoreCase(b);}catch(Exception ignored){return false;}}
   static boolean verifiedBrowserUseful(DirectLink page,boolean challengeVisible){
     if(challengeVisible)return false;
@@ -2866,6 +2969,14 @@ final class LanzouCore {
   private static void applyNavigationHeaders(HttpURLConnection c,String userAgent){userAgent=verifiedUserAgent(c.getURL().toString(),userAgent);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");c.setRequestProperty("Accept-Encoding","gzip, deflate");c.setRequestProperty("Cache-Control","no-cache");c.setRequestProperty("Pragma","no-cache");c.setRequestProperty("DNT","1");c.setRequestProperty("Upgrade-Insecure-Requests","1");c.setRequestProperty("Sec-Fetch-Dest","document");c.setRequestProperty("Sec-Fetch-Mode","navigate");c.setRequestProperty("Sec-Fetch-Site","none");c.setRequestProperty("Sec-Fetch-User","?1");applyChromiumHints(c,userAgent);}
   private static void applyAjaxHeaders(HttpURLConnection c,String userAgent){userAgent=verifiedUserAgent(c.getURL().toString(),userAgent);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*; q=0.01");c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");c.setRequestProperty("Accept-Encoding","gzip, deflate");c.setRequestProperty("Cache-Control","no-cache");c.setRequestProperty("Pragma","no-cache");c.setRequestProperty("Sec-Fetch-Dest","empty");c.setRequestProperty("Sec-Fetch-Mode","cors");c.setRequestProperty("Sec-Fetch-Site","same-origin");applyChromiumHints(c,userAgent);}
   private static DirectLink getPage(String url,String cookie,long deadline,String userAgent)throws Exception{
+    try{return getPage(url,cookie,deadline,userAgent,false);}
+    catch(Exception error){
+      if(!lanzouTlsFallbackAllowed(url,error))throw error;
+      warnLenientLanzouTls(url,error);
+      return getPage(url,cookie,deadline,userAgent,true);
+    }
+  }
+  private static DirectLink getPage(String url,String cookie,long deadline,String userAgent,boolean lenientTls)throws Exception{
     java.net.CookieManager jar=new java.net.CookieManager(null,CookiePolicy.ACCEPT_ORIGINAL_SERVER);
     URI initial=new URI(url);
     if(cookie!=null&&!cookie.isEmpty()){
@@ -2875,7 +2986,7 @@ final class LanzouCore {
     String current=url,referer="";
     for(int redirects=0;redirects<=8;redirects++){
       checkHttpCancelled();checkDeadline(deadline);
-      URI uri=new URI(current);HttpURLConnection c=openHttp(uri.toURL());trackConnection(c,true);
+      URI uri=new URI(current);HttpURLConnection c=openHttp(uri.toURL(),lenientTls);trackConnection(c,true);
       try{
         c.setInstanceFollowRedirects(false);applyTimeouts(c,deadline);applyNavigationHeaders(c,userAgent);
         if(!referer.isEmpty()){c.setRequestProperty("Referer",referer);c.setRequestProperty("Sec-Fetch-Site",origin(referer).equals(origin(current))?"same-origin":"cross-site");}
@@ -2899,7 +3010,15 @@ final class LanzouCore {
   }
   private static String post(String url,Map<String,String> data,DirectLink page,long deadline)throws Exception{return post(url,data,page,deadline,ANDROID_UA);}
                 static{try{System.setProperty("http.keepAlive","true");System.setProperty("http.maxConnections",String.valueOf(Math.max(1,adaptiveNetworkWorkers(Integer.MAX_VALUE))));}catch(Throwable ignored){}}
-    private static String post(String url,Map<String,String> data,DirectLink page,long deadline,String userAgent)throws Exception{synchronized(page){String lastChallenge="";for(int round=0;round<3;round++){if(Thread.currentThread().isInterrupted())throw new InterruptedException();checkDeadline(deadline);HttpURLConnection c=openHttp(new URL(url));trackConnection(c,true);try{applyTimeouts(c,deadline);c.setInstanceFollowRedirects(false);c.setDoOutput(true);c.setRequestMethod("POST");applyAjaxHeaders(c,firstNonEmpty(page.requestUserAgent,userAgent));c.setRequestProperty("Referer",page.url);c.setRequestProperty("Origin",origin(page.url));if(!page.cookie.isEmpty())c.setRequestProperty("Cookie",page.cookie);c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");byte[] b=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(b.length);try(OutputStream o=c.getOutputStream()){o.write(b);}int status=c.getResponseCode();page.cookie=captureCookies(page.cookie,c);String result=body(c),value=acwCookie(result);lastChallenge=result;if(!value.isEmpty()){page.cookie=mergeCookie(page.cookie,"acw_sc__v2",value);continue;}if(isWafChallengePage(result))throw new UserVerificationRequiredException(page.url);if(status==429||status==503)throw new PageRateLimitedException("HTTP "+status);if(status>=300)throw new IOException("目录接口 HTTP "+status);return result;}finally{trackConnection(c,false);}}IOException challenge=acwChallengeFailure(lastChallenge,page.url,url);if(challenge!=null)throw challenge;throw new IOException("蓝奏 ACW 验证未完成");}}
+    private static String post(String url,Map<String,String> data,DirectLink page,long deadline,String userAgent)throws Exception{
+    try{return post(url,data,page,deadline,userAgent,false);}
+    catch(Exception error){
+      if(!lanzouTlsFallbackAllowed(url,error))throw error;
+      warnLenientLanzouTls(url,error);
+      return post(url,data,page,deadline,userAgent,true);
+    }
+  }
+    private static String post(String url,Map<String,String> data,DirectLink page,long deadline,String userAgent,boolean lenientTls)throws Exception{synchronized(page){String lastChallenge="";for(int round=0;round<3;round++){if(Thread.currentThread().isInterrupted())throw new InterruptedException();checkDeadline(deadline);HttpURLConnection c=openHttp(new URL(url),lenientTls);trackConnection(c,true);try{applyTimeouts(c,deadline);c.setInstanceFollowRedirects(false);c.setDoOutput(true);c.setRequestMethod("POST");applyAjaxHeaders(c,firstNonEmpty(page.requestUserAgent,userAgent));c.setRequestProperty("Referer",page.url);c.setRequestProperty("Origin",origin(page.url));if(!page.cookie.isEmpty())c.setRequestProperty("Cookie",page.cookie);c.setRequestProperty("X-Requested-With","XMLHttpRequest");c.setRequestProperty("Content-Type","application/x-www-form-urlencoded; charset=UTF-8");byte[] b=form(data).getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(b.length);try(OutputStream o=c.getOutputStream()){o.write(b);}int status=c.getResponseCode();page.cookie=captureCookies(page.cookie,c);String result=body(c),value=acwCookie(result);lastChallenge=result;if(!value.isEmpty()){page.cookie=mergeCookie(page.cookie,"acw_sc__v2",value);continue;}if(isWafChallengePage(result))throw new UserVerificationRequiredException(page.url);if(status==429||status==503)throw new PageRateLimitedException("HTTP "+status);if(status>=300)throw new IOException("目录接口 HTTP "+status);return result;}finally{trackConnection(c,false);}}IOException challenge=acwChallengeFailure(lastChallenge,page.url,url);if(challenge!=null)throw challenge;throw new IOException("蓝奏 ACW 验证未完成");}}
   private static void trackConnection(HttpURLConnection connection,boolean open){ConnectionTracker tracker=SEARCH_CONNECTIONS.get();if(tracker!=null){if(open)tracker.opened(connection);else tracker.closed(connection);}}
   private static void checkHttpCancelled()throws InterruptedException{ConnectionTracker tracker=SEARCH_CONNECTIONS.get();if(Thread.currentThread().isInterrupted()||tracker!=null&&tracker.isCancelled())throw new InterruptedException();}
   private static String captureCookies(String existing,HttpURLConnection connection){LinkedHashMap<String,String> values=cookieValues(existing);mergeSetCookies(values,connection.getHeaderFields());return cookieHeader(values);}
@@ -2914,7 +3033,26 @@ final class LanzouCore {
     private static InputStream decodedResponseStream(HttpURLConnection connection,InputStream raw)throws Exception{String encoding=connection.getContentEncoding();if(encoding==null)return raw;String value=encoding.trim().toLowerCase(Locale.ROOT);if(value.contains("gzip"))return new GZIPInputStream(raw);if(value.contains("deflate"))return new InflaterInputStream(raw);return raw;}
     static String body(HttpURLConnection c)throws Exception{InputStream raw=c.getResponseCode()<400?c.getInputStream():c.getErrorStream();if(raw==null)return"";try(InputStream in=decodedResponseStream(c,raw)){long declared=c.getContentLengthLong();int initial=declared>0&&declared<1024L*1024L?(int)declared:8192;ByteArrayOutputStream o=new ByteArrayOutputStream(Math.max(1024,initial));byte[] b=new byte[8192];for(int n;(n=in.read(b))>0;)o.write(b,0,n);return o.toString("UTF-8");}}
   static String form(Map<String,String> m)throws Exception{StringBuilder b=new StringBuilder();for(Map.Entry<String,String>e:m.entrySet()){if(b.length()>0)b.append('&');b.append(URLEncoder.encode(e.getKey(),"UTF-8")).append('=').append(URLEncoder.encode(e.getValue(),"UTF-8"));}return b.toString();}
-  private static Map<String,String> formValues(String h){Map<String,String> out=new HashMap<>(),vars=new HashMap<>();Matcher vm=parsePattern("(?:var\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*['\"]([^'\"]*)['\"]").matcher(h);while(vm.find())vars.put(vm.group(1),vm.group(2));Matcher fields=parsePattern("['\"](lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip)['\"]\\s*:\\s*(?:['\"]([^'\"]*)['\"]|([A-Za-z_][A-Za-z0-9_]*))").matcher(h);while(fields.find())out.putIfAbsent(fields.group(1),fields.group(2)!=null?fields.group(2):vars.getOrDefault(fields.group(3),""));return out;}
+  /**
+   * Collects the directory listing fields the share page hands to /filemoreajax.php. Besides plain literals the page may
+   * wrap the proof values (t/k) in helper functions, so literal-returning helpers are resolved by name; an unresolved
+   * expression is left out instead of being guessed.
+   */
+  private static Map<String,String> formValues(String h){
+    Map<String,String> out=new LinkedHashMap<>(),vars=new HashMap<>();
+    Matcher vm=parsePattern("(?:var\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*['\"]([^'\"]*)['\"]").matcher(h);while(vm.find())vars.put(vm.group(1),vm.group(2));
+    Matcher fm=parsePattern("(?is)(?:function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^)]*\\)\\s*\\{|([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*function\\s*\\([^)]*\\)\\s*\\{)[^{}]{0,400}?return\\s*['\"]([^'\"]+)['\"]").matcher(h);while(fm.find())vars.putIfAbsent(firstNonEmpty(fm.group(1),fm.group(2)),fm.group(3));
+    collectFormFields(parsePattern("['\"](lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip)['\"]\\s*:\\s*(?:['\"]([^'\"]*)['\"]|([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\(\\s*\\))?)").matcher(h),vars,out);
+    collectFormFields(parsePattern("[{,]\\s*(lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip)\\s*:\\s*(?:['\"]([^'\"]*)['\"]|([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\(\\s*\\))?)").matcher(h),vars,out);
+    return out;
+  }
+  /** Object-literal keys are only accepted right after '{' or ',' so CSS/text pairs such as "font:..." are ignored. */
+  private static void collectFormFields(Matcher fields,Map<String,String> vars,Map<String,String> out){
+    while(fields.find()){
+      String literal=fields.group(2),name=fields.group(3),value=literal!=null?literal:vars.getOrDefault(name==null?"":name,"");
+      if(!value.isEmpty())out.putIfAbsent(fields.group(1),value);
+    }
+  }
   private static DirectLink parseFolderTarget(String value){DirectLink out=new DirectLink();out.rootUrl=out.folderId=out.title=out.description="";String url=value==null?"":value.trim();int marker=url.indexOf(FOLDER_MARKER);if(marker<0){out.rootUrl=url;return out;}out.rootUrl=url.substring(0,marker);String fragment=url.substring(marker+FOLDER_MARKER.length());String[] parts=fragment.split("&");if(parts.length>0)out.folderId=decode(parts[0]);for(int i=1;i<parts.length;i++){int split=parts[i].indexOf('=');if(split<1)continue;String key=parts[i].substring(0,split),decoded=decode(parts[i].substring(split+1));if(key.equals("title"))out.title=decoded;else if(key.equals("description"))out.description=decoded;}return out;}
     private static String virtualFolderUrl(String root,String id,String title,String description)throws Exception{return withoutFragment(root)+FOLDER_MARKER+URLEncoder.encode(id,"UTF-8")+"&title="+URLEncoder.encode(title,"UTF-8")+"&description="+URLEncoder.encode(description,"UTF-8");}
   /** Preserve an API-provided public child share URL; otherwise persist the exact re-enterable folder identity. */

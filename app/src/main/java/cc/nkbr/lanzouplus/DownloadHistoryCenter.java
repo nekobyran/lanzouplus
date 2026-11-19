@@ -54,6 +54,8 @@ final class DownloadHistoryCenter {
     final int percent;
     /** True while this record is explicitly waiting for an interactive verification challenge. */
     final boolean awaitingVerification;
+    /** True when the completed record's local file is known to be gone (live entries only). */
+    final boolean missing;
 
     Row(MainActivity.DownloadEntry entry, boolean premium, String entryType, String name, String state, String error,
         String uriString, String mimeType, String sourceSizeText, String batchTitle,
@@ -80,6 +82,7 @@ final class DownloadHistoryCenter {
       this.batchTitle = batchTitle == null ? "" : batchTitle;
       this.batchId = batchId == null ? "" : batchId;
       this.awaitingVerification = awaitingVerification;
+      this.missing = entry != null && entry.fileMissing;
       this.downloadedBytes = Math.max(0, downloadedBytes);
       this.totalBytes = Math.max(0, totalBytes);
       this.createdAt = createdAt;
@@ -270,7 +273,8 @@ final class DownloadHistoryCenter {
       return "下载中 · " + row.percent + "% · " + size + "\n" + firstNonEmpty(row.error, "正在传输");
     }
     if (MainActivity.DOWNLOAD_PAUSED.equals(row.state)) return "已暂停 · " + row.percent + "% · " + size + "\n再次点击继续";
-    if (row.completed()) return "下载完成 · " + size + "\n完成 " + moment(row.completedAt);
+    if (row.completed()) return (row.missing ? "本地文件已删除" : "下载完成") + " · " + size
+        + "\n完成 " + moment(row.completedAt);
     if (row.cancelled()) return "已取消 · " + size + "\n创建 " + moment(row.createdAt);
     if (row.failed()) return "失败" + (row.error.isEmpty() ? "" : " · " + row.error) + " · " + size + "\n创建 " + moment(row.createdAt);
     return row.state + " · " + size + "\n创建 " + moment(row.createdAt);

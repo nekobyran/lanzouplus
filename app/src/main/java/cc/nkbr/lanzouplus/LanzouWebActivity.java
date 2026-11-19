@@ -32,6 +32,7 @@ public final class LanzouWebActivity extends Activity{
 
     WebView web;EditText address,suggestionInput;TextView title;ImageView siteIcon;ProgressBar progress;FrameLayout shell,noticeLayer,suggestionLayer,contextLayer;LinearLayout suggestionResults;PopupWindow menuPopup;String currentUrl="",currentTitle="";int BG,SURFACE,TEXT,MUTED,DIV,PRIMARY,topInset,bottomInset;float lastTouchX,lastTouchY;ValueCallback<Uri[]> fileCallback;boolean syncingSuggestionInput,challengeMode,verificationFinishing,automaticVerificationAttempted;int pendingHistoryScroll;String pendingHistoryUrl="";LanzouSliderVerification automaticVerification;
     final long activityCreatedAtMs=SystemClock.elapsedRealtime();final ArrayList<LoadTiming> loadTimings=new ArrayList<>();LoadTiming activeTiming;
+  ImageButton verificationDone;int automaticVerificationRun;static final int AUTO_VERIFICATION_TRIES=3;static final long AUTO_VERIFICATION_TRY_MS=8000L;
     LinearLayout webToolbar;HorizontalScrollView titleTrack;ImageButton navClose,navBack,navForward,navRefresh,navHome,navFavorite,navHistory,navOverflow;boolean toolbarCompact;int toolbarMeasuredWidth=-1;
 
     final ThreadPoolExecutor webIo=suggestionExecutor();final ArrayList<Entry> history=new ArrayList<>(),favorites=new ArrayList<>();final ArrayList<String> searchQueries=new ArrayList<>();volatile int suggestionGeneration;Future<?> pendingSuggestion;Runnable pendingSuggestionDispatch;final Handler suggestionUi=new Handler(Looper.getMainLooper());SuggestionFetcher suggestionFetcher=(query,userAgent)->fetchSharedBingSuggestions(query,userAgent);
@@ -93,7 +94,7 @@ public final class LanzouWebActivity extends Activity{
       webToolbar.addView(titleCluster,new LinearLayout.LayoutParams(0,dp(50),1));
       webToolbar.addView(navFavorite,toolbarButtonParams());
       webToolbar.addView(navHistory,toolbarButtonParams());
-      if(challengeMode){ImageButton done=toolIcon(R.drawable.ic_check,PRIMARY,false,"完成验证并继续解析");done.setOnClickListener(v->checkVerificationCompletion(true));webToolbar.addView(done,toolbarButtonParams());}
+      if(challengeMode){verificationDone=toolIcon(R.drawable.ic_check,PRIMARY,false,"完成验证并继续解析");verificationDone.setOnClickListener(v->checkVerificationCompletion(true));verificationDone.setVisibility(View.GONE);webToolbar.addView(verificationDone,toolbarButtonParams());}
       webToolbar.addView(navOverflow,toolbarButtonParams());
       webToolbar.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{int width=r-l;if(width!=toolbarMeasuredWidth){toolbarMeasuredWidth=width;applyToolbarMode(width);}});
       return webToolbar;
@@ -181,14 +182,49 @@ public final class LanzouWebActivity extends Activity{
       checkVerificationCompletion(false);
       if(automaticVerificationAttempted||!isLanzouVerificationUrl(currentUrl))return;
       automaticVerificationAttempted=true;
-      automaticVerification=LanzouSliderVerification.foreground(web,System.nanoTime()+TimeUnit.SECONDS.toNanos(12),passed->{if(passed&&automaticVerification!=null){LanzouCore.DirectLink page=automaticVerification.verifiedPage();if(page!=null){page.cookie=safeCookie(page.url);LanzouCore.importUserVerificationPage(page);}finishVerification();}});
-      automaticVerification.start();
+      notice("正在自动完成验证…",false);
+      runAutomaticVerification(0);
     },650);
+  }
+  /**
+   * Silent ladder: one background drag per round, each on a reloaded challenge and a slightly
+   * different gesture shape. Only when every round misses does the manual button appear.
+   */
+  void runAutomaticVerification(int attempt){
+    if(!challengeMode||verificationFinishing||web==null)return;
+    if(attempt>=AUTO_VERIFICATION_TRIES){showVerificationFallback();return;}
+    LanzouSliderVerification previous=automaticVerification;automaticVerification=null;
+    if(previous!=null)try{previous.close();}catch(Throwable ignored){}
+    final int run=++automaticVerificationRun;
+    LanzouSliderVerification transaction=new LanzouSliderVerification(web,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(AUTO_VERIFICATION_TRY_MS),passed->{
+      if(!challengeMode||verificationFinishing||web==null||run!=automaticVerificationRun)return;
+      LanzouSliderVerification source=automaticVerification;
+      if(passed){
+        LanzouCore.DirectLink page=source==null?null:source.verifiedPage();
+        if(page!=null){page.cookie=safeCookie(page.url);LanzouCore.importUserVerificationPage(page);}
+        finishVerification();return;
+      }
+      if(source==null||!source.gestureAttempted()){showVerificationFallback();return;}
+      web.postDelayed(()->{
+        if(!challengeMode||verificationFinishing||web==null||run!=automaticVerificationRun)return;
+        if(isLanzouVerificationUrl(currentUrl))web.loadUrl(currentUrl);
+        runAutomaticVerification(attempt+1);
+      },260);
+    },MainActivity.verificationAutoTuning(attempt));
+    automaticVerification=transaction;
+    try{transaction.start();}catch(Throwable error){automaticVerification=null;try{transaction.close();}catch(Throwable ignored){}showVerificationFallback();}
+  }
+  /** Every silent round missed: restore touch tracking and surface the manual completion path. */
+  void showVerificationFallback(){
+    if(!challengeMode||verificationFinishing)return;
+    if(web!=null)web.setOnTouchListener((v,e)->{lastTouchX=e.getRawX();lastTouchY=e.getRawY();return false;});
+    if(verificationDone!=null)verificationDone.setVisibility(View.VISIBLE);
+    notice("自动验证未通过，可手动滑动后点右上角“完成验证”",true);
   }
 
     boolean isLanzouVerificationUrl(String raw){return WebNavigationPolicy.isLanzouVerificationUrl(raw);}
   String verificationTarget(){String entered=getIntent()==null?"":getIntent().getStringExtra(EXTRA_URL);if(isLanzouVerificationUrl(currentUrl))return currentUrl;return entered==null?"":entered;}
-  void finishVerification(){if(!challengeMode||verificationFinishing)return;String target=verificationTarget();String cookie=safeCookie(target);verificationFinishing=true;Intent result=new Intent().putExtra(EXTRA_VERIFICATION_URL,target).putExtra(EXTRA_VERIFICATION_COOKIE,cookie==null?"":cookie.trim());setResult(RESULT_OK,result);finish();}
+  void finishVerification(){if(!challengeMode||verificationFinishing)return;String target=verificationTarget();String cookie=safeCookie(target);if(cookie.isEmpty())cookie=safeCookie(currentUrl);verificationFinishing=true;Intent result=new Intent().putExtra(EXTRA_VERIFICATION_URL,target).putExtra(EXTRA_VERIFICATION_COOKIE,cookie.trim());setResult(RESULT_OK,result);finish();}
 
 
 
@@ -218,7 +254,7 @@ public final class LanzouWebActivity extends Activity{
    * the removable queue drops cancelled work so a typing burst never replays every intermediate query
    * on Bing while the user is still typing.
    */
-  static ThreadPoolExecutor suggestionExecutor(){int workers=Math.max(1,LanzouCore.adaptiveUiIoWorkers(SUGGESTION_WORKER_BUDGET));ThreadPoolExecutor pool=new ThreadPoolExecutor(workers,workers,30L,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),run->{Thread worker=new Thread(run,"web-suggestions");worker.setDaemon(true);return worker;});pool.allowCoreThreadTimeOut(true);return pool;}
+  static ThreadPoolExecutor suggestionExecutor(){int workers=Math.max(1,LanzouCore.adaptiveUiIoWorkers(SUGGESTION_WORKER_BUDGET));ThreadPoolExecutor pool=new QuietExecutors.Pool(workers,workers,30L,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),run->{Thread worker=new Thread(run,"web-suggestions");worker.setDaemon(true);return worker;});pool.allowCoreThreadTimeOut(true);return pool;}
 
   GradientDrawable menuShape(){GradientDrawable g=new GradientDrawable();g.setColor(SURFACE);g.setCornerRadii(new float[8]);g.setStroke(dp(1),DIV);return g;}
   int menuMaxHeight(View anchor){int[] location=new int[2];if(anchor!=null)anchor.getLocationOnScreen(location);int screenHeight=Math.max(dp(320),getResources().getDisplayMetrics().heightPixels);int anchorBottom=location[1]+(anchor==null?0:anchor.getHeight());int below=screenHeight-bottomInset-anchorBottom-dp(8);int above=location[1]-topInset-dp(8);return Math.max(dp(MENU_MIN_HEIGHT_DP),Math.max(below,above));}

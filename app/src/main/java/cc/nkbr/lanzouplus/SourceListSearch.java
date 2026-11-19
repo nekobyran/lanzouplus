@@ -82,7 +82,7 @@ final class SourceListSearch {
   private static int kind(Models.Source source){return source.kind==Models.SOURCE_WEB?2:source.kind==Models.SOURCE_SINGLE?1:0;}
 
   private final MainActivity owner;
-  private final ThreadPoolExecutor worker=new ThreadPoolExecutor(1,1,15,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),r->{Thread t=new Thread(r,"source-list-filter");t.setDaemon(true);return t;});
+  private final ThreadPoolExecutor worker=new QuietExecutors.Pool(1,1,15,TimeUnit.SECONDS,new LinkedBlockingQueue<>(),r->{Thread t=new Thread(r,"source-list-filter");t.setDaemon(true);return t;});
   private List<Models.Source> indexedList;
   private int indexedRevision=-1;
   private boolean indexedMembers;

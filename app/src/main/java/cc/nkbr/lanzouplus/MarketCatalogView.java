@@ -8,7 +8,9 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.*;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.*;
 
 /** The market is a full destination. GridView only binds visible repository cards. */
@@ -30,11 +32,16 @@ final class MarketCatalogView {
     MarketRepositoryClient.Document document;
     MarketRepositoryClient.GithubInfo github;
     String error="";
-    Card(MarketRepositoryClient.CatalogEntry entry){this.entry=entry;url=entry.githubUrl;}
+    Card(MarketRepositoryClient.CatalogEntry entry){this.entry=entry;url=entry.url;}
+    /** The catalog copy is authoritative; the repository metadata is the fallback after preview. */
+    StaticIndexInfo publishedIndex(){
+      if(entry.index!=null)return entry.index;
+      return document==null?null:document.metadata.indexInfo;
+    }
   }
   private static final class Holder {
     ImageView icon,avatar;
-    TextView name,publisher,stars,description;
+    TextView badge,name,publisher,stars,description;
   }
 
   MarketCatalogView(MainActivity owner,GridView grid,TextView summary,boolean force){
@@ -65,13 +72,13 @@ final class MarketCatalogView {
     for(Card card:cards)ranks.put(card,searchRank(card.entry,query));
     matches.removeIf(card->ranks.get(card)<0);
     matches.sort(Comparator.comparingInt(ranks::get));visible.addAll(matches);
-    summary.setText(cards.isEmpty()?"市场暂无仓库，可上传 GitHub 仓库链接":query.isEmpty()?"资源仓库 · "+cards.size()+" 个":"本地匹配 · "+visible.size()+" / "+cards.size()+" 个");
+    summary.setText(cards.isEmpty()?"市场暂无条目，可上传 GitHub 仓库链接或分享索引":query.isEmpty()?"市场条目 · "+cards.size()+" 个":"本地匹配 · "+visible.size()+" / "+cards.size()+" 个");
     adapter.notifyDataSetChanged();
   }
   static int searchRank(MarketRepositoryClient.CatalogEntry entry,String query){
     if(query.isEmpty())return 0;
     int best=Integer.MAX_VALUE;
-    String[] fields={entry.displayTitle(),entry.repositoryName,entry.description,entry.displayPublisher(),entry.githubUrl,entry.version};
+    String[] fields={entry.displayTitle(),entry.repositoryName,entry.description,entry.displayPublisher(),entry.githubUrl,entry.version,entry.isIndex()?"索引":""};
     for(String field:fields){int rank=LanzouCore.matchRank(field,query,true);if(rank>=0)best=Math.min(best,rank);}
     return best==Integer.MAX_VALUE?-1:best;
   }
@@ -79,6 +86,7 @@ final class MarketCatalogView {
   void columnsChanged(){grid.setNumColumns(columns());}
 
   private void request(Card card){
+    if(card.entry.isIndex())return;
     if(card.loading||card.github!=null&&card.document!=null)return;
     card.loading=true;
     owner.sourceMetadataIo.execute(()->{
@@ -119,6 +127,13 @@ final class MarketCatalogView {
         LinearLayout top=new LinearLayout(owner);top.setGravity(Gravity.CENTER_VERTICAL);
         holder.icon=new ImageView(owner);holder.icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
         top.addView(holder.icon,new LinearLayout.LayoutParams(owner.dp(40),owner.dp(40)));
+        holder.badge=owner.text("索引",10,owner.PRIMARY);
+        holder.badge.setGravity(Gravity.CENTER);holder.badge.setPadding(owner.dp(5),0,owner.dp(5),0);
+        GradientDrawable badgeBackground=new GradientDrawable();
+        badgeBackground.setColor(Color.TRANSPARENT);badgeBackground.setCornerRadius(owner.dp(4));
+        badgeBackground.setStroke(owner.dp(1),owner.PRIMARY);holder.badge.setBackground(badgeBackground);
+        holder.badge.setVisibility(View.GONE);
+        top.addView(holder.badge,new LinearLayout.LayoutParams(-2,owner.dp(20)));
         holder.name=owner.text("",14,owner.TEXT);holder.name.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
         holder.name.setMaxLines(2);holder.name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         holder.name.setMinHeight(owner.dp(42));
@@ -141,29 +156,131 @@ final class MarketCatalogView {
         row.setTag(holder);
       }
       Card card=visible.get(position);
+      boolean index=card.entry.isIndex();
+      holder.badge.setVisibility(index?View.VISIBLE:View.GONE);
       holder.name.setText(card.entry.displayTitle());
+      StaticIndexInfo publishedIndex=index?null:card.publishedIndex();
       String publisher=card.entry.displayPublisher();
-      if(publisher.isEmpty()&&card.github!=null)publisher=card.github.owner;
+      if(index){
+        String builtAt=card.entry.builtAtText();
+        publisher=builtAt.isEmpty()?"索引 · 建立日期待补全":"索引 · 建立于 "+builtAt;
+      }else{
+        if(publisher.isEmpty()&&card.github!=null)publisher=card.github.owner;
+        if(publishedIndex!=null){
+          String builtAt=publishedIndex.builtAtText();
+          if(!builtAt.isEmpty())publisher=publisher+" · 建立于 "+builtAt;
+        }
+      }
       holder.publisher.setText(publisher);
-      holder.stars.setText(card.github==null||card.github.stars<0?"☆ —":"★ "+card.github.stars);
+      String trailing;
+      if(index)trailing=indexCounts(card.entry);
+      else if(publishedIndex!=null)trailing=publishedIndex.sizeText().isEmpty()?"索引":"索引 · "+publishedIndex.sizeText();
+      else if(card.document!=null)trailing="无索引";
+      else trailing=card.github==null||card.github.stars<0?"☆ —":"★ "+card.github.stars;
+      holder.stars.setText(trailing);
       String description=card.entry.description;
-      if(description.isEmpty())description=card.error.isEmpty()?"暂无简介":"图标信息暂时无法读取";
+      if(description.isEmpty())description=index?"点击添加此索引":card.error.isEmpty()?"暂无简介":"图标信息暂时无法读取";
       holder.description.setText(description);
       holder.icon.setTag(null);holder.avatar.setTag(null);holder.icon.setImageResource(R.drawable.ic_folder);
       holder.avatar.setImageResource(R.drawable.ic_globe);
       holder.avatar.setColorFilter(owner.MUTED);
+      holder.avatar.setVisibility(index?View.GONE:View.VISIBLE);
+      if(index)holder.icon.setImageResource(R.drawable.ic_archive);
       String icon=card.document==null?"":card.document.sourceIconUrl();
-      if(!icon.isEmpty())owner.loadImage(icon,holder.icon);
+      if(!index&&!icon.isEmpty())owner.loadImage(icon,holder.icon);
       String avatar=card.document!=null&&!card.document.metadata.publisherAvatar.isEmpty()?card.document.metadata.assetUrlUnchecked(card.document.rawRoot,card.document.metadata.publisherAvatar):card.github==null?"":card.github.avatar;
       if(avatar.isEmpty()&&card.document!=null)avatar=card.document.ownerAvatar;
-      if(!avatar.isEmpty())owner.loadProfileImage(avatar,holder.avatar);
+      if(!index&&!avatar.isEmpty())owner.loadProfileImage(avatar,holder.avatar);
       row.setContentDescription(holder.name.getText()+"，发布者 "+publisher+"，"+holder.stars.getText()+"，"+description);
-      if(!card.loading&&(card.github==null||card.document==null)&&card.error.isEmpty())request(card);
+      if(!index&&!card.loading&&(card.github==null||card.document==null)&&card.error.isEmpty())request(card);
       return row;
     }
   }
 
+  private static String indexCounts(MarketRepositoryClient.CatalogEntry entry){
+    String size=sizeText(entry.sizeBytes);
+    return (size.isEmpty()?"":size+" · ")+entry.entryCount+" 条";
+  }
+
+  private static String sizeText(long bytes){
+    if(bytes<=0L)return "";
+    if(bytes<1024L)return bytes+" B";
+    if(bytes<1024L*1024L)return String.format(Locale.CHINA,"%.1f KB",bytes/1024.0);
+    return String.format(Locale.CHINA,"%.1f MB",bytes/(1024.0*1024.0));
+  }
+
+  /** Index rows open a short panel: size, build date, coverage and one install action. */
+  private void showIndex(Card card){
+    final MarketRepositoryClient.CatalogEntry entry=card.entry;
+    LinearLayout panel=new LinearLayout(owner);
+    panel.setOrientation(LinearLayout.VERTICAL);
+    panel.setPadding(owner.dp(8),owner.dp(4),owner.dp(8),0);
+    String builtAt=entry.builtAtText();
+    StringBuilder meta=new StringBuilder();
+    meta.append(builtAt.isEmpty()?"建立日期：待补全":"建立日期："+builtAt);
+    meta.append('\n').append("条目：").append(entry.entryCount);
+    String size=sizeText(entry.sizeBytes);
+    if(!size.isEmpty())meta.append(" · ").append(size);
+    if(entry.sourceCount>0)meta.append(" · 来源：").append(entry.sourceCount);
+    if(entry.sourceCount>0)meta.append(" · 覆盖 ")
+        .append(entry.coveredSourceCount).append('/').append(entry.sourceCount);
+    TextView detail=owner.text(meta.toString(),13,owner.TEXT);
+    detail.setLineSpacing(0,1.15f);
+    detail.setPadding(owner.dp(12),0,owner.dp(12),owner.dp(6));
+    panel.addView(detail,new LinearLayout.LayoutParams(-1,-2));
+    TextView description=owner.text(entry.description.isEmpty()?"下载后会出现在设置 · 搜索与索引的候选列表中。":entry.description,12,owner.MUTED);
+    description.setPadding(owner.dp(12),0,owner.dp(12),owner.dp(10));
+    description.setLineSpacing(0,1.1f);
+    panel.addView(description,new LinearLayout.LayoutParams(-1,-2));
+    TextView status=owner.text("",12,owner.MUTED);
+    status.setPadding(owner.dp(12),0,owner.dp(12),owner.dp(6));
+    panel.addView(status,new LinearLayout.LayoutParams(-1,-2));
+    AlertDialog dialog=new AlertDialog.Builder(owner).setTitle(entry.displayTitle())
+        .setView(SharedPopupSurface.dialogScroll(owner,panel,520))
+        .setNegativeButton("关闭",null).setPositiveButton("添加索引",null).create();
+    final boolean[] busy={false};
+    dialog.setOnShowListener(ignored->{
+      Button action=dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+      action.setOnClickListener(v->{
+        if(busy[0])return;
+        busy[0]=true;action.setEnabled(false);action.setText("正在下载…");
+        status.setText("正在下载索引文件…");
+        owner.io.execute(()->{
+          try{
+            MarketRepositoryClient.IndexDownload download=
+                owner.core.marketRepositories().downloadIndex(entry.url);
+            owner.runOnUiThread(()->{
+              if(dialog.isShowing())status.setText("正在导入 "+download.entryCount+" 条索引…");
+            });
+            StaticIndexInfo info;
+            try(InputStream input=new ByteArrayInputStream(download.bytes)){
+              info=owner.core.importStaticIndex(input,entry.displayTitle());
+            }
+            owner.runOnUiThread(()->{
+              busy[0]=false;owner.sourceDataRevision++;
+              owner.renderStaticIndexCandidates();
+              if(dialog.isShowing())dialog.dismiss();
+              String name=info==null||info.name.isEmpty()?entry.displayTitle():info.name;
+              int count=info==null?download.entryCount:info.entryCount;
+              owner.showNotice("已添加索引："+name+" · "+count+" 条",false);
+            });
+          }catch(Exception error){
+            owner.runOnUiThread(()->{
+              busy[0]=false;
+              if(!dialog.isShowing())return;
+              action.setEnabled(true);action.setText("添加索引");
+              status.setTextColor(owner.darkMode?Color.rgb(255,180,171):Color.rgb(179,38,30));
+              status.setText("添加失败："+owner.friendlyError(error));
+            });
+          }
+        });
+      });
+    });
+    owner.showRounded(dialog);
+  }
+
   private void showDetails(Card card){
+    if(card.entry.isIndex()){showIndex(card);return;}
     LinearLayout panel=new LinearLayout(owner);
     panel.setOrientation(LinearLayout.VERTICAL);
     panel.setPadding(owner.dp(8),owner.dp(4),owner.dp(8),0);
@@ -175,10 +292,15 @@ final class MarketCatalogView {
     Button refreshButton=owner.toolbarTextButton("刷新");
     refreshButton.setTextSize(12);
     refreshButton.setContentDescription("刷新仓库版本与 README");
+    Button indexButton=owner.toolbarTextButton("安装索引");
+    indexButton.setTextSize(12);
+    indexButton.setContentDescription("下载并安装此仓库发布的搜索索引");
+    indexButton.setVisibility(View.GONE);
     LinearLayout statusRow=new LinearLayout(owner);statusRow.setGravity(Gravity.CENTER_VERTICAL);
     statusRow.addView(status,new LinearLayout.LayoutParams(0,-2,1));
-    statusRow.addView(refreshButton,new LinearLayout.LayoutParams(owner.dp(60),owner.dp(44)));
-    statusRow.addView(starButton,new LinearLayout.LayoutParams(owner.dp(128),owner.dp(44)));
+    statusRow.addView(refreshButton,new LinearLayout.LayoutParams(owner.dp(56),owner.dp(44)));
+    statusRow.addView(indexButton,new LinearLayout.LayoutParams(owner.dp(88),owner.dp(44)));
+    statusRow.addView(starButton,new LinearLayout.LayoutParams(owner.dp(112),owner.dp(44)));
     panel.addView(statusRow,new LinearLayout.LayoutParams(-1,owner.dp(48)));
     FrameLayout frame=new FrameLayout(owner);
     ProgressBar progress=new ProgressBar(owner);
@@ -210,6 +332,14 @@ final class MarketCatalogView {
       download[0].setEnabled(!busy[0]&&document[0]!=null&&(!has||ahead));
       delete[0].setVisibility(has?View.VISIBLE:View.GONE);
       delete[0].setEnabled(!busy[0]);
+      StaticIndexInfo indexInfo=document[0]!=null&&document[0].metadata.indexInfo!=null
+          ?document[0].metadata.indexInfo:card.entry.index;
+      indexButton.setVisibility(indexInfo==null?View.GONE:View.VISIBLE);
+      if(indexInfo!=null){
+        String label=indexInfo.sizeText().isEmpty()?"安装索引":"安装索引 · "+indexInfo.sizeText();
+        indexButton.setText(label);
+        indexButton.setContentDescription("安装索引，建立于 "+indexInfo.builtAtText());
+      }
     };
     dialog.setOnShowListener(ignored->{
       download[0]=dialog.getButton(AlertDialog.BUTTON_POSITIVE);
@@ -250,6 +380,11 @@ final class MarketCatalogView {
             }).create();
         owner.showRounded(confirm);
         confirm.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(owner.darkMode?Color.rgb(255,180,171):Color.rgb(179,38,30));
+      });
+      indexButton.setOnClickListener(v->{
+        StaticIndexInfo info=document[0]!=null&&document[0].metadata.indexInfo!=null
+            ?document[0].metadata.indexInfo:card.entry.index;
+        if(info!=null&&!info.path.isEmpty())installIndex(info,indexButton,status);
       });
       starButton.setOnClickListener(v->{
         if(starBusy[0])return;
@@ -401,6 +536,37 @@ final class MarketCatalogView {
       return !document.metadata.versionMode.equals(source.repositoryVersionMode)||
           MarketRepository.compareVersions(document.metadata.versionMode,document.metadata.version,source.repositoryVersion)>0;
     }catch(Exception ignored){return false;}
+  }
+
+  /** Shared install path for both project rows and standalone index rows. */
+  private void installIndex(StaticIndexInfo info,Button button,TextView status){
+    String label=info.sizeText().isEmpty()?"安装索引":"安装索引 · "+info.sizeText();
+    button.setEnabled(false);button.setText("下载中…");
+    if(status!=null)status.setText("正在下载索引 "+info.sizeText()+"…");
+    owner.io.execute(()->{
+      try{
+        MarketRepositoryClient.IndexDownload download=
+            owner.core.marketRepositories().downloadIndex(info.path);
+        StaticIndexInfo saved;
+        try(InputStream input=new ByteArrayInputStream(download.bytes)){
+          saved=owner.core.importStaticIndex(input,info.name);
+        }
+        owner.runOnUiThread(()->{
+          button.setEnabled(true);button.setText(label);
+          if(status!=null)status.setText("索引已安装 · "+download.entryCount+" 条");
+          owner.sourceDataRevision++;owner.renderStaticIndexCandidates();
+          String name=saved==null||saved.name.isEmpty()?info.name:saved.name;
+          owner.showNotice("已安装索引："+name+" · "+download.entryCount+" 条",false);
+        });
+      }catch(Exception error){
+        owner.runOnUiThread(()->{
+          button.setEnabled(true);button.setText(label);
+          String message="索引安装失败："+owner.friendlyError(error);
+          if(status!=null)status.setText(message);
+          owner.showNotice(message,true);
+        });
+      }
+    });
   }
 
   private static void updateStarButton(

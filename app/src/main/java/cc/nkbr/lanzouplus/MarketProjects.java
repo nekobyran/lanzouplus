@@ -301,6 +301,7 @@ final class MarketProjects implements MarketProjectEditor.Host {
           project.sourceJson = sources;
           project.readme = draftReadme;
         }
+        project.indexCandidateId = draft.indexCandidateId == null ? "" : draft.indexCandidateId;
         if (linkMode) {
           while (project.sourcePaths.length() > 0) project.sourcePaths.remove(0);
           for (String link : MarketProjectInput.links(draftLinks)) {

@@ -11,6 +11,9 @@ final class MarketRepository {
   final JSONObject json;
   final String name,title,version,versionMode,publisher,publisherAvatar,description,icon,readme,sources;
   final List<String> categories;
+  /** Optional published search index carried by this repository; {@code path} holds its HTTPS URL. */
+  final String indexUrl;
+  final StaticIndexInfo indexInfo;
 
   MarketRepository(JSONObject value)throws Exception{
     if(value.getInt("schema")!=1)throw new IOException("不支持的仓库格式");
@@ -26,6 +29,19 @@ final class MarketRepository {
     categories=SourceCategories.read(value);
     if(!icon.isEmpty()&&!icon.startsWith("https://"))path(icon);
     if(!publisherAvatar.isEmpty()&&!publisherAvatar.startsWith("https://"))path(publisherAvatar);
+    JSONObject index=value.optJSONObject("index");
+    if(index==null){
+      indexUrl="";indexInfo=null;
+    }else{
+      String address=index.optString("url","").trim();
+      if(!address.startsWith("https://"))throw new IOException("仓库索引地址必须使用 HTTPS");
+      int declared=Math.max(0,index.optInt("sourceCount",0));
+      int covered=index.has("coveredSourceCount")?index.optInt("coveredSourceCount",declared):declared;
+      long size=index.optLong("size",index.optLong("sizeBytes",0L));
+      indexUrl=address;
+      indexInfo=new StaticIndexInfo("",index.optString("name",title),index.optLong("builtAt",0L),
+          index.optInt("entryCount",0),declared,address,size,covered);
+    }
   }
 
   static String canonicalUrl(String raw)throws IOException{

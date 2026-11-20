@@ -327,6 +327,13 @@ final class LanzouCore {
   private final java.util.concurrent.atomic.AtomicLong directoryCacheRevision=new java.util.concurrent.atomic.AtomicLong();
         private final java.util.concurrent.atomic.AtomicBoolean directorySearchWarmQueued=new java.util.concurrent.atomic.AtomicBoolean(),searchNetworkWarmQueued=new java.util.concurrent.atomic.AtomicBoolean(); private final java.util.concurrent.atomic.AtomicInteger searchNetworkWarmRound=new java.util.concurrent.atomic.AtomicInteger();
   private volatile DirectorySearchIndex directorySearchIndex,searchBackfillIndex;
+  /** User imported static index: registry + async-loaded snapshot of the selected file. */
+  private final StaticIndexStore staticIndexStore;
+  private volatile DirectorySearchIndex staticIndexSnapshot;
+  private volatile String staticIndexSnapshotId="";
+  private volatile boolean staticIndexOn;
+  private volatile String staticIndexSelectedId="";
+  private final java.util.concurrent.atomic.AtomicBoolean staticIndexReloadQueued=new java.util.concurrent.atomic.AtomicBoolean();
   /** Frozen index walk scope; {@code null} keeps the historical all-official-source behaviour. */
   private volatile List<Models.Source> directoryIndexScope;
   private final Object directoryIndexScopeLock=new Object();
@@ -340,9 +347,9 @@ final class LanzouCore {
   private final ThreadPoolExecutor searchPool=newSearchPool();
   private final ThreadPoolExecutor backgroundPool=newBackgroundPool();
   private final ScheduledThreadPoolExecutor searchScheduler=newSearchScheduler();
-                                                LanzouCore(Context c){context=c.getApplicationContext();appContext=context;}
+                                                LanzouCore(Context c){context=c.getApplicationContext();appContext=context;staticIndexStore=new StaticIndexStore(context);staticIndexOn=staticIndexStore.enabled();staticIndexSelectedId=staticIndexStore.selectedId();}
   void prewarmSearchCatalog(){try{builtInSources();sourceNameIndex();}catch(Exception ignored){}}
-    void prewarmSearchRuntime(){prewarmSearchCatalog();int target=adaptiveSearchWarmWorkers(Integer.MAX_VALUE);synchronized(searchPool){if(searchPool.isShutdown())return;if(searchPool.getCorePoolSize()<target)searchPool.setCorePoolSize(target);searchPool.prestartAllCoreThreads();}if(!searchScheduler.isShutdown())searchScheduler.prestartCoreThread();}
+    void prewarmSearchRuntime(){prewarmSearchCatalog();reloadStaticIndex();int target=adaptiveSearchWarmWorkers(Integer.MAX_VALUE);synchronized(searchPool){if(searchPool.isShutdown())return;if(searchPool.getCorePoolSize()<target)searchPool.setCorePoolSize(target);searchPool.prestartAllCoreThreads();}if(!searchScheduler.isShutdown())searchScheduler.prestartCoreThread();}
         int prewarmSearchNetworkNow(){prewarmSearchRuntime();if(closed.get())return 0;List<Models.Source> all;try{all=spreadFullSearchSources(directoryIndexWorkSources());}catch(Exception ignored){return 0;}List<Models.Source> candidates=new ArrayList<>();for(Models.Source source:all)if(source.searchable&&(source.password==null||source.password.isEmpty()))candidates.add(source);if(candidates.isEmpty())for(Models.Source source:all)if(source.password==null||source.password.isEmpty())candidates.add(source);if(candidates.isEmpty())return 0;int profileWarm=Math.max(1,adaptiveProfileImageWorkers(Integer.MAX_VALUE)),searchWarm=Math.max(1,adaptiveSearchWarmWorkers(candidates.size())),target=Math.max(1,Math.min(candidates.size(),(int)Math.ceil(Math.sqrt((double)profileWarm*(double)searchWarm)))),span=Math.max(target,Math.min(candidates.size(),searchWarm)),stride=Math.max(1,span/target),round=Math.floorMod(searchNetworkWarmRound.getAndIncrement(),Math.max(1,span)),start=Math.floorMod(round*target,span),success=0;Set<String> sampled=new HashSet<>();for(int n=0;n<target&&!closed.get();n++){int index=Math.floorMod(start+n*stride,span);Models.Source source=candidates.get(index);if(!sampled.add(source.url))continue;try(NetworkGovernor.Lease ignored=NETWORK_GOVERNOR.acquireBackground(()->closed.get()||Thread.currentThread().isInterrupted())){long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(searchRouteTimeoutMillis());browseSession(source.url,source.password,deadline,false);success++;}catch(InterruptedException interrupted){Thread.currentThread().interrupt();break;}catch(Exception ignored){}}if(success>0)searchNetworkWarmAt=System.currentTimeMillis();return success;}
     void prewarmSearchNetwork(){long now=System.currentTimeMillis();if(closed.get()||now-searchNetworkWarmAt<SESSION_TTL_MS||!searchNetworkWarmQueued.compareAndSet(false,true))return;try{backgroundPool.execute(()->{try{prewarmSearchNetworkNow();}finally{searchNetworkWarmQueued.set(false);}});}catch(RejectedExecutionException ignored){searchNetworkWarmQueued.set(false);}}
     private DirectCookiePool directCookiePool(){DirectCookiePool value=directCookiePool;if(value!=null)return value;synchronized(this){value=directCookiePool;if(value==null)directCookiePool=value=new DirectCookiePool(context);return value;}}
@@ -2012,15 +2019,15 @@ final class LanzouCore {
 
   /** Reads the durable flat index first, then supplements with the already-warm directory graph if current. */
   List<Models.Item> cachedPartialIndexMatches(String query,Set<String> allowedSourceIds)throws IOException{return cachedPartialIndexMatches(query,allowedSourceIds,false);}
-    List<Models.Item> cachedPartialIndexMatches(String query,Set<String> allowedSourceIds,boolean fuzzy)throws IOException{LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();mergeCachedIndexMatches(matches,localSourceIndexMatches(query,allowedSourceIds,fuzzy));mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,liveSearchBackfillIndexForSearch(),fuzzy,false));DirectorySearchIndex durable=searchBackfillIndex;if(durable!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,durable,fuzzy,true));DirectorySearchIndex warm=warmDirectorySearchIndexForSearch();if(warm!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,warm,fuzzy,true));return new ArrayList<>(matches.values());}
-  List<Models.Item> cachedDurableIndexMatches(String query,Set<String> allowedSourceIds,boolean fuzzy)throws IOException{LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();mergeCachedIndexMatches(matches,localSourceIndexMatches(query,allowedSourceIds,fuzzy));mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,liveSearchBackfillIndexForSearch(),fuzzy,false));mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,searchBackfillIndexForSearch(),fuzzy,true));DirectorySearchIndex warm=warmDirectorySearchIndexForSearch();if(warm!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,warm,fuzzy,true));return new ArrayList<>(matches.values());}
+    List<Models.Item> cachedPartialIndexMatches(String query,Set<String> allowedSourceIds,boolean fuzzy)throws IOException{LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();mergeCachedIndexMatches(matches,localSourceIndexMatches(query,allowedSourceIds,fuzzy));mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,liveSearchBackfillIndexForSearch(),fuzzy,false));DirectorySearchIndex durable=searchBackfillIndex;if(durable!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,durable,fuzzy,true));DirectorySearchIndex warm=warmDirectorySearchIndexForSearch();if(warm!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,warm,fuzzy,true));mergeStaticIndexMatches(matches,query,fuzzy,true,Collections.emptySet());return new ArrayList<>(matches.values());}
+  List<Models.Item> cachedDurableIndexMatches(String query,Set<String> allowedSourceIds,boolean fuzzy)throws IOException{LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();mergeCachedIndexMatches(matches,localSourceIndexMatches(query,allowedSourceIds,fuzzy));mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,liveSearchBackfillIndexForSearch(),fuzzy,false));mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,searchBackfillIndexForSearch(),fuzzy,true));DirectorySearchIndex warm=warmDirectorySearchIndexForSearch();if(warm!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,warm,fuzzy,true));mergeStaticIndexMatches(matches,query,fuzzy,true,Collections.emptySet());return new ArrayList<>(matches.values());}
 
-  List<Models.Item> cachedDirectoryMatches(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages)throws IOException{return cachedMatchesFromIndex(query,allowedSourceIds,directorySearchIndexForSearch(),false,true);}
-  List<Models.Item> cachedDirectoryMatches(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages,boolean fuzzy)throws IOException{return cachedMatchesFromIndex(query,allowedSourceIds,directorySearchIndexForSearch(),fuzzy,true);}
+  List<Models.Item> cachedDirectoryMatches(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages)throws IOException{return cachedDirectoryMatches(query,allowedSourceIds,recursiveFolders,maxPages,false);}
+  List<Models.Item> cachedDirectoryMatches(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages,boolean fuzzy)throws IOException{LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,directorySearchIndexForSearch(),fuzzy,true));mergeStaticIndexMatches(matches,query,fuzzy,true,Collections.emptySet());return new ArrayList<>(matches.values());}
 
   /** Non-blocking directory-cache scan for index-assisted UI; never builds the full graph on the search thread. */
   List<Models.Item> cachedDirectoryMatchesWarm(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages)throws IOException{return cachedDirectoryMatchesWarm(query,allowedSourceIds,recursiveFolders,maxPages,false);}
-  List<Models.Item> cachedDirectoryMatchesWarm(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages,boolean fuzzy)throws IOException{DirectorySearchIndex cached=warmDirectorySearchIndexForSearch();return cached==null?new ArrayList<>():cachedMatchesFromIndex(query,allowedSourceIds,cached,fuzzy,true);}
+  List<Models.Item> cachedDirectoryMatchesWarm(String query,Set<String> allowedSourceIds,boolean recursiveFolders,int maxPages,boolean fuzzy)throws IOException{DirectorySearchIndex cached=warmDirectorySearchIndexForSearch();LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();if(cached!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,cached,fuzzy,true));mergeStaticIndexMatches(matches,query,fuzzy,true,Collections.emptySet());return new ArrayList<>(matches.values());}
 
   private DirectorySearchIndex warmDirectorySearchIndexForSearch(){long revision=directoryCacheRevision.get();DirectorySearchIndex cached=directorySearchIndex;return cached!=null&&cached.revision==revision?cached:null;}
   private static void mergeCachedIndexMatches(LinkedHashMap<String,Models.Item> out,List<Models.Item> items){if(items==null)return;for(Models.Item item:items)out.putIfAbsent(indexedMatchKey(item),item);}
@@ -2036,6 +2043,7 @@ final class LanzouCore {
     mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,searchBackfillIndexForSearch(),fuzzy,true,delivered));
     DirectorySearchIndex warm=warmDirectorySearchIndexForSearch();
     if(warm!=null)mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,allowedSourceIds,warm,fuzzy,true,delivered));
+    mergeStaticIndexMatches(matches,query,fuzzy,true,delivered);
     return new ArrayList<>(matches.values());
   }
 
@@ -2044,6 +2052,219 @@ final class LanzouCore {
     List<RankedDirectoryEntry> candidates=index.ranked(SearchQuery.of(needle),allowedSourceIds,fuzzy?3:0);
     long now=System.currentTimeMillis();LinkedHashMap<String,Models.Item> matches=new LinkedHashMap<>();for(RankedDirectoryEntry candidate:candidates){CachedDirectoryEntry entry=candidate.entry;if(entry.expiresAt<now||delivered.contains(entry.matchKey))continue;Models.Item item=copyItem(entry.item);item.indexHit=indexHit;String key=firstNonEmpty(item.url,item.shareUrl);if(key.isEmpty())key=entry.sourceId+"\n"+entry.path;matches.putIfAbsent(key,item);}
     return new ArrayList<>(matches.values());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Static (user imported) search index: storage in filesDir/static-index, registry in prefs
+  // "static-index-v1". The selected file is parsed on a background thread and participates in the
+  // cached search passes as one extra snapshot; it never expires and never blocks the first frame.
+  // ---------------------------------------------------------------------------------------------
+  boolean staticIndexEnabled(){return staticIndexStore.enabled();}
+
+  void setStaticIndexEnabled(boolean enabled){staticIndexStore.setEnabled(enabled);reloadStaticIndex();}
+
+  List<StaticIndexInfo> staticIndexCandidates(){return staticIndexStore.candidates();}
+
+  String selectedStaticIndexId(){String value=staticIndexStore.selectedId();return value==null?"":value;}
+
+  void selectStaticIndex(String id){staticIndexStore.select(id);reloadStaticIndex();}
+
+  /** Copies the stream into filesDir/static-index, validates it first; malformed files are never written. */
+  StaticIndexInfo importStaticIndex(InputStream in,String fallbackName){return staticIndexStore.importIndex(in,fallbackName);}
+
+  void deleteStaticIndex(String id){staticIndexStore.delete(id);reloadStaticIndex();}
+
+  /** Installs an index baked into assets (falls back to assets/index/&lt;name&gt;). */
+  StaticIndexInfo installBundledStaticIndex(String assetName){return staticIndexStore.installBundled(assetName);}
+
+  /** Background install with user-visible progress text; {@code done} receives null on failure. */
+  void installBundledStaticIndexAsync(String assetName,java.util.function.Consumer<String> progress,java.util.function.Consumer<StaticIndexInfo> done){
+    staticIndexProgress(progress,"正在安装索引…");
+    try{
+      backgroundPool.execute(()->{
+        StaticIndexInfo info=null;
+        try{info=installBundledStaticIndex(assetName);}catch(Exception error){
+          staticIndexProgress(progress,"索引安装失败："+(error.getMessage()==null?"文件不可用":error.getMessage()));
+        }
+        if(info!=null)staticIndexProgress(progress,"索引已安装："+info.entryCount+" 条 · "+info.coverageText()+" · "+info.sizeText());
+        if(done!=null)try{done.accept(info);}catch(Exception ignored){}
+      });
+    }catch(RejectedExecutionException rejected){
+      staticIndexProgress(progress,"索引安装失败：应用正在退出");
+      if(done!=null)done.accept(null);
+    }
+  }
+
+  int staticIndexEntryCount(){String id=staticIndexStore.selectedId();return id.isEmpty()?0:staticIndexStore.entryCount(id);}
+
+  /** Metadata of the selected candidate (size, build date, source coverage) for settings/market rows. */
+  StaticIndexInfo selectedStaticIndexInfo(){return staticIndexStore.candidate(staticIndexStore.selectedId());}
+
+  /** Sources the selected index could not capture; 0 means it covers every declared source. */
+  int staticIndexMissingSourceCount(){StaticIndexInfo info=selectedStaticIndexInfo();return info==null?0:info.missingSourceCount();}
+
+  /**
+   * Builds a static index from the given sources with the existing directory-index pipeline,
+   * exports it under filesDir/static-index and registers it as a candidate.
+   * Cancellation: interrupt the calling thread (checked between and inside sources) or the
+   * global index cancel flag; a cancelled build writes nothing.
+   */
+  StaticIndexInfo buildStaticIndex(List<Models.Source> sources,java.util.function.Consumer<String> progress){
+    if(sources==null||sources.isEmpty())throw new IllegalArgumentException("没有可建立索引的源");
+    long generation=indexGeneration.get();
+    int total=sources.size();
+    List<Models.Item> collected=new ArrayList<>();
+    JSONArray coverage=new JSONArray();
+    int covered=0;
+    long startedNanos=System.nanoTime();
+    for(int i=0;i<total;i++){
+      if(closed.get()||indexCancelled.get()||Thread.currentThread().isInterrupted())throw new IllegalStateException("已取消");
+      Models.Source source=sources.get(i);
+      if(source==null){
+        coverage.put(new JSONObject());
+        continue;
+      }
+      staticIndexProgress(progress,"("+(i+1)+"/"+total+") 抓取 "+source.title);
+      boolean ok=false;
+      try{
+        ok=indexDirectorySource(source,0L,true,false,null,new java.util.concurrent.atomic.AtomicInteger(i),total,generation);
+      }catch(InterruptedException interrupted){
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("已取消",interrupted);
+      }catch(Exception error){
+        ok=false;
+      }
+      List<Models.Item> rows=ok?exportCachedSourceEntries(source,adaptiveSearchIndexItems()*4):new ArrayList<>();
+      int before=collected.size();
+      collected.addAll(rows);
+      int moved=collected.size()-before;
+      if(moved>0)covered++;
+      JSONObject row=new JSONObject();
+      try{
+        row.put("title",source.title).put("path",source.url).put("entryCount",moved).put("covered",moved>0);
+      }catch(JSONException ignored){}
+      coverage.put(row);
+      staticIndexProgress(progress,"("+(i+1)+"/"+total+") "+(moved>0?"完成 ":"失败 ")+source.title+" · "+moved+" 条");
+    }
+    if(collected.isEmpty())throw new IllegalStateException("未取得任何目录条目");
+    String name="自建索引 "+new java.text.SimpleDateFormat("MM-dd HH:mm",Locale.CHINA).format(new Date());
+    JSONObject root=new JSONObject();
+    JSONArray entries=new JSONArray();
+    try{
+      for(Models.Item item:collected)entries.put(itemToIndexJson(item));
+      root.put("schema",1).put("title",name).put("builtAt",System.currentTimeMillis()).put("scope","custom")
+        .put("sourceCount",total).put("capturedSourceCount",covered).put("entryCount",collected.size())
+        .put("coverage",coverage).put("entries",entries);
+    }catch(JSONException error){
+      throw new IllegalStateException("索引序列化失败",error);
+    }
+    StaticIndexInfo info=staticIndexStore.saveIndex(name,root,total,covered);
+    reloadStaticIndex();
+    staticIndexProgress(progress,"完成："+info.entryCount+" 条 · "+info.coverageText()+" · "+info.sizeText()
+      +" · 耗时 "+TimeUnit.NANOSECONDS.toSeconds(System.nanoTime()-startedNanos)+"s");
+    return info;
+  }
+
+  private static void staticIndexProgress(java.util.function.Consumer<String> progress,String text){
+    if(progress==null)return;
+    try{progress.accept(text);}catch(Exception ignored){}
+  }
+
+  /** Re-walks the folder caches the index pipeline just wrote for one source and returns flat rows. */
+  private List<Models.Item> exportCachedSourceEntries(Models.Source source,int limit){
+    List<Models.Item> out=new ArrayList<>();
+    if(source==null||limit<1)return out;
+    String id=sourceId(source);
+    ArrayDeque<Models.Item> folders=new ArrayDeque<>();
+    ArrayDeque<Integer> depths=new ArrayDeque<>();
+    ArrayDeque<String> paths=new ArrayDeque<>();
+    Set<String> seenFolders=new HashSet<>();
+    Models.Item root=new Models.Item();
+    root.title=source.title;root.url=root.shareUrl=source.url;root.password=source.password;
+    root.folder=true;root.source=source.title;root.sourceId=id;
+    enqueueFolder(folders,seenFolders,root,null);
+    depths.add(0);paths.add("");
+    while(!folders.isEmpty()&&out.size()<limit){
+      Models.Item folder=folders.removeFirst();
+      depths.removeFirst();
+      String parentPath=paths.removeFirst();
+      for(int page=1;;page++){
+        Models.Folder value=readFolderCache(folder.url,folder.password,page);
+        if(value==null)break;
+        for(Models.Item raw:value.items){
+          Models.Item item=copyItem(raw);
+          inherit(item,folder);
+          item.source=source.title;item.sourceId=id;
+          String itemPath=parentPath.isEmpty()?item.title:parentPath+"/"+item.title;
+          if(item.description==null||item.description.isEmpty())item.description=itemPath;
+          out.add(item);
+          if(item.folder){
+            int before=folders.size();
+            enqueueFolder(folders,seenFolders,item,folder);
+            if(folders.size()>before){depths.add(0);paths.add(itemPath);}
+          }
+          if(out.size()>=limit)break;
+        }
+        if(!value.hasMore||out.size()>=limit)break;
+      }
+    }
+    return out;
+  }
+
+  /** Background load of the selected file; repeated calls while a load is queued are coalesced. */
+  void reloadStaticIndex(){
+    String id=staticIndexStore.selectedId();
+    boolean enabled=staticIndexStore.enabled();
+    staticIndexOn=enabled;staticIndexSelectedId=id;
+    if(!enabled||id.isEmpty()){
+      staticIndexSnapshot=null;staticIndexSnapshotId="";
+      return;
+    }
+    DirectorySearchIndex current=staticIndexSnapshot;
+    if(current!=null&&id.equals(staticIndexSnapshotId))return;
+    if(!staticIndexReloadQueued.compareAndSet(false,true))return;
+    try{
+      backgroundPool.execute(()->{
+        DirectorySearchIndex loaded=null;
+        try{loaded=loadStaticIndexSnapshot(staticIndexStore.fileFor(id));}catch(Exception ignored){}
+        finally{
+          try{
+            if(id.equals(staticIndexStore.selectedId())&&staticIndexStore.enabled()){
+              staticIndexSnapshot=loaded;staticIndexSnapshotId=loaded==null?"":id;staticIndexOn=true;staticIndexSelectedId=id;
+            }
+          }finally{staticIndexReloadQueued.set(false);}
+        }
+      });
+    }catch(RejectedExecutionException ignored){staticIndexReloadQueued.set(false);}
+  }
+
+  private DirectorySearchIndex loadStaticIndexSnapshot(File file){
+    if(file==null||!file.isFile())return null;
+    List<Models.Item> items;
+    try{items=StaticIndexStore.readEntries(file);}catch(Exception error){return null;}
+    LinkedHashMap<String,CachedDirectoryEntry> values=new LinkedHashMap<>();
+    for(Models.Item raw:items){
+      if(raw==null)continue;
+      String key=firstNonEmpty(raw.url,raw.shareUrl);
+      if(key.isEmpty())continue;
+      Models.Item item=copyItem(raw);
+      values.putIfAbsent(key,new CachedDirectoryEntry(item,firstNonEmpty(item.sourceId,item.source),0,0,firstNonEmpty(item.description,item.title)));
+    }
+    return new DirectorySearchIndex(file.lastModified()+file.length(),Collections.unmodifiableList(new ArrayList<>(values.values())));
+  }
+
+  /** Snapshot only when the user enabled the selected candidate and its file has been loaded. */
+  private DirectorySearchIndex staticIndexForSearch(){
+    if(!staticIndexOn)return null;
+    String id=staticIndexSelectedId;
+    DirectorySearchIndex snapshot=staticIndexSnapshot;
+    return snapshot!=null&&id.equals(staticIndexSnapshotId)?snapshot:null;
+  }
+
+  private void mergeStaticIndexMatches(LinkedHashMap<String,Models.Item> matches,String query,boolean fuzzy,boolean indexHit,Set<String> delivered){
+    DirectorySearchIndex statics=staticIndexForSearch();
+    if(statics==null)return;
+    try{mergeCachedIndexMatches(matches,cachedMatchesFromIndex(query,null,statics,fuzzy,indexHit,delivered));}catch(Exception ignored){}
   }
 
   private static final class IndexScanMemo{
@@ -2120,7 +2341,7 @@ final class LanzouCore {
   private void appendSearchBackfill(List<CachedDirectoryEntry> entries){try{entries.addAll(searchBackfillIndexForSearch().entries);}catch(Exception ignored){}}
 
   private static JSONObject itemToIndexJson(Models.Item item)throws JSONException{return new JSONObject().put("title",item.title).put("url",item.url).put("share",item.shareUrl).put("size",item.size).put("time",item.time).put("icon",item.iconUrl).put("source",item.source).put("sourceId",item.sourceId).put("password",item.password).put("description",item.description).put("folder",item.folder).put("sourceEntry",item.sourceEntry).put("path",firstNonEmpty(item.description,item.title));}
-  private static Models.Item indexJsonToItem(JSONObject value){Models.Item item=new Models.Item();item.title=value.optString("title");item.url=value.optString("url");item.shareUrl=value.optString("share",item.url);item.size=value.optString("size");item.time=value.optString("time");item.iconUrl=value.optString("icon");item.source=value.optString("source");item.sourceId=value.optString("sourceId");item.password=value.optString("password");item.description=value.optString("description");item.folder=value.optBoolean("folder");item.sourceEntry=value.optBoolean("sourceEntry");return item;}
+  static Models.Item indexJsonToItem(JSONObject value){Models.Item item=new Models.Item();item.title=value.optString("title");item.url=value.optString("url");item.shareUrl=value.optString("share",item.url);item.size=value.optString("size");item.time=value.optString("time");item.iconUrl=value.optString("icon");item.source=value.optString("source");item.sourceId=value.optString("sourceId");item.password=value.optString("password");item.description=value.optString("description");item.folder=value.optBoolean("folder");item.sourceEntry=value.optBoolean("sourceEntry");return item;}
   private static final int INDEX_RESULT_CANCELLED=Integer.MIN_VALUE;
   private static final class IndexTrace{String folder="";int page;String stage=IndexEvent.STAGE_LIST;}
   private final ThreadLocal<IndexTrace> indexTrace=new ThreadLocal<IndexTrace>(){@Override protected IndexTrace initialValue(){return new IndexTrace();}};

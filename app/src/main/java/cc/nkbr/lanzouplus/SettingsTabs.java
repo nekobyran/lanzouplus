@@ -65,6 +65,7 @@ final class SettingsTabs {
         addRow(body,owner.settingsSwitchRow("列表源展示链接",owner.showSourceLinks,checked->{owner.showSourceLinks=checked;owner.persistSearchSettings();}));break;
       case "搜索与索引":
         add(body,owner.buildIndexProgressCard());
+        add(body,owner.buildStaticIndexSection());
         add(body,owner.buildUnifiedSliderPanel(owner.buildSearchSettingsPanel(),owner.buildIndexSliderSettings()));
         addRow(body,owner.buildSearchModeRow());
         addRow(body,owner.buildHomeSearchDefaultRow());

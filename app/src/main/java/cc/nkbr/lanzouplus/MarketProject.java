@@ -85,6 +85,8 @@ final class MarketProject {
     final JSONObject metadata;
     String sourceJson;
     String readme;
+    /** Local static-index candidate id chosen for the next publish; never published as metadata. */
+    String indexCandidateId = "";
     final JSONArray sourcePaths = new JSONArray();
     private final LinkedHashMap<String, Asset> assets = new LinkedHashMap<>();
 
@@ -125,6 +127,7 @@ final class MarketProject {
         }
         MarketProject project = new MarketProject(rawId, validated(value.getJSONObject("metadata")),
                 value.optString("sourceJson", ""), value.optString("readme", ""));
+        project.indexCandidateId = value.optString("indexCandidateId", "").trim();
         JSONArray paths = value.optJSONArray("sourcePaths");
         if (paths != null) {
             for (int i = 0; i < paths.length(); i++) {
@@ -214,6 +217,7 @@ final class MarketProject {
         value.put("metadata", new JSONObject(metadata.toString()));
         value.put("sourceJson", sourceJson);
         value.put("readme", readme);
+        value.put("indexCandidateId", indexCandidateId);
         value.put("sourcePaths", new JSONArray(sourcePaths.toString()));
         JSONArray stored = new JSONArray();
         for (Asset asset : assets.values()) {

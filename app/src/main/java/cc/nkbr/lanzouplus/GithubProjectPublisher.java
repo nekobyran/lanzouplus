@@ -342,12 +342,33 @@ final class GithubProjectPublisher {
             project.metadata.put("publisher", profile.login);
             project.metadata.put("publisherAvatar", profile.avatarUrl);
             Association associated = loadAssociation(context, login, project.id);
+            StaticIndexInfo index=null;byte[] indexBytes=null;String indexPath="";
+            if(!project.indexCandidateId.isEmpty()){
+                index=new StaticIndexStore(context).candidate(project.indexCandidateId);
+                if(index==null)throw new IOException("工程选择的索引已不在本机，请重新选择或到设置 · 搜索与索引补齐");
+                File file=new File(index.path);
+                if(!file.isFile())throw new IOException("工程选择的索引文件已不存在，请重新选择或到设置 · 搜索与索引补齐");
+                try(InputStream input=new FileInputStream(file)){
+                    indexBytes=MarketRepositoryClient.bytes(input,MarketRepositoryClient.INDEX_LIMIT);
+                }
+            }
+            if(indexBytes!=null){
+                String indexOwner=associated==null?login:associated.ownerLogin;
+                String indexRepo=associated==null?requestedName:associated.repositoryName;
+                indexPath="index/"+requestedName+"-"+index.builtAt+".lzindex.json";
+                String rawUrl="https://raw.githubusercontent.com/"+indexOwner+"/"+indexRepo+"/HEAD/"+indexPath;
+                project.metadata.put("index",new JSONObject().put("url",rawUrl).put("name",index.name)
+                    .put("size",indexBytes.length).put("builtAt",index.builtAt)
+                    .put("entryCount",index.entryCount).put("sourceCount",index.sourceCount)
+                    .put("coveredSourceCount",index.coveredSourceCount));
+            }
             ensureNotCancelled(cancelled);
             progress.status("正在构建标准工程 ZIP，并准备一次提交全部内容…");
             Map<String, byte[]> files = new LinkedHashMap<>(
                     MarketProject.readZip(project.buildRepositoryZip(reader)));
             for (String path : files.keySet()) validFilePath(path);
             if (files.isEmpty()) throw new IOException("工程 ZIP 中没有可上传的文件");
+            if(indexBytes!=null)files.put(indexPath,indexBytes);
             int total = files.size();
             boolean createdNow = false;
 

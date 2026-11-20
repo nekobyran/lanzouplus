@@ -133,6 +133,10 @@ public class MainActivity extends Activity {
   DownloadAggregateView.BatchPage batchDetailPage; String batchDetailBatchId=""; AlertDialog batchDetailDialog;
   static final java.util.concurrent.atomic.AtomicBoolean STARTUP_UPDATE_CHECKED_IN_PROCESS=new java.util.concurrent.atomic.AtomicBoolean(); static MainActivity ACTIVE_OWNER;static java.lang.ref.WeakReference<MainActivity> ACTIVE_INSTANCE=new java.lang.ref.WeakReference<>(null);
   static final int FUZZY_FILE_LIST=1,FUZZY_DIRECTORY=2,FUZZY_INDEX=4,FUZZY_ALL=FUZZY_FILE_LIST|FUZZY_DIRECTORY|FUZZY_INDEX;
+  static final int STATIC_INDEX_PICK=70;
+  /* 静态索引 UI 状态：核心层负责索引文件与搜索合并，这里只保存开关与选中项供设置页/搜索框共用。 */
+  boolean sessionStaticIndexEnabled; String sessionStaticIndexId="";
+  LumaSwitch staticIndexSettingsSwitch; LinearLayout staticIndexCandidateList; TextView staticIndexEmptyText,staticIndexSummaryText;
   final java.util.concurrent.atomic.AtomicBoolean updateCheckRunning=new java.util.concurrent.atomic.AtomicBoolean();
   final java.util.concurrent.atomic.AtomicBoolean directoryIndexRunning=new java.util.concurrent.atomic.AtomicBoolean();
   final java.util.concurrent.atomic.AtomicBoolean indexProgressPollPosted=new java.util.concurrent.atomic.AtomicBoolean();TextView indexFailuresLink;volatile boolean failedCountDirty;
@@ -425,7 +429,7 @@ public class MainActivity extends Activity {
   void playHomeBrandCiallo(){if(homeBrand==null||homeStage==null||homeSearchFocused)return;clearHomeBrandCiallo();if(!motionEnabled()){showNotice("Ciallo～",false);return;}final long generation=homeBrandCialloGeneration;final float rest=-dp(98);homeBrand.animate().cancel();homeBrand.setTranslationY(rest);homeBrand.animate().translationY(rest-dp(14)).setDuration(120).withEndAction(()->{if(generation!=homeBrandCialloGeneration)return;homeBrand.animate().translationY(rest+dp(5)).setDuration(150).withEndAction(()->{if(generation==homeBrandCialloGeneration)homeBrand.animate().translationY(rest).setDuration(120).start();}).start();}).start();int[] colors={Color.rgb(255,92,146),Color.rgb(255,174,66),Color.rgb(112,214,122),Color.rgb(73,180,255),Color.rgb(165,105,255),Color.rgb(255,108,224)};Random random=new Random();for(int i=0;i<10;i++){TextView ciallo=text("Ciallo～",10+random.nextInt(6),colors[i%colors.length]);homeBrandCialloViews.add(ciallo);ciallo.setGravity(Gravity.CENTER);ciallo.setAlpha(0f);FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(dp(78),dp(34),Gravity.CENTER);lp.leftMargin=random.nextInt(dp(170)+1)-dp(85);lp.topMargin=random.nextInt(dp(80)+1)-dp(40)-dp(98);homeStage.addView(ciallo,lp);ciallo.animate().alpha(1f).translationX(random.nextBoolean()?dp(35):-dp(35)).translationY(-dp(45+random.nextInt(45))).setStartDelay(0).setDuration(520+random.nextInt(260)).withEndAction(()->ciallo.animate().alpha(0f).translationY(ciallo.getTranslationY()-dp(28)).setDuration(260).withEndAction(()->{ViewParent parent=ciallo.getParent();if(parent instanceof ViewGroup)((ViewGroup)parent).removeView(ciallo);homeBrandCialloViews.remove(ciallo);}).start()).start();}}
   void showHomeLanding(){primaryBase(0);pageKind=0;activeSource=home;clearFolderTrail();folderRootSources=false;systemBackAction=null;root.setFocusableInTouchMode(true);root.requestFocus();homeStage=new FrameLayout(this);root.addView(homeStage,new LinearLayout.LayoutParams(-1,0,1));homeTopActions=new LinearLayout(this);homeTopActions.setGravity(Gravity.CENTER_VERTICAL);homeTopActions.setElevation(dp(4));homeTopActions.setVisibility(homeSearchRequested?View.GONE:View.VISIBLE);FrameLayout.LayoutParams topActionParams=new FrameLayout.LayoutParams(-2,dp(48),Gravity.TOP|Gravity.END);topActionParams.setMargins(0,dp(4),dp(4),0);homeStage.addView(homeTopActions,topActionParams);ImageButton manageButton=iconButton(R.drawable.ic_folder_open,"蓝奏云管理");manageButton.setOnClickListener(v->cloudManagement().show());homeTopActions.addView(manageButton,new LinearLayout.LayoutParams(dp(48),dp(48)));homeTopActions.addView(MarketAnnouncements.entry(this),new LinearLayout.LayoutParams(dp(44),dp(44)));marketAnnouncements().checkOnLaunch(this);
     String product="LanzouPlus";homeBrand=new LinearLayout(this);homeBrand.setGravity(Gravity.CENTER);ImageView appIcon=new ImageView(this);appIcon.setImageResource(R.mipmap.app_icon);appIcon.setContentDescription(product+" 软件图标");appIcon.setScaleType(ImageView.ScaleType.CENTER_CROP);appIcon.setClipToOutline(true);appIcon.setOutlineProvider(new ViewOutlineProvider(){@Override public void getOutline(View v,Outline outline){outline.setRoundRect(0,0,v.getWidth(),v.getHeight(),dp(11));}});homeBrand.addView(appIcon,new LinearLayout.LayoutParams(dp(46),dp(46)));LinearLayout brandCopy=new LinearLayout(this);brandCopy.setGravity(Gravity.CENTER_VERTICAL);brandCopy.setPadding(dp(12),0,0,0);TextView brand=text(product,29,TEXT);brand.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);brand.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);brand.setIncludeFontPadding(false);int glow=Color.rgb(205,139,255),gradientEnd=Color.rgb(181,128,255);brand.setShadowLayer(dp(4),0,0,Color.argb(150,Color.red(glow),Color.green(glow),Color.blue(glow)));brand.post(()->{brand.getPaint().setShader(new LinearGradient(0,0,Math.max(1,brand.getWidth()),0,Color.rgb(255,126,190),gradientEnd,Shader.TileMode.CLAMP));brand.invalidate();});brandCopy.addView(brand,new LinearLayout.LayoutParams(-2,dp(46)));homeBrand.addView(brandCopy,new LinearLayout.LayoutParams(-2,dp(46)));FrameLayout.LayoutParams brandParams=new FrameLayout.LayoutParams(-2,dp(52),Gravity.CENTER);homeStage.addView(homeBrand,brandParams);homeBrand.setTranslationY(-dp(98));homeBrand.setClickable(true);homeBrand.setFocusable(true);homeBrand.setContentDescription(product+" 标题，点击播放 Ciallo 动效");homeBrand.setOnClickListener(v->playHomeBrandCiallo());
-    FrameLayout searchBox=new FrameLayout(this);homeSearchBox=searchBox;searchBox.setClipChildren(true);searchBox.setClipToPadding(true);searchBox.setBackground(shape(SURFACE,26));search=new EditText(this);search.setSingleLine();search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("搜索一下");search.setTextSize(16);search.setBackgroundColor(Color.TRANSPARENT);search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);searchBox.addView(search,new FrameLayout.LayoutParams(-1,-1));searchBack=iconButton(R.drawable.ic_back,"返回");searchBack.setVisibility(View.INVISIBLE);searchBack.setOnClickListener(v->exitHomeSearchFocus());FrameLayout.LayoutParams backParams=new FrameLayout.LayoutParams(dp(46),dp(46),Gravity.START|Gravity.CENTER_VERTICAL);backParams.setMargins(dp(4),0,0,0);searchBox.addView(searchBack,backParams);loadSourceCategories();List<String> favoriteCategories=new ArrayList<>();favoriteCategories.add("全部");for(String category:sourceCategories.keySet())if(!favoriteCategories.contains(category))favoriteCategories.add(category);if(!favoriteCategories.contains(sessionHomeSourceCategory))sessionHomeSourceCategory="全部";List<String> searchScopes=new ArrayList<>(Arrays.asList("蓝奏云","全部","其他网站","网页搜索"));if(!searchScopes.contains(sessionSearchCategory))sessionSearchCategory=sessionHomeSearchDefault;Runnable submitHomeSearch=()->{if(!homeSearchFocused){enterHomeSearchFocus();search.requestFocus();}else runSearch(search.getText().toString().trim());};SearchCategoryPicker filterPicker=new SearchCategoryPicker(favoriteCategories,sessionHomeSourceCategory,searchScopes,sessionSearchCategory,value->sessionHomeSourceCategory=value,value->{sessionSearchCategory=value;if(homeSearchFocused){if("网页搜索".equals(value))queueHomeWebSearchIndex(search==null?"":search.getText().toString());else renderSearchHistory();}},submitHomeSearch);homeCategoryPicker=filterPicker;filterPicker.trigger.setOnClickListener(v->homeScopeSelection.choose());homeScopeSelection.refreshLabel();homeScopePicker=null;homeSearchCategory=filterPicker.view();homeSearchScope=null;homeSearchCategory.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){public void onViewAttachedToWindow(View view){}public void onViewDetachedFromWindow(View view){filterPicker.dismiss();}});int searchWidth=homeSearchWidth();FrameLayout.LayoutParams categoryParams=new FrameLayout.LayoutParams(homeSearchCategoryWidth(searchWidth),dp(54),Gravity.END|Gravity.CENTER_VERTICAL);searchBox.addView(homeSearchCategory,categoryParams);fitHomeSearchControls(searchWidth);FrameLayout.LayoutParams searchParams=new FrameLayout.LayoutParams(searchWidth,dp(54),Gravity.CENTER);homeStage.addView(searchBox,searchParams);homeShortcutController=HomeShortcuts.install(this,homeStage,searchWidth);
+    FrameLayout searchBox=new FrameLayout(this);homeSearchBox=searchBox;searchBox.setClipChildren(true);searchBox.setClipToPadding(true);searchBox.setBackground(shape(SURFACE,26));search=new EditText(this);search.setSingleLine();search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("搜索一下");search.setTextSize(16);search.setBackgroundColor(Color.TRANSPARENT);search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);searchBox.addView(search,new FrameLayout.LayoutParams(-1,-1));searchBack=iconButton(R.drawable.ic_back,"返回");searchBack.setVisibility(View.INVISIBLE);searchBack.setOnClickListener(v->exitHomeSearchFocus());FrameLayout.LayoutParams backParams=new FrameLayout.LayoutParams(dp(46),dp(46),Gravity.START|Gravity.CENTER_VERTICAL);backParams.setMargins(dp(4),0,0,0);searchBox.addView(searchBack,backParams);loadSourceCategories();List<String> favoriteCategories=new ArrayList<>();favoriteCategories.add("全部");for(String category:sourceCategories.keySet())if(!favoriteCategories.contains(category))favoriteCategories.add(category);if(!favoriteCategories.contains(sessionHomeSourceCategory))sessionHomeSourceCategory="全部";List<String> searchScopes=new ArrayList<>(Arrays.asList("蓝奏云","全部","其他网站","网页搜索"));if(!searchScopes.contains(sessionSearchCategory))sessionSearchCategory=sessionHomeSearchDefault;Runnable submitHomeSearch=()->{if(!homeSearchFocused){enterHomeSearchFocus();search.requestFocus();}else runSearch(search.getText().toString().trim());};SearchCategoryPicker filterPicker=new SearchCategoryPicker(favoriteCategories,sessionHomeSourceCategory,searchScopes,sessionSearchCategory,value->sessionHomeSourceCategory=value,value->{sessionSearchCategory=value;if(homeSearchFocused){if("网页搜索".equals(value))queueHomeWebSearchIndex(search==null?"":search.getText().toString());else renderSearchHistory();}},submitHomeSearch);homeCategoryPicker=filterPicker;filterPicker.trigger.setOnClickListener(v->showHomeSearchQuickMenu(filterPicker));homeScopeSelection.refreshLabel();homeScopePicker=null;homeSearchCategory=filterPicker.view();homeSearchScope=null;homeSearchCategory.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){public void onViewAttachedToWindow(View view){}public void onViewDetachedFromWindow(View view){filterPicker.dismiss();}});int searchWidth=homeSearchWidth();FrameLayout.LayoutParams categoryParams=new FrameLayout.LayoutParams(homeSearchCategoryWidth(searchWidth),dp(54),Gravity.END|Gravity.CENTER_VERTICAL);searchBox.addView(homeSearchCategory,categoryParams);fitHomeSearchControls(searchWidth);FrameLayout.LayoutParams searchParams=new FrameLayout.LayoutParams(searchWidth,dp(54),Gravity.CENTER);homeStage.addView(searchBox,searchParams);homeShortcutController=HomeShortcuts.install(this,homeStage,searchWidth);
     homeRecommendationsScroll=null;homeRecommendations=null;homeRecommendation=null;if(!home.url.isEmpty()||!sharedHome.url.isEmpty()){homeRecommendationsScroll=new HorizontalScrollView(this);homeRecommendationsScroll.setHorizontalScrollBarEnabled(false);homeRecommendationsScroll.setHorizontalFadingEdgeEnabled(false);homeRecommendationsScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);homeRecommendationsScroll.setFillViewport(true);homeRecommendations=new LinearLayout(this);homeRecommendations.setGravity(Gravity.CENTER);int cards=(home.url.isEmpty()?0:1)+(sharedHome.url.isEmpty()?0:1);homeRecommendations.setWeightSum(cards);if(!home.url.isEmpty()){homeRecommendation=recommendedSourceCard(home);LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,dp(42),1);if(cards>1)params.setMarginEnd(dp(4));homeRecommendations.addView(homeRecommendation,params);}if(!sharedHome.url.isEmpty()){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,dp(42),1);if(cards>1)params.setMarginStart(dp(4));homeRecommendations.addView(recommendedSourceCard(sharedHome),params);}homeRecommendationsScroll.addView(homeRecommendations,new HorizontalScrollView.LayoutParams(-1,-1));FrameLayout.LayoutParams recommendationParams=new FrameLayout.LayoutParams(searchWidth,dp(48),Gravity.CENTER);homeStage.addView(homeRecommendationsScroll,recommendationParams);homeRecommendationsScroll.setTranslationY(dp(HomeShortcuts.SUGGESTED_RECOMMENDATION_OFFSET_DP));}
     homeHistory=new LinearLayout(this);homeHistory.setOrientation(LinearLayout.VERTICAL);homeHistory.setVisibility(View.GONE);FrameLayout.LayoutParams historyParams=new FrameLayout.LayoutParams(searchWidth,-1,Gravity.TOP|Gravity.CENTER_HORIZONTAL);historyParams.setMargins(0,dp(68),0,dp(12));homeStage.addView(homeHistory,historyParams);homeStage.bringChildToFront(homeTopActions);String restored; synchronized(globalSearch){restored=globalSearch.query;}if(!restored.isEmpty()){search.setText(restored);search.setSelection(restored.length());}search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){if(homeSearchFocused&&"网页搜索".equals(sessionSearchCategory))queueHomeWebSearchIndex(s==null?"":s.toString());}public void afterTextChanged(Editable e){}});search.setOnFocusChangeListener((v,focused)->{if(focused)enterHomeSearchFocus();});search.setOnClickListener(v->enterHomeSearchFocus());search.setOnEditorActionListener((v,a,e)->{runSearch(search.getText().toString().trim());return true;});if(homeSearchRequested)homeStage.post(()->showHomeSearchMode(false));}
   void enterHomeSearchFocus(){showHomeSearchMode(true);}
@@ -1013,6 +1017,8 @@ public class MainActivity extends Activity {
     sessionSearchCategory=sessionHomeSearchDefault;
     sessionHomeSourceCategory="全部";
     sessionHomeSourceCategory=p.getString("home_source_category","全部");
+    sessionStaticIndexEnabled=p.getBoolean("static_index_enabled",false);
+    sessionStaticIndexId=p.getString("static_index_id","");
     if(core!=null)applyMetadataRefreshConcurrency();
     directLanzouListOpen=p.getBoolean("lanzou_direct",false);
     sessionWebViewFallback=p.getBoolean("webview_fallback",true);
@@ -1031,6 +1037,7 @@ public class MainActivity extends Activity {
     sessionLanzouBaseOrigin=loadLanzouBaseOrigin(p);
     sessionLanzouTimeoutFailover=p.getBoolean("lanzou_timeout_failover",true);
     applyUserAgentSettings();applyLanzouRoutingSettings();
+    ui.post(this::ensureStaticIndexApplied);
   }
                 String loadLanzouBaseOrigin(android.content.SharedPreferences p){if(!sessionLanzouBaseOriginExplicit){sessionLanzouBaseOriginVerified=false;if(p.contains("lanzou_base_origin")||p.contains("lanzou_base_origin_verified"))p.edit().remove("lanzou_base_origin").remove("lanzou_base_origin_verified").apply();return "";}if(!p.contains("lanzou_base_origin")){sessionLanzouBaseOriginVerified=false;return "";}String normalized=normalizeLanzouBaseOrigin(p.getString("lanzou_base_origin",""));if(normalized.isEmpty()){sessionLanzouBaseOriginExplicit=false;sessionLanzouBaseOriginVerified=false;p.edit().remove("lanzou_base_origin").remove("lanzou_base_origin_explicit").remove("lanzou_base_origin_verified").apply();}return normalized;}
   void persistSearchSettings(){
@@ -1077,6 +1084,8 @@ public class MainActivity extends Activity {
         .putInt("composite_icon_append_count",sessionCompositeEnrichBatch)
         .putString("home_search_default",sessionHomeSearchDefault)
         .putString("home_source_category",sessionHomeSourceCategory)
+        .putBoolean("static_index_enabled",sessionStaticIndexEnabled)
+        .putString("static_index_id",sessionStaticIndexId)
         .putBoolean("lanzou_direct",directLanzouListOpen)
         .putBoolean("show_source_links",showSourceLinks)
         .putBoolean("batch_download_single_item",sessionBatchDownloadSingleItem)
@@ -1212,6 +1221,319 @@ public class MainActivity extends Activity {
   void openShizukuInstall(){try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://shizuku.rikka.app/download/")));}catch(Exception error){showNotice("无法打开 Shizuku 官方下载页",true);}}
   void openWirelessDebugSettings(){if(Build.VERSION.SDK_INT<30){showNotice("无线调试需要 Android 11 或更高版本",true);openDeveloperSettings();return;}try{startActivity(new Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"));}catch(Exception error){openDeveloperSettings();}}
   void openDeveloperSettings(){try{startActivity(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS));}catch(Exception error){showNotice("无法打开开发者选项",true);}}
+  /* ---------- 静态索引：设置页开关 + 候选列表 + 搜索框开关 ---------- */
+  private boolean staticIndexApplied;
+  void ensureStaticIndexApplied(){if(staticIndexApplied||core==null)return;staticIndexApplied=true;applyStaticIndexSettings();}
+
+  List<StaticIndexInfo> staticIndexCandidates(){
+    if(core==null)return new ArrayList<>();
+    try{List<StaticIndexInfo> list=core.staticIndexCandidates();return list==null?new ArrayList<>():list;}catch(Exception error){return new ArrayList<>();}
+  }
+
+  void applyStaticIndexSettings(){
+    if(core==null)return;
+    List<StaticIndexInfo> candidates=staticIndexCandidates();
+    if(!sessionStaticIndexId.isEmpty()&&staticIndexInfo(candidates,sessionStaticIndexId)==null)sessionStaticIndexId="";
+    if(sessionStaticIndexId.isEmpty()&&!candidates.isEmpty())sessionStaticIndexId=candidates.get(0).id;
+    if(!sessionStaticIndexId.isEmpty())core.selectStaticIndex(sessionStaticIndexId);
+    core.setStaticIndexEnabled(sessionStaticIndexEnabled&&!candidates.isEmpty());
+  }
+
+  StaticIndexInfo staticIndexInfo(List<StaticIndexInfo> candidates,String id){
+    if(candidates==null||id==null)return null;
+    for(StaticIndexInfo info:candidates)if(info.id!=null&&info.id.equals(id))return info;
+    return null;
+  }
+
+  String staticIndexName(StaticIndexInfo info){return info.name==null||info.name.trim().isEmpty()?"未命名索引":info.name.trim();}
+
+  String staticIndexTime(long builtAt){long millis=builtAt>0&&builtAt<100000000000L?builtAt*1000:builtAt;if(millis<=0)return "未知";return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(new java.util.Date(millis));}
+
+  String staticIndexEntryText(StaticIndexInfo info){return "建立日期 "+staticIndexTime(info.builtAt)+" · "+info.entryCount+" 条 · "+info.sourceCount+" 个源";}
+
+  String staticIndexCandidateLabel(List<StaticIndexInfo> candidates){
+    if(candidates==null||candidates.isEmpty())return "";
+    StaticIndexInfo info=staticIndexInfo(candidates,sessionStaticIndexId);
+    return staticIndexName(info==null?candidates.get(0):info);
+  }
+
+  void setStaticIndexPreference(boolean enabled){
+    if(core==null)return;
+    ensureStaticIndexApplied();
+    List<StaticIndexInfo> candidates=staticIndexCandidates();
+    if(enabled&&candidates.isEmpty()){sessionStaticIndexEnabled=false;persistSearchSettings();syncStaticIndexUi();showNotice("请先添加静态索引",false);return;}
+    sessionStaticIndexEnabled=enabled;
+    if(enabled){
+      if(staticIndexInfo(candidates,sessionStaticIndexId)==null)sessionStaticIndexId=candidates.get(0).id;
+      core.selectStaticIndex(sessionStaticIndexId);
+    }
+    core.setStaticIndexEnabled(enabled);
+    persistSearchSettings();syncStaticIndexUi();renderStaticIndexCandidates();
+  }
+
+  void selectStaticIndexCandidate(String id){
+    if(core==null||id==null||id.isEmpty())return;
+    List<StaticIndexInfo> candidates=staticIndexCandidates();
+    StaticIndexInfo info=staticIndexInfo(candidates,id);
+    if(info==null)return;
+    sessionStaticIndexId=id;
+    core.selectStaticIndex(id);
+    if(sessionStaticIndexEnabled)core.setStaticIndexEnabled(true);
+    persistSearchSettings();syncStaticIndexUi();renderStaticIndexCandidates();
+  }
+
+  void confirmDeleteStaticIndex(StaticIndexInfo info){
+    if(info==null)return;
+    AlertDialog prompt=new AlertDialog.Builder(this).setTitle("删除静态索引？")
+        .setMessage(staticIndexName(info)+"\n建立日期 "+staticIndexTime(info.builtAt)+" · "+info.entryCount+" 条")
+        .setNegativeButton("取消",null)
+        .setPositiveButton("删除",(dialog,which)->deleteStaticIndex(info.id))
+        .create();
+    showRounded(prompt);
+  }
+
+  void deleteStaticIndex(String id){
+    if(core==null||id==null||id.isEmpty())return;
+    try{core.deleteStaticIndex(id);}catch(Exception error){showNotice("删除失败："+friendlyError(error),true);return;}
+    if(id.equals(sessionStaticIndexId))sessionStaticIndexId="";
+    if(staticIndexCandidates().isEmpty())sessionStaticIndexEnabled=false;
+    staticIndexApplied=false;ensureStaticIndexApplied();
+    persistSearchSettings();syncStaticIndexUi();renderStaticIndexCandidates();
+    showNotice("已删除静态索引",false);
+  }
+
+  void pickStaticIndexFile(){
+    try{
+      Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+      intent.addCategory(Intent.CATEGORY_OPENABLE);
+      intent.setType("*/*");
+      intent.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/json","text/plain","application/octet-stream"});
+      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      startActivityForResult(intent,STATIC_INDEX_PICK);
+    }catch(Exception error){showNotice("系统没有可用的文件选择器",true);}
+  }
+
+  String staticIndexFileName(Uri uri){
+    try(android.database.Cursor cursor=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null)){
+      if(cursor!=null&&cursor.moveToFirst()){
+        int index=cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+        if(index>=0){String name=cursor.getString(index);if(name!=null&&!name.trim().isEmpty())return name.trim();}
+      }
+    }catch(Exception ignored){}
+    return "索引文件";
+  }
+
+  void importStaticIndexFrom(Uri uri,String name){
+    if(core==null||uri==null)return;
+    final String label=name==null||name.trim().isEmpty()?"索引文件":name.trim();
+    showNotice("正在导入静态索引…",false);
+    io.execute(()->{
+      String failure="";
+      try(InputStream input=getContentResolver().openInputStream(uri)){
+        if(input==null)throw new IOException("无法读取索引文件");
+        core.importStaticIndex(input,label);
+      }catch(Exception error){failure=friendlyError(error);}
+      final String error=failure;
+      runOnUiThread(()->{if(!error.isEmpty()){showNotice("导入失败："+error,true);return;}afterStaticIndexChanged("已导入");});
+    });
+  }
+
+  void installBundledStaticIndex(){
+    if(core==null)return;
+    showNotice("正在安装 全源索引…",false);
+    io.execute(()->{
+      String failure="";
+      try{
+        try{
+          core.installBundledStaticIndex("index/full-source.lzindex.json");
+        }catch(Exception missing){
+          String direct="https://github.com/nekobyran/lanzouplus/releases/download/v2.1.5/full-source.lzindex.json.gz";
+          Exception last=missing;
+          for(String url:new String[]{direct,"https://gh-proxy.com/"+direct}){
+            java.net.HttpURLConnection c=null;
+            try{
+              c=(java.net.HttpURLConnection)new java.net.URL(url).openConnection();
+              c.setConnectTimeout(12000);
+              c.setReadTimeout(120000);
+              c.setInstanceFollowRedirects(true);
+              c.setRequestProperty("User-Agent","LanzouPlus/"+BuildConfig.VERSION_NAME);
+              int code=c.getResponseCode();
+              if(code>=400)throw new java.io.IOException("HTTP "+code);
+              try(java.io.InputStream in=c.getInputStream()){core.importStaticIndex(in,"全源索引");}
+              last=null;
+              break;
+            }catch(Exception error){last=error;}finally{if(c!=null)c.disconnect();}
+          }
+          if(last!=null)throw last;
+        }
+      }catch(Exception error){failure=friendlyError(error);}
+      final String error=failure;
+      runOnUiThread(()->{if(!error.isEmpty()){showNotice("安装失败："+error,true);return;}afterStaticIndexChanged("已安装");});
+    });
+  }
+
+  void afterStaticIndexChanged(String verb){
+    if(core==null)return;
+    List<StaticIndexInfo> candidates=staticIndexCandidates();
+    StaticIndexInfo newest=null;
+    for(StaticIndexInfo info:candidates)if(newest==null||info.builtAt>newest.builtAt)newest=info;
+    if(newest!=null)sessionStaticIndexId=newest.id;
+    staticIndexApplied=false;ensureStaticIndexApplied();
+    persistSearchSettings();syncStaticIndexUi();renderStaticIndexCandidates();
+    if(newest!=null)showNotice(verb+"："+staticIndexName(newest)+"（建立日期 "+staticIndexTime(newest.builtAt)+"）",false);
+    else showNotice(verb+"完成",false);
+  }
+
+  void syncStaticIndexUi(){
+    List<StaticIndexInfo> candidates=staticIndexCandidates();
+    boolean available=!candidates.isEmpty(),active=available&&sessionStaticIndexEnabled;
+    if(staticIndexSettingsSwitch!=null){
+      staticIndexSettingsSwitch.setEnabled(available);
+      staticIndexSettingsSwitch.setChecked(active);
+      staticIndexSettingsSwitch.setContentDescription("启用静态索引，"+(available?(active?"已开启":"已关闭"):"请先添加静态索引"));
+    }
+    if(staticIndexEmptyText!=null)staticIndexEmptyText.setVisibility(available?View.GONE:View.VISIBLE);
+    if(staticIndexSummaryText!=null){
+      StaticIndexInfo selected=staticIndexInfo(candidates,sessionStaticIndexId);
+      staticIndexSummaryText.setVisibility(available?View.VISIBLE:View.GONE);
+      staticIndexSummaryText.setText(available&&selected!=null?"当前索引："+staticIndexName(selected)+" · "+staticIndexEntryText(selected):"");
+    }
+  }
+
+  void renderStaticIndexCandidates(){
+    if(staticIndexCandidateList==null)return;
+    staticIndexCandidateList.removeAllViews();
+    int selectedFill=darkMode?Color.rgb(79,70,96):Color.rgb(234,221,255);
+    for(StaticIndexInfo info:staticIndexCandidates()){
+      boolean selected=info.id!=null&&info.id.equals(sessionStaticIndexId);
+      LinearLayout row=settingsRowShell();row.setTag("static-index-"+(info.id==null?"":info.id));
+      row.setBackground(filterRipple(solidShape(selected?selectedFill:Color.TRANSPARENT,18)));
+      RadioButton radio=new RadioButton(this);radio.setClickable(false);radio.setFocusable(false);radio.setChecked(selected);radio.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+      row.addView(radio,new LinearLayout.LayoutParams(dp(40),dp(48)));
+      LinearLayout copy=new LinearLayout(this);copy.setOrientation(LinearLayout.VERTICAL);copy.setPadding(dp(2),dp(3),dp(6),dp(3));
+      TextView name=text(staticIndexName(info),14,selected?PRIMARY:TEXT);
+      name.setSingleLine(true);name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+      TextView meta=text(staticIndexEntryText(info),11,MUTED);
+      meta.setSingleLine(true);meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
+      copy.addView(name,new LinearLayout.LayoutParams(-1,dp(22)));
+      copy.addView(meta,new LinearLayout.LayoutParams(-1,dp(18)));
+      row.addView(copy,new LinearLayout.LayoutParams(0,dp(44),1));
+      final String id=info.id;
+      ImageButton remove=iconButton(R.drawable.ic_delete_file,"删除静态索引 "+staticIndexName(info));
+      remove.setOnClickListener(v->confirmDeleteStaticIndex(info));
+      row.addView(remove,new LinearLayout.LayoutParams(dp(40),dp(40)));
+      row.setClickable(true);row.setFocusable(true);
+      row.setContentDescription("静态索引 "+staticIndexName(info)+"，"+(selected?"已选中，":"点击选中，")+staticIndexEntryText(info));
+      row.setOnClickListener(v->selectStaticIndexCandidate(id));
+      staticIndexCandidateList.addView(row,new LinearLayout.LayoutParams(-1,dp(56)));
+    }
+    syncStaticIndexUi();
+  }
+
+  LinearLayout buildStaticIndexSwitchRow(){
+    LinearLayout row=settingsRowShell();row.setTag("row-static-index");
+    row.setBackground(filterRipple(new ColorDrawable(Color.TRANSPARENT)));
+    row.addView(settingsLeadingIcon(R.drawable.ic_folder),settingsIconBox());
+    row.addView(settingsRowTitle("启用静态索引"),new LinearLayout.LayoutParams(0,-1,1));
+    staticIndexSettingsSwitch=new LumaSwitch(this);
+    staticIndexSettingsSwitch.setOnCheckedChangeListener((button,checked)->{if(!button.isEnabled())return;if(checked!=sessionStaticIndexEnabled)setStaticIndexPreference(checked);});
+    row.addView(staticIndexSettingsSwitch,new LinearLayout.LayoutParams(-2,dp(48)));
+    row.setClickable(true);row.setFocusable(true);
+    row.setOnClickListener(v->{
+      if(!staticIndexSettingsSwitch.isEnabled()){showNotice("请先添加静态索引",false);return;}
+      staticIndexSettingsSwitch.setChecked(!staticIndexSettingsSwitch.isChecked());
+    });
+    return row;
+  }
+
+  LinearLayout buildStaticIndexSection(){
+    ensureStaticIndexApplied();
+    LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);card.setPadding(dp(14),dp(6),dp(10),dp(6));card.setBackground(solidShape(SURFACE,20));
+    LinearLayout heading=new LinearLayout(this);heading.setGravity(Gravity.CENTER_VERTICAL);
+    TextView title=text("静态索引",16,TEXT);title.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);
+    heading.addView(title,new LinearLayout.LayoutParams(0,dp(40),1));
+    TextView tag=text("离线索引包",11,MUTED);tag.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);
+    heading.addView(tag,new LinearLayout.LayoutParams(-2,dp(40)));
+    card.addView(heading,new LinearLayout.LayoutParams(-1,dp(42)));
+    card.addView(buildStaticIndexSwitchRow(),new LinearLayout.LayoutParams(-1,settingsRowHeight()));
+    staticIndexSummaryText=text("",11,PRIMARY);staticIndexSummaryText.setPadding(dp(12),0,dp(8),dp(2));staticIndexSummaryText.setMaxLines(2);
+    card.addView(staticIndexSummaryText,new LinearLayout.LayoutParams(-1,-2));
+    staticIndexEmptyText=text("请先添加静态索引",12,MUTED);staticIndexEmptyText.setPadding(dp(12),dp(4),dp(8),dp(10));
+    card.addView(staticIndexEmptyText,new LinearLayout.LayoutParams(-1,-2));
+    staticIndexCandidateList=new LinearLayout(this);staticIndexCandidateList.setOrientation(LinearLayout.VERTICAL);
+    card.addView(staticIndexCandidateList,new LinearLayout.LayoutParams(-1,-2));
+    card.addView(settingsAction(R.drawable.ic_add,"添加索引文件…",v->pickStaticIndexFile()),new LinearLayout.LayoutParams(-1,settingsRowHeight()));
+    card.addView(settingsAction(R.drawable.ic_download,"安装 全源索引",v->installBundledStaticIndex()),new LinearLayout.LayoutParams(-1,settingsRowHeight()));
+    card.setTag("static-index-section");
+    card.setContentDescription("静态索引：启用开关、候选列表、添加索引文件与安装 全源索引");
+    renderStaticIndexCandidates();
+    return card;
+  }
+
+  void showHomeSearchQuickMenu(SearchCategoryPicker picker){
+    if(picker==null||picker.trigger.getWindowToken()==null)return;
+    ensureStaticIndexApplied();
+    final PopupWindow[] holder={null};
+    LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(8),dp(8),dp(8),dp(8));panel.setBackground(solidShape(SURFACE,24));
+    LinearLayout scopeRow=settingsRowShell();
+    scopeRow.setBackground(filterRipple(new ColorDrawable(Color.TRANSPARENT)));
+    scopeRow.addView(settingsLeadingIcon(R.drawable.ic_folder_open),settingsIconBox());
+    scopeRow.addView(settingsRowTitle("搜索范围…"),new LinearLayout.LayoutParams(0,-1,1));
+    TextView scopeValue=text(picker.value.getText().toString(),12,MUTED);scopeValue.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);scopeValue.setPadding(dp(8),0,dp(6),0);
+    scopeValue.setMaxWidth(dp(150));scopeValue.setSingleLine(true);scopeValue.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    scopeRow.addView(scopeValue,new LinearLayout.LayoutParams(-2,-1));
+    scopeRow.setClickable(true);scopeRow.setFocusable(true);
+    scopeRow.setContentDescription("搜索范围，当前 "+scopeValue.getText()+"，点击更改路径、分类或网页搜索");
+    scopeRow.setOnClickListener(v->{if(holder[0]!=null)holder[0].dismiss();homeScopeSelection.choose();});
+    panel.addView(scopeRow,new LinearLayout.LayoutParams(-1,dp(52)));
+    panel.addView(buildStaticIndexPopupRow(holder),new LinearLayout.LayoutParams(-1,dp(64)));
+    int boxWidth=homeSearchBox!=null?homeSearchBox.getWidth():0;
+    int width=Math.max(dp(232),Math.min(boxWidth>0?boxWidth:picker.trigger.getWidth(),dp(360)));
+    PopupWindow popup=new PopupWindow(panel,width,-2,true);
+    holder[0]=popup;
+    popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+    popup.setOutsideTouchable(true);popup.setElevation(dp(14));
+    if(Build.VERSION.SDK_INT>=23)popup.setOverlapAnchor(false);
+    popup.showAsDropDown(homeSearchBox!=null&&boxWidth>0?homeSearchBox:picker.trigger,0,dp(2),Gravity.START);
+  }
+
+  LinearLayout buildStaticIndexPopupRow(PopupWindow[] holder){
+    List<StaticIndexInfo> candidates=staticIndexCandidates();
+    boolean available=!candidates.isEmpty();
+    LinearLayout row=settingsRowShell();
+    row.setBackground(filterRipple(new ColorDrawable(Color.TRANSPARENT)));
+    LinearLayout copy=new LinearLayout(this);copy.setOrientation(LinearLayout.VERTICAL);copy.setPadding(dp(12),0,dp(6),0);
+    TextView title=text("静态索引",15,available?TEXT:MUTED);
+    TextView detail=text("",11,MUTED);detail.setSingleLine(true);detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    copy.addView(title,new LinearLayout.LayoutParams(-1,dp(22)));
+    copy.addView(detail,new LinearLayout.LayoutParams(-1,dp(18)));
+    row.addView(copy,new LinearLayout.LayoutParams(0,dp(44),1));
+    LumaSwitch toggle=new LumaSwitch(this);
+    toggle.setEnabled(available);toggle.setChecked(available&&sessionStaticIndexEnabled);
+    row.addView(toggle,new LinearLayout.LayoutParams(-2,dp(44)));
+    Runnable render=()->{
+      List<StaticIndexInfo> list=staticIndexCandidates();
+      boolean ready=!list.isEmpty();
+      detail.setText(ready?(sessionStaticIndexEnabled?"已启用 · ":"未启用 · ")+staticIndexCandidateLabel(list):"请先添加静态索引");
+      toggle.setEnabled(ready);toggle.setChecked(ready&&sessionStaticIndexEnabled);
+      toggle.setContentDescription("静态索引，"+(ready?(sessionStaticIndexEnabled?"已启用":"未启用"):"请先添加静态索引"));
+      title.setTextColor(ready?TEXT:MUTED);
+    };
+    toggle.setOnCheckedChangeListener((button,checked)->{if(!button.isEnabled())return;if(checked!=sessionStaticIndexEnabled)setStaticIndexPreference(checked);render.run();});
+    row.setClickable(true);row.setFocusable(true);
+    row.setOnClickListener(v->{
+      if(!toggle.isEnabled()){
+        showNotice("请先添加静态索引",false);
+        if(holder[0]!=null)holder[0].dismiss();
+        selectedSettingsCategory="搜索与索引";showSettings();
+        return;
+      }
+      toggle.setChecked(!toggle.isChecked());
+    });
+    render.run();
+    return row;
+  }
+
   LinearLayout buildSearchSettingsPanel(){
     int[] total={0},selectedConcurrency={Math.max(0,sessionSearchConcurrency)};
     LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(0,dp(2),0,dp(12));panel.addView(buildPerformanceSlider("搜索档位",SEARCH_POLICY_NAMES,SEARCH_POLICY_DETAILS,sessionSearchPolicy,this::applySearchPolicy),new LinearLayout.LayoutParams(-1,dp(124)));
@@ -2237,6 +2559,7 @@ void renderDownloads(String query){
 
     if(request==SOURCE_ICON_PICK){try{int flags=data.getFlags()&Intent.FLAG_GRANT_READ_URI_PERMISSION;getContentResolver().takePersistableUriPermission(uri,flags);}catch(Exception ignored){}EditText target=pendingSourceIconInput;pendingSourceIconInput=null;if(target!=null){target.setText(uri.toString());target.setSelection(target.length());}return;}
     if(request==IMPORT_RULES){io.execute(()->{try{importSourceRules(readTextUri(uri));}catch(Exception error){showNotice("导入失败："+friendlyError(error),true);}});return;}
+    if(request==STATIC_INDEX_PICK){importStaticIndexFrom(uri,staticIndexFileName(uri));return;}
 
   }
 

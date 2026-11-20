@@ -45,6 +45,7 @@ final class MarketProjectEditor {
     String publisherAvatar;
     String readme;
     String links;
+    String indexCandidateId;
     boolean linkMode;
     int scrollY;
     boolean saving;
@@ -63,6 +64,7 @@ final class MarketProjectEditor {
       publisherAvatar = meta.optString("publisherAvatar", "");
       readme = original == null ? "" : original.readme;
       links = MarketProjectInput.savedLinks(original);
+      indexCandidateId = original == null ? "" : original.indexCandidateId;
       linkMode = !links.isEmpty();
     }
   }
@@ -76,9 +78,13 @@ final class MarketProjectEditor {
   private EditText linksInput;
   private TextView pathSummary;
   private Button choosePathsButton;
+  private TextView indexSummary;
+  private Button chooseIndexButton;
   private Button saveButton;
   private Button cancelButton;
   private boolean saving;
+  private java.util.List<StaticIndexInfo> indexCandidates = new ArrayList<>();
+  private StaticIndexInfo selectedIndex;
 
   MarketProjectEditor(MainActivity owner, Host host, MarketProject existing) {
     this(owner, host, new Draft(existing));
@@ -255,6 +261,20 @@ final class MarketProjectEditor {
     inputMode.run();
     refreshPathSummary();
 
+    indexSummary = helperText("");
+    indexSummary.setTextIsSelectable(true);
+    chooseIndexButton = secondaryButton("选择已建立的索引");
+    chooseIndexButton.setOnClickListener(v -> showIndexPicker());
+    LinearLayout indexField = field(
+        "搜索索引（可选）",
+        "随工程发布到仓库 index/ 目录；市场卡片显示建立日期与大小。",
+        indexSummary,
+        -2);
+    indexField.addView(chooseIndexButton, new LinearLayout.LayoutParams(-2, owner.dp(48)));
+    content.addView(indexField, new LinearLayout.LayoutParams(-1, -2));
+    refreshIndexSummary();
+    loadIndexCandidates();
+
     LinearLayout actions = new LinearLayout(owner);
     actions.setGravity(Gravity.CENTER_VERTICAL);
     actions.setPadding(owner.dp(2), owner.dp(6), owner.dp(2), owner.dp(4));
@@ -358,6 +378,187 @@ final class MarketProjectEditor {
     pathSummary.setContentDescription(text.toString());
   }
 
+  private void loadIndexCandidates() {
+    int session = owner.navigationSession;
+    owner.io.execute(() -> {
+      java.util.List<StaticIndexInfo> found;
+      try {
+        found = owner.core.staticIndexCandidates();
+      } catch (Exception error) {
+        found = new ArrayList<>();
+      }
+      final java.util.List<StaticIndexInfo> values = found == null ? new ArrayList<>() : found;
+      owner.runOnUiThread(() -> {
+        if (session != owner.navigationSession) return;
+        indexCandidates = values;
+        refreshIndexSummary();
+      });
+    });
+  }
+
+  private StaticIndexInfo selectedIndex() {
+    if (selectedIndex != null && selectedIndex.id.equals(draft.indexCandidateId)) return selectedIndex;
+    for (StaticIndexInfo info : indexCandidates) {
+      if (info.id.equals(draft.indexCandidateId)) {
+        selectedIndex = info;
+        return info;
+      }
+    }
+    selectedIndex = null;
+    return null;
+  }
+
+  private void refreshIndexSummary() {
+    if (indexSummary == null) return;
+    draft.indexCandidateId = draft.indexCandidateId == null ? "" : draft.indexCandidateId.trim();
+    StaticIndexInfo info = selectedIndex();
+    if (draft.indexCandidateId.isEmpty()) {
+      indexSummary.setText(indexCandidates.isEmpty()
+          ? "未选择。可先到设置 · 搜索与索引导入索引，再回来选择。"
+          : "未选择。发布时不会携带索引。");
+      chooseIndexButton.setText("选择已建立的索引");
+      return;
+    }
+    if (info == null) {
+      indexSummary.setText("原索引已不在本机，请重新选择。");
+      chooseIndexButton.setText("重新选择索引");
+      return;
+    }
+    StringBuilder text = new StringBuilder();
+    text.append(info.name.isEmpty() ? "未命名索引" : info.name);
+    String date = info.builtAtText();
+    text.append('\n').append(date.isEmpty() ? "建立日期未知" : "建立于 " + date);
+    text.append(" · ").append(info.entryCount).append(" 条");
+    if (!info.sizeText().isEmpty()) text.append(" · ").append(info.sizeText());
+    text.append(" · 覆盖 ").append(info.coverageText());
+    indexSummary.setText(text.toString());
+    indexSummary.setContentDescription(text.toString());
+    chooseIndexButton.setText("重新选择索引");
+  }
+
+  private void showIndexPicker() {
+    if (saving || draft.saving) return;
+    List<StaticIndexInfo> values = indexCandidates;
+    String[] labels = new String[values.size() + 1];
+    labels[0] = "不使用索引";
+    for (int i = 0; i < values.size(); i++) {
+      StaticIndexInfo info = values.get(i);
+      String date = info.builtAtText();
+      labels[i + 1] = (info.name.isEmpty() ? "未命名索引" : info.name)
+          + " · " + (date.isEmpty() ? "未知日期" : date)
+          + " · " + info.entryCount + " 条"
+          + (info.sizeText().isEmpty() ? "" : " · " + info.sizeText());
+    }
+    android.app.AlertDialog picker = new android.app.AlertDialog.Builder(owner)
+        .setTitle("选择随工程发布的索引")
+        .setItems(labels, (dialog, which) -> {
+          if (which == 0) {
+            draft.indexCandidateId = "";
+            selectedIndex = null;
+          } else {
+            StaticIndexInfo info = values.get(which - 1);
+            draft.indexCandidateId = info.id;
+            selectedIndex = info;
+          }
+          refreshIndexSummary();
+        })
+        .setNegativeButton("取消", null)
+        .create();
+    owner.showRounded(picker);
+  }
+
+  private int projectSourceCount() {
+    if (draft.original != null && !draft.original.sourceJson.trim().isEmpty()) {
+      try {
+        return LanzouCore.parseSourceDocument(draft.original.sourceJson).size();
+      } catch (Exception ignored) {}
+    }
+    if (draft.linkMode) return MarketProjectInput.links(draft.links).size();
+    return draft.paths.size();
+  }
+
+  private boolean indexCoversProject(StaticIndexInfo info) {
+    if (info == null) return true;
+    int sources = projectSourceCount();
+    if (sources <= 0) return info.missingSourceCount() == 0;
+    return info.missingSourceCount() == 0 && info.sourceCount >= sources;
+  }
+
+  private void confirmIndexCoverage(StaticIndexInfo info) {
+    String name = info.name.isEmpty() ? "未命名索引" : info.name;
+    String message = "索引「" + name + "」覆盖 " + info.coverageText()
+        + "，工程约 " + projectSourceCount() + " 个源。\n\n"
+        + "补齐需要在本机重新抓取全部源，可能耗时；也可以直接上传现有索引。";
+    android.app.AlertDialog prompt = new android.app.AlertDialog.Builder(owner)
+        .setTitle("索引未覆盖全部源，是否补齐后上传？")
+        .setMessage(message)
+        .setNegativeButton("取消", null)
+        .setNeutralButton("直接上传", (dialog, which) -> startSave())
+        .setPositiveButton("补齐", (dialog, which) -> buildIndexThenSave())
+        .create();
+    owner.showRounded(prompt);
+  }
+
+  private void buildIndexThenSave() {
+    if (draft.original == null || draft.original.sourceJson.trim().isEmpty()) {
+      owner.showNotice("请先保存工程，或到设置 · 搜索与索引里补齐索引后再选择", true);
+      return;
+    }
+    List<Models.Source> sources;
+    try {
+      sources = LanzouCore.parseSourceDocument(draft.original.sourceJson);
+    } catch (Exception error) {
+      owner.showNotice("工程源读取失败：" + owner.friendlyError(error), true);
+      return;
+    }
+    if (sources.isEmpty()) {
+      owner.showNotice("工程没有可补齐的源，请到设置 · 搜索与索引里补齐", true);
+      return;
+    }
+    TextView status = owner.text("正在准备补齐索引…", 13, owner.TEXT);
+    status.setPadding(owner.dp(18), owner.dp(10), owner.dp(18), owner.dp(10));
+    final Thread[] worker = {null};
+    android.app.AlertDialog progress = new android.app.AlertDialog.Builder(owner)
+        .setTitle("补齐索引")
+        .setView(status)
+        .setNegativeButton("取消", (dialog, which) -> {
+          if (worker[0] != null) worker[0].interrupt();
+        })
+        .create();
+    progress.setCancelable(false);
+    owner.showRounded(progress);
+    owner.io.execute(() -> {
+      worker[0] = Thread.currentThread();
+      try {
+        StaticIndexInfo built = owner.core.buildStaticIndex(sources,
+            message -> owner.runOnUiThread(() -> {
+              if (progress.isShowing()) status.setText(message);
+            }));
+        owner.runOnUiThread(() -> {
+          if (progress.isShowing()) progress.dismiss();
+          if (built == null) {
+            owner.showNotice("补齐没有返回索引，请到设置 · 搜索与索引里补齐", true);
+            return;
+          }
+          draft.indexCandidateId = built.id;
+          selectedIndex = built;
+          indexCandidates.add(built);
+          refreshIndexSummary();
+          owner.showNotice("索引已补齐：" + built.name + " · " + built.entryCount + " 条", false);
+          startSave();
+        });
+      } catch (Exception error) {
+        owner.runOnUiThread(() -> {
+          if (progress.isShowing()) progress.dismiss();
+          String detail = owner.friendlyError(error);
+          if ("已取消".equals(detail)) return;
+          owner.showNotice("补齐失败：" + detail
+              + "；可直接上传或到设置 · 搜索与索引补齐", true);
+        });
+      }
+    });
+  }
+
   private void save() {
     if (saving || draft.saving) return;
     String name = nameInput.getText().toString().trim();
@@ -396,6 +597,20 @@ final class MarketProjectEditor {
       choosePathsButton.requestFocus();
       return;
     }
+    StaticIndexInfo info = selectedIndex();
+    if (info == null && !draft.indexCandidateId.isEmpty()) {
+      owner.showNotice("所选索引已不在本机，请重新选择或改为不使用索引", true);
+      return;
+    }
+    if (info != null && !indexCoversProject(info)) {
+      confirmIndexCoverage(info);
+      return;
+    }
+    startSave();
+  }
+
+  private void startSave() {
+    if (saving || draft.saving) return;
     saving = true;
     draft.saving = true;
     saveButton.setEnabled(false);

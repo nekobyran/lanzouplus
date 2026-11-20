@@ -1,6 +1,7 @@
 package cc.nkbr.lanzouplus;
 
 import android.content.*;
+import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -66,6 +67,7 @@ final class DirectLinkResolver implements AutoCloseable {
   Ticket resolve(String shareUrl,boolean confirmed,Callback callback){
     String url=clean(shareUrl);if(url.isEmpty()){if(callback!=null)callback.failed("缺少蓝奏云链接");return()->false;}
     if(closed){if(callback!=null)callback.failed("直链解析已取消");return()->false;}
+    if(plainFileUrl(url)){if(callback!=null)callback.resolved(url,clock.now(),true);return()->false;}
     String rememberedPassword=cachedPassword(url);Cache hit=rememberedPassword.isEmpty()?cached(url):null;if(hit!=null){if(callback!=null)callback.resolved(hit.url,hit.at,true);return()->false;}
     boolean cancelled=false;
     synchronized(lock){
@@ -124,6 +126,10 @@ final class DirectLinkResolver implements AutoCloseable {
   private static String failureMessage(Throwable error){Throwable current=error;while(current.getCause()!=null)current=current.getCause();String value=current.getMessage();if(value==null||value.trim().isEmpty())value=current.getClass().getSimpleName();return value.startsWith("无法解析下载链接：")?value:"无法解析下载链接："+value;}
   private static boolean validPassword(String value){if(value==null||value.isEmpty()||value.length()>64)return false;for(int i=0;i<value.length();i++)if(Character.isISOControl(value.charAt(i)))return false;return true;}
   private static String clean(String value){return value==null?"":value.trim();}
+  /** Ordinary http(s) links are already final download URLs and must bypass Lanzou page parsing. */
+  static boolean plainFileUrl(String value){
+    try{URL url=new URL(clean(value));String scheme=url.getProtocol();if(!scheme.equalsIgnoreCase("http")&&!scheme.equalsIgnoreCase("https"))return false;if(url.getHost()==null||url.getHost().isEmpty())return false;return!LanzouCore.isLanzouSourceUrl(url.toString())&&!PremiumPublicShare.matches(url.toString());}catch(Exception ignored){return false;}
+  }
   private static final class Cache { final String url;final long at;Cache(String url,long at){this.url=url;this.at=at;} }
   private final class Request {
         final String url,routeGroup;final List<Callback> callbacks=new ArrayList<>();final long sequence;volatile boolean confirmed,running,queued,done,awaitingPassword,resumePending;String password,discoveryGroup="";int failures;

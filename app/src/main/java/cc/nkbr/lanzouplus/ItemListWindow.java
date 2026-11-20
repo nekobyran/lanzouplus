@@ -26,7 +26,7 @@ final class ItemListWindow {
   ItemListWindow(MainActivity owner,GridLayout grid){this(owner,grid,false);}
   /** Search results keep their own grid, so the owning grid is checked through liveGrid. */
   ItemListWindow(MainActivity owner,GridLayout grid,boolean search){this.owner=owner;this.grid=grid;this.search=search;scroll=owner.pageScroll;session=owner.navigationSession;scrollWatcher=()->{owner.onListScrolled();refresh();};scroll.addOnLayoutChangeListener(layout);scroll.getViewTreeObserver().addOnScrollChangedListener(scrollWatcher);}
-  void setItems(List<Models.Item> items,int shown){values.clear();values.addAll(items);refreshMetadata(shown);limit=Math.min(shown,values.size());reflow();}
+  void setItems(List<Models.Item> items,int shown){String previousFirst=values.isEmpty()?"":values.get(0).url;values.clear();values.addAll(items);refreshMetadata(shown);limit=Math.min(shown,values.size());if(values.isEmpty()||!values.get(0).url.equals(previousFirst))reflow();else refresh();}
   /** Search results are owned by the activity list, so reference it instead of copying on every batch. */
   void setItemsRef(List<Models.Item> items,int shown){values=items;refreshMetadata(shown);limit=Math.min(shown,values.size());refresh();}
   void refreshMetadata(int shown){if(metadataRows)return;int cap=Math.min(values.size(),Math.max(1,Math.min(shown,64)));boolean rows=false;for(int i=0;i<cap;i++){Models.Item value=values.get(i);if(!value.error.isEmpty()||!value.size.isEmpty()||!value.time.isEmpty()||value.folder&&!value.description.isEmpty()){rows=true;break;}}metadataRows=rows;}
@@ -73,7 +73,11 @@ final class ItemListWindow {
       anchorsIntact=anchorFrom<limit&&anchorTo>=anchorFrom&&anchorsIntact(values,anchorFrom,anchorTo,anchorStart,anchorEnd);
     }
     if(geometrySame&&windowCovers&&anchorsIntact)return;
-    int startRow=Math.max(0,visibleStart-WINDOW_MARGIN_ROWS),endRow=Math.min(rows,visibleEnd+WINDOW_MARGIN_ROWS);
+    /* First paint shows the viewport rows only; the off-screen margin is added on the next frame so the
+       opening frame builds roughly half the cards it used to. */
+    boolean firstFrame=renderedLimit!=limit||firstRow<0;
+    int startRow=firstFrame?visibleStart:Math.max(0,visibleStart-WINDOW_MARGIN_ROWS);
+    int endRow=firstFrame?Math.max(visibleStart+1,Math.min(rows,visibleEnd)):Math.min(rows,visibleEnd+WINDOW_MARGIN_ROWS);
     int start=Math.min(limit,startRow*count),end=Math.min(limit,endRow*count);
     String nextStart=start>=end?"":values.get(start).url,nextEnd=start>=end?"":values.get(end-1).url;
     if(geometrySame&&firstRow==startRow&&lastRow==endRow&&anchorStart.equals(nextStart)&&anchorEnd.equals(nextEnd))return;
@@ -92,6 +96,7 @@ final class ItemListWindow {
     if(grid.getPaddingTop()!=topPad||grid.getPaddingBottom()!=bottomPad)grid.setPadding(0,topPad,0,bottomPad);
     if(grid.getMinimumHeight()!=minHeight)grid.setMinimumHeight(minHeight);
     int cell=Math.max(1,(available-owner.dp(8)*count)/count);
+    int pad4=owner.dp(4),pad2=owner.dp(2),cellHeight=height-pad4;
     int childRow=0,childColumn=0;
     for(int i=start;i<end;i++){
       Models.Item item=values.get(i);View view=mounted.get(item.url);
@@ -101,19 +106,20 @@ final class ItemListWindow {
          shift invalidated the GridLayout measure three times per row. */
       Object rawTag=view.getTag();
       MainActivity.ItemCard card=rawTag instanceof MainActivity.ItemCard?(MainActivity.ItemCard)rawTag:null;
-      int cellHeight=height-owner.dp(4);
       boolean needsParams=card==null||card.layoutRow!=childRow||card.layoutColumn!=childColumn||card.layoutColumns!=count||card.layoutCell!=cell||card.layoutHeight!=cellHeight;
       if(needsParams){
         if(card!=null){card.layoutRow=childRow;card.layoutColumn=childColumn;card.layoutColumns=count;card.layoutCell=cell;card.layoutHeight=cellHeight;}
         GridLayout.LayoutParams p=new GridLayout.LayoutParams(GridLayout.spec(childRow),GridLayout.spec(childColumn));
-        p.width=cell;p.height=cellHeight;p.setMargins(owner.dp(4),owner.dp(2),owner.dp(4),owner.dp(2));
+        p.width=cell;p.height=cellHeight;p.setMargins(pad4,pad2,pad4,pad2);
         if(view.getParent()==grid)view.setLayoutParams(p);else grid.addView(view,p);
       }else if(view.getParent()!=grid){
         GridLayout.LayoutParams p=new GridLayout.LayoutParams(GridLayout.spec(childRow),GridLayout.spec(childColumn));
-        p.width=cell;p.height=cellHeight;p.setMargins(owner.dp(4),owner.dp(2),owner.dp(4),owner.dp(2));
+        p.width=cell;p.height=cellHeight;p.setMargins(pad4,pad2,pad4,pad2);
         grid.addView(view,p);
       }
       if(++childColumn>=count){childColumn=0;childRow++;}
     }
+    /* Margin rows are the next frame's work, never the frame that reveals the page. */
+    if(firstFrame&&(startRow>0||endRow<rows))grid.postOnAnimation(this::refresh);
   }
 }

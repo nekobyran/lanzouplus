@@ -200,11 +200,11 @@ final class DownloadAggregateView {
         if (active()) return DownloadHistoryCenter.ACTION_PAUSE;
         if (paused()) return DownloadHistoryCenter.ACTION_RESUME;
         if (failed() || cancelled()) return DownloadHistoryCenter.ACTION_RETRY;
-        if (completed()) return DownloadHistoryCenter.ACTION_OPEN;
+        if (completed()) return missing() && !entry.shareUrl.isEmpty() ? DownloadHistoryCenter.ACTION_RETRY : DownloadHistoryCenter.ACTION_OPEN;
         return DownloadHistoryCenter.ACTION_NONE;
       }
       @Override public boolean canCancel() { return active() || paused(); }
-      @Override public boolean canRetry() { return failed() || cancelled(); }
+      @Override public boolean canRetry() { return (failed() || cancelled() || completed()) && !entry.shareUrl.isEmpty(); }
       @Override public boolean canDeleteFile() { return !entry.uriString.isEmpty(); }
       @Override public boolean perform(Activity host, int action) { return runner.perform(host, action); }
     };

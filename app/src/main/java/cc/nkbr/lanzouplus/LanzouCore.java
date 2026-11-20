@@ -18,7 +18,7 @@ final class LanzouCore {
   static final int UA_SCOPE_FILE_LIST=1,UA_SCOPE_DIRECTORY_SEARCH=2,UA_SCOPE_API_SEARCH=4,UA_SCOPE_DIRECT=8,UA_SCOPE_ALL=UA_SCOPE_FILE_LIST|UA_SCOPE_DIRECTORY_SEARCH|UA_SCOPE_API_SEARCH|UA_SCOPE_DIRECT;
   // 2026-11-19: Lanzou cloaks the share page by UA. Chrome/126 mobile and Firefox/126 are served a fake
   // "来晚啦…文件取消分享" shell; Chrome/138 mobile returns the real folder page, so 138 is the default everywhere.
-  private static final String ANDROID_UA="Mozilla/5.0 (Linux; Android 14; BRQ-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36";
+  private static final String ANDROID_UA="Mozilla/5.0 (Linux; Android 14; 23127PN0CC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36";
   private static final String DESKTOP_SEARCH_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
   private static final String DESKTOP_RENDER_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
   private static final String DESKTOP_EDGE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0";
@@ -627,7 +627,7 @@ final class LanzouCore {
     SearchCoordinator(List<SourceSearchState> states,List<Models.Item> out,Set<String> seen,Object resultLock,Models.SearchOptions options,Models.Progress progress){this.states=states;this.out=out;this.seen=seen;this.resultLock=resultLock;this.options=options;this.progress=progress;int matched=0;for(SourceSearchState state:states){if(options.indexOnly()){state.apiDone=true;state.dirDone=true;state.folders.clear();}else if(state.hydrate!=null){if(!compositeMemberHydrationEnabled(options)){state.apiDone=true;state.dirDone=true;}}else{if(!options.directoryEnabled()&&state.source.kind!=Models.SOURCE_COMPOSITE){state.dirDone=true;state.folders.clear();}if(!options.apiEnabled())state.apiDone=true;}groups.computeIfAbsent(state.groupKey,key->new ArrayList<>()).add(state);if(state.hydrate!=null&&!state.apiDone)matched++;}for(Map.Entry<String,List<SourceSearchState>> entry:groups.entrySet()){waitingGroups.addLast(entry.getKey());remaining.put(entry.getKey(),entry.getValue().size());}total=groups.size();int work=0;for(SourceSearchState state:states){state.apiProgressDone=state.apiDone;state.dirProgressDone=state.dirDone;if(!state.apiDone)work++;if(!state.dirDone)work++;}totalWork=work;matchedCompositeLeafCount=matched;}
     List<Models.Item> run()throws InterruptedException{
       boolean interrupted=false;
-      try{synchronized(this){if(progress!=null)progress.onWorkProgress(0,totalWork);refillActiveLocked();pumpNetworkLocked();scheduleExplorationLocked();}while(true){if(isSearchCancelled(progress)){synchronized(this){cancelLocked();}break;}if(progress!=null){synchronized(this){if(cancelled||done.get()>=total)break;paused=true;}boolean resume;try{resume=progress.awaitIfPaused();}catch(RuntimeException ignored){resume=false;}synchronized(this){paused=false;if(!resume){cancelLocked();break;}refillActiveLocked();pumpNetworkLocked();}}synchronized(this){if(cancelled||done.get()>=total)break;wait(50L);pumpNetworkLocked();}}}catch(InterruptedException error){interrupted=true;synchronized(this){cancelLocked();}}
+      try{synchronized(this){if(progress!=null)progress.onWorkProgress(0,totalWork);refillActiveLocked();pumpNetworkLocked();scheduleExplorationLocked();}while(true){if(isSearchCancelled(progress)){synchronized(this){cancelLocked();}break;}if(progress!=null){synchronized(this){if(cancelled||done.get()>=total)break;paused=true;}boolean resume;try{resume=progress.awaitIfPaused();}catch(RuntimeException ignored){resume=false;}synchronized(this){paused=false;if(!resume){cancelLocked();break;}refillActiveLocked();pumpNetworkLocked();}}synchronized(this){if(cancelled||done.get()>=total)break;/* Short poll: a completed request hands its slot to the next queued job within 25 ms. */wait(25L);pumpNetworkLocked();}}}catch(InterruptedException error){interrupted=true;synchronized(this){cancelLocked();}}
       synchronized(this){cancelTimersLocked();while(!cancelled&&runningHttp>0&&!isSearchCancelled(progress)){try{wait(50L);}catch(InterruptedException error){interrupted=true;cancelLocked();break;}}if(!cancelled&&isSearchCancelled(progress))cancelLocked();}
       if(interrupted)throw new InterruptedException();synchronized(resultLock){return new ArrayList<>(out);}
     }
@@ -1158,14 +1158,14 @@ final class LanzouCore {
   }
 
   Models.SourceMember probeSingleSource(String rawUrl,String rawPassword)throws Exception{
-    String url=normalizeUserSourceUrl(rawUrl),password=rawPassword==null?"":rawPassword.trim();if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");SourceProfile profile=sourceProfile(url);byte[] candidates=uaCandidates(UA_SCOPE_FILE_LIST,profile.directoryUa);ExecutorCompletionService<Models.SourceMember> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);List<Future<Models.SourceMember>> futures=new ArrayList<>(candidates.length);List<Exception> failures=new ArrayList<>(candidates.length);
+    String url=normalizeUserSourceUrl(rawUrl),password=rawPassword==null?"":rawPassword.trim();if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");SourceProfile profile=sourceProfile(url);byte[] candidates=listingUaCandidates(UA_SCOPE_FILE_LIST,profile.directoryUa);ExecutorCompletionService<Models.SourceMember> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);List<Future<Models.SourceMember>> futures=new ArrayList<>(candidates.length);List<Exception> failures=new ArrayList<>(candidates.length);
     for(byte ua:candidates){byte selectedUa=ua;futures.add(completed.submit(()->probeSingleSourceUa(url,password,selectedUa)));}
         try{for(int i=0;i<candidates.length;i++)try{return completed.take().get();}catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof SourceCollectionException)throw(SourceCollectionException)cause;failures.add(cause instanceof Exception?(Exception)cause:new IOException("单软件源暂不可用",cause));}}finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
     throw preferredProbeError(failures);
   }
 
     private Models.SourceMember probeSingleSourceUa(String url,String password,byte ua)throws Exception{
-        long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS);SourceProfile profile=sourceProfile(url);List<RouteCandidate> routes=routeCandidatesForUa(url,UA_SCOPE_FILE_LIST,profile,ua);if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");RouteOutcome<DirectLink> outcome=raceRoutes(routes,route->probeSingleSharePage(url,route,routeAttemptDeadline(deadline)),value->true,error->false);DirectLink page=outcome.value;Models.SourceMember result;if(isDirectorySharePage(page.html))result=probeSingleDirectory(url,password,deadline,ua);else result=probeSingleFile(url,password,page);if(!isDirectorySharePage(page.html))profile.observeRoute(UA_SCOPE_FILE_LIST,outcome.route.origin,ua);return result;
+        long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS);SourceProfile profile=sourceProfile(url);List<RouteCandidate> routes=listingAttemptRoutes(url,UA_SCOPE_FILE_LIST,profile,ua,1);if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");RouteOutcome<DirectLink> outcome=raceRoutes(routes,route->probeSingleSharePage(url,route,routeAttemptDeadline(deadline)),value->true,error->false);DirectLink page=outcome.value;Models.SourceMember result;if(isDirectorySharePage(page.html))result=probeSingleDirectory(url,password,deadline,ua);else result=probeSingleFile(url,password,page);if(!isDirectorySharePage(page.html))profile.observeRoute(UA_SCOPE_FILE_LIST,outcome.route.origin,ua);return result;
   }
   private DirectLink probeSingleSharePage(String logicalUrl,RouteCandidate route,long deadline)throws Exception{try(NetworkGovernor.Lease ignored=NETWORK_GOVERNOR.acquireForeground(()->Thread.currentThread().isInterrupted())){checkDeadline(deadline);DirectLink page=getGuarded(route.url,deadline,userAgent(route.ua));requireLanzouPage(page.url);requireActiveShare(page);if(!isDirectorySharePage(page.html)&&!isSingleFileSharePage(page.html))throw new IOException("不是可识别的文件分享页");observePageCapabilities(sourceProfile(logicalUrl),page,route.ua);return page;}}
     private static Exception preferredProbeError(List<Exception> errors){if(allShareCancelled(errors))return new ShareCancelledException();for(Exception error:errors)if(error instanceof UserVerificationRequiredException)return error;for(Exception error:errors)if(sourceTestError(error).contains("密码"))return error;return errors.isEmpty()?new IOException("单软件源暂不可用"):errors.get(errors.size()-1);}
@@ -2295,7 +2295,7 @@ final class LanzouCore {
 
   private Models.Folder browsePageSingleOrigin(String url,String password,boolean refresh,int page,long deadline,boolean strictFolders) throws Exception {
     String pwd=password==null?"":password;File cache=folderCache(url,pwd,page);Models.Folder cached=null;if(cache.isFile())try{cached=fromJson(read(cache));}catch(Exception ignored){cached=null;}if(cached!=null&&!refresh)return cached;
-    int scope=currentUaScope();SourceProfile profile=sourceProfile(url);List<RouteCandidate> routes=routeCandidates(url,scope,profile);if(routes.isEmpty()){if(cached!=null&&!strictFolders)return cached;throw new IOException("解析目录暂不可用");}
+    int scope=currentUaScope();SourceProfile profile=sourceProfile(url);List<RouteCandidate> routes=scope==UA_SCOPE_FILE_LIST?listingAttemptRoutes(url,scope,profile,UA_UNKNOWN,4):routeCandidates(url,scope,profile);if(routes.isEmpty()){if(cached!=null&&!strictFolders)return cached;throw new IOException("解析目录暂不可用");}
     RouteCandidate learned=learnedRoute(url,scope,profile);Exception learnedError=null;
     if(learned!=null)try{
       PageResult result=browsePageRouteWithRecovery(url,pwd,refresh,page,routeAttemptDeadline(deadline),strictFolders,profile,learned);
@@ -2326,6 +2326,10 @@ final class LanzouCore {
   private PageResult browsePageRoute(String url,String pwd,boolean refresh,int page,long deadline,boolean strictFolders,SourceProfile profile,RouteCandidate route)throws Exception{
     File cache=folderCache(url,pwd,page);byte ua=route.ua;
     DirectLink session=browseSession(url,pwd,deadline,refresh&&page==1,route);if(page>1&&!session.authorized)primeListingSession(session,deadline,profile);Models.Folder out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;
+    if(page==1&&!pwd.isEmpty()&&!session.passwordUnlocked&&requiresSharePassword(session.page.html)){
+      session=unlockPasswordSession(session,pwd,deadline,profile,ua);
+      out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;
+    }
     LinkedHashMap<String,Models.Item> items=new LinkedHashMap<>();
     if(page==1){
       if(session.target.folderId.isEmpty())for(Models.Item folder:staticFolders(session))items.put(folder.url,folder);
@@ -2341,7 +2345,9 @@ final class LanzouCore {
     boolean usable=state==1&&valid>0||!out.items.isEmpty(),definitiveEmpty=state==1&&valid==0&&out.items.isEmpty()&&array!=null;if((usable||definitiveEmpty)&&directoryCachingEnabled)writeDirectoryCache(cache,toJson(out).toString());return new PageResult(out,usable,false,definitiveEmpty,session);
   }
   private DirectLink browseSession(String url,String password,long deadline,boolean force)throws Exception{
-    int scope=currentUaScope();SourceProfile profile=sourceProfile(url);Exception last=null;for(byte ua:learnedFirstUaCandidates(scope,profile.learnedUa(scope))){if((scope==UA_SCOPE_FILE_LIST||scope==UA_SCOPE_DIRECTORY_SEARCH)&&!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{return browseSession(url,password,deadline,force,ua);}catch(Exception error){last=error;checkDeadline(deadline);}}throw last==null?new IOException("蓝奏目录暂不可用"):last;
+    int scope=currentUaScope();SourceProfile profile=sourceProfile(url);
+    if(scope==UA_SCOPE_FILE_LIST){List<RouteCandidate> routes=listingAttemptRoutes(url,scope,profile,UA_UNKNOWN,4);if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");RouteOutcome<DirectLink> outcome=raceRoutes(routes,route->browseSession(url,password,routeAttemptDeadline(deadline),force,route),value->true,error->false);profile.observeRoute(scope,outcome.value.routeOrigin,outcome.value.ua);return outcome.value;}
+    Exception last=null;for(byte ua:learnedFirstUaCandidates(scope,profile.learnedUa(scope))){if(scope==UA_SCOPE_DIRECTORY_SEARCH&&!capabilityAllowed(profile.directorySeen,profile.directoryAvailable,ua))continue;try{return browseSession(url,password,deadline,force,ua);}catch(Exception error){last=error;checkDeadline(deadline);}}throw last==null?new IOException("蓝奏目录暂不可用"):last;
   }
 
   private void primeListingSession(DirectLink session,long deadline,SourceProfile profile)throws Exception{
@@ -2368,7 +2374,7 @@ final class LanzouCore {
 
     private DirectLink browseSession(String url,String password,long deadline,boolean force,byte ua)throws Exception{
     int scope=currentUaScope();SourceProfile profile=sourceProfile(url);
-    List<RouteCandidate> routes=routeCandidatesForUa(url,scope,profile,ua);
+    List<RouteCandidate> routes=scope==UA_SCOPE_FILE_LIST?listingAttemptRoutes(url,scope,profile,ua,4):routeCandidatesForUa(url,scope,profile,ua);
     if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");
     if(SEARCH_CONNECTIONS.get()!=null){
                                     LinkedHashMap<String,RouteCandidate> orderedAttempts=new LinkedHashMap<>();for(RouteCandidate route:routes)orderedAttempts.putIfAbsent(route.key(),route);for(RouteCandidate route:routeCandidates(url,scope,profile))orderedAttempts.putIfAbsent(route.key(),route);List<RouteCandidate> attempts=new ArrayList<>(orderedAttempts.values());
@@ -2402,10 +2408,14 @@ final class LanzouCore {
    * "来晚啦…文件取消分享" shell or the aliyun_waf slider for a perfectly live share. A single verdict therefore rotates
    * through the Chrome/138 mobile slots before a cancellation or a capability failure is reported.
    */
-  private DirectLink guardedSharePage(String url,long deadline,byte ua)throws Exception{
+  private static DirectLink guardedSharePage(String url,long deadline,byte ua)throws Exception{
+    return guardedSharePage(url,deadline,ua,"");
+  }
+  private static DirectLink guardedSharePage(String url,long deadline,byte ua,String cookie)throws Exception{
     Exception verdict=null;
-    for(byte candidate:uaRotationCandidates(ua)){
-      DirectLink page=getGuarded(url,deadline,userAgent(candidate));
+    byte[] rotation=currentUaScope()==UA_SCOPE_FILE_LIST?listingUaCandidates(currentUaScope(),ua):uaRotationCandidates(ua);
+    for(byte candidate:rotation){
+      DirectLink page=getGuarded(url,deadline,userAgent(candidate),cookie);
       requireLanzouPage(page.url);
       try{requireActiveShare(page,url);return page;}
       catch(ShareCancelledException error){if(verdict==null)verdict=error;}
@@ -2420,6 +2430,39 @@ final class LanzouCore {
     values.add(requested);values.add(UA_MOBILE_CHROME);values.add(UA_MOBILE_HUAWEI);values.add(UA_MOBILE_COMPAT);
     byte[] out=new byte[values.size()];int i=0;for(Byte value:values)out[i++]=value;return out;
   }
+  /**
+   * Listing attempts deliberately mix three Chrome/138 Android models with a desktop fallback.
+   * Desktop Chrome can receive a short non-directory shell, so it must stay behind the mobile slots.
+   */
+  private static byte[] listingUaCandidates(int scope,byte learned){
+    LinkedHashSet<Byte> values=new LinkedHashSet<>();
+    if(configuredCustomUserAgent!=null&&!configuredCustomUserAgent.isEmpty())values.add(UA_CUSTOM);
+    if(learned!=UA_UNKNOWN)values.add(learned);
+    List<Byte> mobile=new ArrayList<>(Arrays.asList(UA_MOBILE_CHROME,UA_MOBILE_HUAWEI,UA_MOBILE_COMPAT));
+    Collections.shuffle(mobile,ThreadLocalRandom.current());
+    values.addAll(mobile);
+    List<Byte> desktop=new ArrayList<>(Arrays.asList(UA_DESKTOP_CHROME,UA_DESKTOP_EDGE));
+    Collections.shuffle(desktop,ThreadLocalRandom.current());
+    values.addAll(desktop);
+    int limit=Math.min(4,values.size());
+    byte[] out=new byte[limit];int index=0;
+    for(Byte value:values){if(index>=limit)break;out[index++]=value;}
+    return out;
+  }
+  private static List<RouteCandidate> listingAttemptRoutes(String referenceUrl,int scope,SourceProfile profile,byte requestedUa,int limit){
+    LinkedHashMap<String,RouteCandidate> out=new LinkedHashMap<>();
+    RouteCandidate learned=requestedUa==UA_UNKNOWN?learnedRoute(referenceUrl,scope,profile):null;
+    if(learned!=null)out.put(learned.key(),learned);
+    byte[] uas=requestedUa==UA_UNKNOWN?listingUaCandidates(scope,profile==null?UA_UNKNOWN:profile.learnedUa(scope)):new byte[]{requestedUa};
+    List<String> origins=new ArrayList<>(searchAwareRouteOrigins(referenceUrl,scope,profile==null?"":profile.learnedOrigin(scope)));
+    Collections.shuffle(origins,ThreadLocalRandom.current());
+    int start=origins.isEmpty()?0:ThreadLocalRandom.current().nextInt(origins.size()),added=0,remaining=Math.max(1,limit-out.size());
+    for(int step=0;step<origins.size()&&added<remaining;step++){
+      String origin=origins.get((start+step)%origins.size());
+      try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,uas[added%uas.length],scope);if(out.putIfAbsent(route.key(),route)==null)added++;}catch(Exception ignored){}
+    }
+    return new ArrayList<>(out.values());
+  }
 
   private DirectLink browseSessionUnshared(String url,String password,long deadline,boolean force,RouteCandidate route)throws Exception{
 
@@ -2427,15 +2470,41 @@ final class LanzouCore {
     if(!force&&hit!=null&&now-hit.createdAt<SESSION_TTL_MS)return hit;if(hit!=null)browseSessions.remove(key,hit);
         long routeStarted=System.nanoTime();DirectLink session=new DirectLink();session.target=target;session.page=guardedSharePage(routed.rootUrl,deadline,route.ua);session.ua=pageUa(session.page,route.ua);session.routeOrigin=origin(session.page.url);SourceProfile learned=sourceProfile(url);observePageCapabilities(learned,session.page,session.ua);session.template=pageTemplate(session.page.html);learned.observeTemplate(session.ua,session.template);session.createdAt=now;
     if(password.isEmpty()&&requiresSharePassword(session.page.html))throw new DirectPasswordException();
-    String explicitEndpoint=cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?(?:file|uid)=[0-9A-Za-z_-]+[^'\"]*)['\"]"),hiddenFileId=hiddenDirectoryFileId(session.page.html);session.endpoint=sameOriginEndpoint(session.page,explicitEndpoint,"/filemoreajax.php");if(session.endpoint.isEmpty()&&!hiddenFileId.isEmpty())session.endpoint=sameOriginEndpointAny(session.page,"/filemoreajax.php?file="+hiddenFileId);session.folderEndpoint=sameOriginEndpoint(session.page,cap(session.page.html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/foldermoreajax.php");
-    session.fid=cap(session.endpoint,"[?&]file=([^&#]+)");String uid=cap(session.endpoint,"[?&]uid=([^&#]+)");session.form=formValues(session.page.html);if(!uid.isEmpty())session.form.put("uid",uid);session.form.put("fid",uid.isEmpty()?session.fid:"1");session.form.put("lx",firstNonEmpty(session.form.get("lx"),uid.isEmpty()?"2":"1"));if(!hiddenFileId.isEmpty())session.form.put("ls","1");session.form.put("rep",firstNonEmpty(session.form.get("rep"),"0"));session.form.put("up",firstNonEmpty(session.form.get("up"),"1"));session.form.put("vip",firstNonEmpty(session.form.get("vip"),"0"));
-    if(!target.folderId.isEmpty()){session.form.put("folder_id",target.folderId);session.form.put("ls","1");}
-    if(!password.isEmpty()){session.form.put("pwd",password);session.form.put("ls","1");}
+    populateListingRequest(session,url,password,hiddenDirectoryFileId(session.page.html));
     String searchEndpoint=searchEndpoint(session.page),searchSign=searchSign(session.page.html);
     Models.Folder meta=new Models.Folder();meta.url=url;meta.password=password;meta.folderId=target.folderId;meta.title=sharePageTitle(session.page.html);
                 meta.publisher=sharePagePublisher(session.page.html);meta.avatarUrl=sharePageAvatar(session.page);if(!meta.avatarUrl.isEmpty())rememberPublisherAvatar(session.page.url,meta.publisher,meta.avatarUrl);else meta.avatarUrl=cachedPublisherAvatar(session.page.url,meta.publisher);meta.description=sharePageDescription(session.page.html,session.page.url);meta.saveUrl=sharePageSaveUrl(session.page.html);meta.remoteSearch=!searchEndpoint.isEmpty()&&!searchSign.isEmpty();
 
     if(!target.title.isEmpty())meta.title=target.title;if(!target.description.isEmpty())meta.description=target.description;session.metadata=meta;browseSessions.put(key,session);pruneBrowseSessions(now);if(route.scope!=UA_SCOPE_DIRECTORY_SEARCH&&route.scope!=UA_SCOPE_API_SEARCH)rememberSharedRoute(route.scope,session.routeOrigin,session.ua,elapsedMillis(routeStarted));return session;
+  }
+  /**
+   * Build the listing form from what the share page actually declares. In particular, ls/pwd/webfoldersign
+   * are never invented for a plain directory: an extra field makes Lanzou answer zt=4 instead of the listing.
+   */
+  private static void populateListingRequest(DirectLink session,String logicalUrl,String password,String hiddenFileId)throws Exception{
+    String html=session.page==null||session.page.html==null?"":session.page.html;
+    Map<String,String> pageForm=formValues(html);
+    String explicitEndpoint=cap(html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?[^'\"]*)['\"]");
+    session.endpoint=sameOriginEndpoint(session.page,explicitEndpoint,"/filemoreajax.php");
+    String pageFid=pageForm.getOrDefault("fid",""),pageUid=pageForm.getOrDefault("uid","");
+    if(session.endpoint.isEmpty()&&!pageFid.isEmpty())session.endpoint=sameOriginEndpointAny(session.page,"/filemoreajax.php?file="+pageFid);
+    if(session.endpoint.isEmpty()&&!pageUid.isEmpty())session.endpoint=sameOriginEndpointAny(session.page,"/filemoreajax.php?uid="+pageUid);
+    if(session.endpoint.isEmpty()&&hiddenFileId!=null&&!hiddenFileId.isEmpty())session.endpoint=sameOriginEndpointAny(session.page,"/filemoreajax.php?file="+hiddenFileId);
+    session.folderEndpoint=sameOriginEndpoint(session.page,cap(html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?file=\\d+[^'\"]*)['\"]"),"/foldermoreajax.php");
+    session.fid=cap(session.endpoint,"[?&]file=([^&#]+)");
+    String uid=cap(session.endpoint,"[?&]uid=([^&#]+)");
+    Map<String,String> form=new LinkedHashMap<>();
+    for(String key:new String[]{"lx","uid","puid","rep","t","k","up","webfoldersign","ls","vip","pg","pwd","folder_id"}){
+      String value=pageForm.get(key);
+      if(value!=null&&!value.isEmpty())form.put(key,value);
+    }
+    if(!uid.isEmpty())form.put("uid",uid);
+    form.put("fid",uid.isEmpty()?session.fid:"1");
+    form.put("lx",firstNonEmpty(form.get("lx"),uid.isEmpty()?"2":"1"));
+    form.put("rep",firstNonEmpty(form.get("rep"),"0"));
+    if(hiddenFileId!=null&&!hiddenFileId.isEmpty())form.putIfAbsent("ls","1");
+    if(!password.isEmpty()&&(form.containsKey("pwd")||parsePattern("(?s)['\"]pwd['\"]\\s*:\\s*pwd\\b").matcher(html).find()))form.put("pwd",password);
+    session.form=form;
   }
     private static String sharePageTitle(String html){String value=firstNonEmpty(strip(divInner(html,"user-title")),strip(divInner(html,"folder-title")),strip(elementByIdInner(html,"filenajax")),strip(cap(html,"(?is)<meta[^>]+(?:property|name)=[\"'](?:og:title|twitter:title)[\"'][^>]+content=[\"']([^\"']+)")),strip(cap(html,"(?is)<title[^>]*>(.*?)</title>")));return value.replaceFirst("(?i)\\s*[-_|]\\s*(?:蓝奏云|lanzou)\\s*$","").trim();}
     private static String sharePagePublisher(String html){String value=firstNonEmpty(strip(divInner(html,"user-name")),strip(cap(html,"(?is)class=[\"'][^\"']*passwddiv-user[^\"']*[\"'][^>]*>.*?<span[^>]*>(.*?)</span>")),strip(cap(html,"(?is)<meta[^>]+name=[\"']author[\"'][^>]+content=[\"']([^\"']+)")));return value.replaceAll("(?:的)?分享文件.*$","").replaceFirst("^获取","").trim();}
@@ -2486,10 +2555,52 @@ final class LanzouCore {
   private static JSONObject postListing(DirectLink session,Map<String,String> form,long deadline,int page,SourceProfile profile)throws Exception{return postPage(session,session.endpoint,form,deadline,page,profile,"目录接口返回异常");}
 
   private static JSONObject postPage(DirectLink session,String endpoint,Map<String,String> form,long deadline,int page,SourceProfile profile,String errorMessage)throws Exception{
-        if(endpoint.isEmpty())throw new IOException("未找到目录接口");String url=new URL(new URL(session.page.url),endpoint).toString(),key=pageRateKey(session,endpoint);JSONObject data=null;
-    BooleanSupplier asyncCancelled=ASYNC_PAGE_CANCEL.get();if(asyncCancelled!=null){checkSearchCancelled(asyncCancelled);long wait=reservePageSlot(key,profile.interval(session.ua,page));if(wait>0)throw new PageWaitException(wait);String raw=post(url,form,session.page,deadline,userAgent(session.ua));checkSearchCancelled(asyncCancelled);if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1){deferPageSlot(key,profile.interval(session.ua,page+1));return data;}if(state==2)return data;if(state==4){int delay=profile.backoff(session.ua,page);deferPageSlot(key,delay);throw new PageRateLimitedException(data.optString("info","目录请求过快，请稍后重试"));}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);if(isRecoverableBrowseMessage(message))throw new RecoverableBrowseException(message);throw new IOException(message);}
-    for(int attempt=0;attempt<3;attempt++){int interval=profile.interval(session.ua,page);awaitPageSlot(key,deadline,interval,null);String raw=post(url,form,session.page,deadline,userAgent(session.ua));if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1){deferPageSlot(key,profile.interval(session.ua,page+1));return data;}if(state==2)return data;if(state==4){int backedOff=profile.backoff(session.ua,page);deferPageSlot(key,backedOff);throw new PageRateLimitedException(data.optString("info","目录请求过快，请切换线路"));}String message=data.optString("info",data.optString("msg",errorMessage));if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);if(isRecoverableBrowseMessage(message))throw new RecoverableBrowseException(message);throw new IOException(message);}
-    throw new RecoverableBrowseException(data==null?errorMessage:data.optString("info","目录请求过快，请稍后重试"));
+    if(endpoint.isEmpty())throw new IOException("未找到目录接口");
+    boolean folderRequest=!session.folderEndpoint.isEmpty()&&endpoint.equals(session.folderEndpoint);
+    JSONObject data=postPageOnce(session,endpoint,form,deadline,page,profile,errorMessage);
+    if(data.optInt("zt",-1)==4){
+      refreshListingSession(session,deadline,profile);
+      Map<String,String> retryForm=new LinkedHashMap<>(session.form);
+      if(form.containsKey("pg"))retryForm.put("pg",form.get("pg"));
+      String retryEndpoint=folderRequest?session.folderEndpoint:session.endpoint;
+      if(retryEndpoint.isEmpty())throw new IOException("目录刷新后未找到接口");
+      data=postPageOnce(session,retryEndpoint,retryForm,deadline,page,profile,errorMessage);
+    }
+    int state=data.optInt("zt",-1);
+    String message=data.optString("info",data.optString("msg",errorMessage));
+    if(state==1||state==2)return data;
+    if(state==3)throw new DirectPasswordException(message);
+    if(state==4){deferPageSlot(pageRateKey(session,session.endpoint),profile.backoff(session.ua,page));throw new PageRateLimitedException(message);}
+    if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);
+    if(isRecoverableBrowseMessage(message))throw new RecoverableBrowseException(message);
+    throw new IOException(message);
+  }
+  private static JSONObject postPageOnce(DirectLink session,String endpoint,Map<String,String> form,long deadline,int page,SourceProfile profile,String errorMessage)throws Exception{
+    String url=new URL(new URL(session.page.url),endpoint).toString(),key=pageRateKey(session,endpoint);
+    BooleanSupplier asyncCancelled=ASYNC_PAGE_CANCEL.get();
+    if(asyncCancelled!=null){
+      checkSearchCancelled(asyncCancelled);
+      long wait=reservePageSlot(key,profile.interval(session.ua,page));
+      if(wait>0)throw new PageWaitException(wait);
+    }else awaitPageSlot(key,deadline,profile.interval(session.ua,page),null);
+    String raw=post(url,form,session.page,deadline,userAgent(session.ua));
+    if(asyncCancelled!=null)checkSearchCancelled(asyncCancelled);
+    if(!raw.trim().startsWith("{"))throw new IOException(errorMessage);
+    JSONObject data=new JSONObject(raw);
+    if(data.optInt("zt",-1)==1)deferPageSlot(key,profile.interval(session.ua,page+1));
+    return data;
+  }
+  /** zt=4 means the page proof expired; re-open the share page once and rebuild t/k before a single retry. */
+  private static void refreshListingSession(DirectLink session,long deadline,SourceProfile profile)throws Exception{
+    if(session.page==null||session.page.url==null||session.page.url.isEmpty())throw new IOException("目录会话已失效");
+    DirectLink refreshed=guardedSharePage(session.page.url,deadline,session.ua,session.page.cookie==null?"":session.page.cookie);
+    session.page=refreshed;
+    session.ua=pageUa(refreshed,session.ua);
+    session.routeOrigin=origin(refreshed.url);
+    session.createdAt=System.currentTimeMillis();
+    populateListingRequest(session,session.target==null?"":session.target.rootUrl,session.metadata==null?"":session.metadata.password,hiddenDirectoryFileId(refreshed.html));
+    profile.observeRoute(currentUaScope(),session.routeOrigin,session.ua);
+    if(session.endpoint.isEmpty())throw new IOException("目录刷新后未找到接口");
   }
 
     private static String pageRateKey(DirectLink session,String endpoint){return originUnchecked(session.page.url)+'|'+session.fid+'|'+session.target.folderId+'|'+session.ua+'|'+(endpoint==null?"":endpoint);}
@@ -3040,16 +3151,19 @@ final class LanzouCore {
    */
   private static Map<String,String> formValues(String h){
     Map<String,String> out=new LinkedHashMap<>(),vars=new HashMap<>();
-    Matcher vm=parsePattern("(?:var\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*['\"]([^'\"]*)['\"]").matcher(h);while(vm.find())vars.put(vm.group(1),vm.group(2));
+    Matcher vm=parsePattern("(?s)\\b(?:var|let|const)\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(['\"])(.*?)\\2").matcher(h);while(vm.find())vars.put(vm.group(1),vm.group(3));
+    Matcher am=parsePattern("(?s)(?:^|[;{,}])\\s*([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(['\"])(.*?)\\2").matcher(h);while(am.find())vars.putIfAbsent(am.group(1),am.group(3));
     Matcher fm=parsePattern("(?is)(?:function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^)]*\\)\\s*\\{|([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*function\\s*\\([^)]*\\)\\s*\\{)[^{}]{0,400}?return\\s*['\"]([^'\"]+)['\"]").matcher(h);while(fm.find())vars.putIfAbsent(firstNonEmpty(fm.group(1),fm.group(2)),fm.group(3));
-    collectFormFields(parsePattern("['\"](lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip)['\"]\\s*:\\s*(?:['\"]([^'\"]*)['\"]|([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\(\\s*\\))?)").matcher(h),vars,out);
-    collectFormFields(parsePattern("[{,]\\s*(lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip)\\s*:\\s*(?:['\"]([^'\"]*)['\"]|([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\(\\s*\\))?)").matcher(h),vars,out);
+    String fields="(?:lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip|pg|pwd|folder_id)";
+    collectFormFields(parsePattern("(?s)['\"]?("+fields+")['\"]?\\s*:\\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][A-Za-z0-9_$]*)\\s*(?:\\(\\s*\\))?|(-?[0-9]+))").matcher(h),vars,out);
     return out;
   }
-  /** Object-literal keys are only accepted right after '{' or ',' so CSS/text pairs such as "font:..." are ignored. */
+  /** Known listing fields only; CSS/text pairs such as "font:..." never enter the request. */
   private static void collectFormFields(Matcher fields,Map<String,String> vars,Map<String,String> out){
     while(fields.find()){
-      String literal=fields.group(2),name=fields.group(3),value=literal!=null?literal:vars.getOrDefault(name==null?"":name,"");
+      String literal=fields.group(2)!=null?fields.group(2):fields.group(3);
+      String name=fields.group(4),number=fields.group(5);
+      String value=literal!=null?literal:name!=null?vars.getOrDefault(name,""):number==null?"":number;
       if(!value.isEmpty())out.putIfAbsent(fields.group(1),value);
     }
   }

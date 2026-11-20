@@ -14,8 +14,8 @@ final class UpdateClient {
   private static final String SITE_LATEST="https://lanzouplus.nkbr.cc/api/release";
   private static final int JSON_LIMIT=256*1024;
   private static final int GITHUB_JSON_LIMIT=4*1024*1024;
-  private static final String[] GITHUB_MIRROR_PREFIXES={"https://gh.llkk.cc/","https://gh-proxy.com/","https://ghfast.top/"};
-  private static final Set<String> GITHUB_MIRROR_HOSTS=new HashSet<>(Arrays.asList("gh.llkk.cc","gh-proxy.com","ghfast.top"));
+  private static final String[] GITHUB_MIRROR_PREFIXES={"https://gh-proxy.com/","https://ghproxy.net/","https://ghfast.top/","https://gh.llkk.cc/"};
+  private static final Set<String> GITHUB_MIRROR_HOSTS=new HashSet<>(Arrays.asList("gh-proxy.com","ghproxy.net","ghfast.top","gh.llkk.cc"));
 
   static final class UpdateInfo {
     final String version,body,browserDownloadUrl,mirrorUrl,assetName;

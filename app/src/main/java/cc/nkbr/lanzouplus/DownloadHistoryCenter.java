@@ -136,8 +136,8 @@ final class DownloadHistoryCenter {
     boolean canRetry() {
       if (premium) return false;
       if (awaitingVerification) return !live && !active() && retryableRecord();
-      return live ? MainActivity.DOWNLOAD_FAILED.equals(state)
-          : !active() && (failed() || paused() || cancelled()) && retryableRecord();
+      return live ? MainActivity.DOWNLOAD_FAILED.equals(state) || MainActivity.DOWNLOAD_COMPLETED.equals(state) && !shareUrl.isEmpty()
+          : !active() && (failed() || paused() || cancelled() || completed()) && retryableRecord();
     }
     boolean canDeleteFile() { return !premium && !uriString.isEmpty(); }
     boolean canResume() { return !premium && paused() && (live || resumableRecord()); }

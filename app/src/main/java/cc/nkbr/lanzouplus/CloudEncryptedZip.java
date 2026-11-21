@@ -1,10 +1,12 @@
 package cc.nkbr.lanzouplus;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -15,9 +17,11 @@ import java.util.Set;
 
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.exception.ZipException;
+import net.lingala.zip4j.io.outputstream.ZipOutputStream;
 import net.lingala.zip4j.model.FileHeader;
 import net.lingala.zip4j.model.ZipParameters;
 import net.lingala.zip4j.model.enums.AesKeyStrength;
+import net.lingala.zip4j.model.enums.CompressionMethod;
 import net.lingala.zip4j.model.enums.EncryptionMethod;
 
 /**
@@ -58,18 +62,37 @@ final class CloudEncryptedZip {
         if (destination.exists()) {
             throw new IOException("ZIP 目标文件已存在");
         }
+        if (!destination.createNewFile()) {
+            throw new IOException("ZIP 目标文件已存在");
+        }
 
         ZipParameters parameters = new ZipParameters();
         parameters.setFileNameInZip(source.getName());
+        parameters.setEntrySize(source.length());
+        parameters.setLastModifiedFileTime(source.lastModified());
+        if (source.length() == 0) {
+            parameters.setCompressionMethod(CompressionMethod.STORE);
+        }
         parameters.setEncryptFiles(true);
         parameters.setEncryptionMethod(EncryptionMethod.AES);
         parameters.setAesKeyStrength(AesKeyStrength.KEY_STRENGTH_256);
 
-        try {
-            new ZipFile(destination, password).addFile(source, parameters);
-        } catch (ZipException error) {
+        try (InputStream input = new FileInputStream(source);
+             ZipOutputStream output = new ZipOutputStream(
+                     new FileOutputStream(destination), password, StandardCharsets.UTF_8)) {
+            output.putNextEntry(parameters);
+            byte[] buffer = new byte[BUFFER_SIZE];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+            }
+            output.closeEntry();
+        } catch (IOException error) {
             if (destination.isFile()) destination.delete();
-            throw translate(error, "ZIP 加密写入失败");
+            if (error instanceof ZipException) {
+                throw translate((ZipException) error, "ZIP 加密写入失败");
+            }
+            throw new IOException("ZIP 加密写入失败", error);
         }
         return destination;
     }

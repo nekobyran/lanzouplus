@@ -69,10 +69,9 @@ final class SettingsTabs {
         add(body,owner.buildUnifiedSliderPanel(owner.buildSearchSettingsPanel(),owner.buildIndexSliderSettings()));
         addRow(body,owner.buildSearchModeRow());
         addRow(body,owner.buildHomeSearchDefaultRow());
-        addRow(body,owner.buildUaSettingsRow());
+        addRow(body,owner.buildConnectionSettingsRow());
         addRow(body,owner.settingsSwitchRow("蓝奏云链接：直接列表解析打开",owner.directLanzouListOpen,checked->{owner.directLanzouListOpen=checked;owner.persistSearchSettings();}));
-        addRow(body,owner.buildLanzouBaseOriginRow());
-        addRow(body,owner.settingsSwitchRow("公共域名族自动换线",owner.sessionLanzouTimeoutFailover,checked->{owner.sessionLanzouTimeoutFailover=checked;owner.persistSearchSettings();}));
+        addRow(body,owner.settingsSwitchRow("解析失败自动切换 UA 与链接",owner.sessionLanzouTimeoutFailover,checked->{owner.sessionLanzouTimeoutFailover=checked;owner.persistSearchSettings();}));
         addRow(body,owner.settingsSwitchRow("WebView 兜底解析",owner.sessionWebViewFallback,checked->{owner.sessionWebViewFallback=checked;owner.persistSearchSettings();}));
         addRow(body,owner.settingsSwitchRow("网页外部打开",owner.sessionOpenWebExternal,checked->{owner.sessionOpenWebExternal=checked;owner.persistSearchSettings();}));
         owner.refreshIndexProgressCard();break;

@@ -223,7 +223,7 @@ jobs:
           build_tools="$ANDROID_HOME/build-tools/36.0.0"
           mkdir -p dist
           cp ci/LanzouPlus-unsigned.apk dist/repacked.apk
-          python tools/repack_release_apk.py dist/repacked.apk
+          python tools/repack_release_apk.py dist/repacked.apk --aapt2 "$build_tools/aapt2"
           "$build_tools/zipalign" -f -p 4 dist/repacked.apk dist/aligned.apk
 
       - name: Sign and verify the final APK

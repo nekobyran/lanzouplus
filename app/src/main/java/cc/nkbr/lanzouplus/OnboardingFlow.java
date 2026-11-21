@@ -2,6 +2,7 @@ package cc.nkbr.lanzouplus;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.Context;
 import android.content.res.ColorStateList;
@@ -38,7 +39,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Full-screen, resumable first-run setup. The required base origin is verified by LanzouCore. */
+/** Full-screen, resumable first-run setup. The required origin and UA connection is verified by LanzouCore. */
 final class OnboardingFlow {
   static final int WELCOME=0, PERMISSIONS=1, BASE=2, MARKET=3, CHANNEL=4, DONE=5;
   static final String PREFS="onboarding_v187";
@@ -47,8 +48,18 @@ final class OnboardingFlow {
   static final String DEBUG_PREVIEW_STEP="lz_onboarding_preview_step";
   static final int STORAGE_REQUEST=70;
   private static final long STAGGER_MS=45;
+  private static final int[] UA_PRESETS={
+      LanzouCore.UA_PRESET_MOBILE_CHROME,
+      LanzouCore.UA_PRESET_MOBILE_HUAWEI,
+      LanzouCore.UA_PRESET_DESKTOP_CHROME,
+      LanzouCore.UA_PRESET_DESKTOP_EDGE,
+      LanzouCore.UA_PRESET_MOBILE_FIREFOX
+  };
   private static final String STATE_STEP="onboarding.step";
   private static final String STATE_DRAFT="onboarding.draft";
+  private static final String STATE_UA_PRESET="onboarding.ua_preset";
+  private static final String STATE_UA_CUSTOM="onboarding.ua_custom";
+  private static final String STATE_UA_USE_CUSTOM="onboarding.ua_use_custom";
 
   private final MainActivity activity;
   private final SharedPreferences prefs;
@@ -62,9 +73,14 @@ final class OnboardingFlow {
   private LinearLayout shellView;
   private TextView welcomeName,welcomeIntro;
   private String baseDraft;
+  private int uaPreset;
+  private String customUa;
+  private boolean useCustomUa;
   private String status="";
   private TextView statusView;
   private EditText baseInput;
+  private TextView uaChoice;
+  private TextView connectionSummaryView;
   private EditText githubInput;
   private Button primaryButton;
   private Button secondaryButton;
@@ -76,6 +92,9 @@ final class OnboardingFlow {
     this.step=step;
     this.baseDraft=draft==null?"":draft;
     this.preview=preview;
+    this.uaPreset=LanzouCore.normalizeUserAgentPreset(activity.sessionUaFileListPreset);
+    this.customUa=LanzouCore.normalizeCustomUserAgent(activity.sessionCustomUserAgent);
+    this.useCustomUa=!customUa.isEmpty();
   }
 
   static OnboardingFlow open(MainActivity activity,Bundle saved){
@@ -96,6 +115,11 @@ final class OnboardingFlow {
     if(defaultDraft.isEmpty()&&hasBase)defaultDraft=activity.normalizeLanzouBaseOrigin(activity.sessionLanzouBaseOrigin);
     String draft=saved!=null?saved.getString(STATE_DRAFT,defaultDraft):defaultDraft;
     OnboardingFlow flow=new OnboardingFlow(activity,step,draft,preview);
+    if(saved!=null){
+      flow.uaPreset=LanzouCore.normalizeUserAgentPreset(saved.getInt(STATE_UA_PRESET,flow.uaPreset));
+      flow.customUa=LanzouCore.normalizeCustomUserAgent(saved.getString(STATE_UA_CUSTOM,flow.customUa));
+      flow.useCustomUa=saved.getBoolean(STATE_UA_USE_CUSTOM,flow.useCustomUa)&&!flow.customUa.isEmpty();
+    }
     flow.render();
     return flow;
   }
@@ -131,6 +155,9 @@ final class OnboardingFlow {
     if(baseInput!=null)baseDraft=baseInput.getText().toString();
     out.putInt(STATE_STEP,step);
     out.putString(STATE_DRAFT,baseDraft);
+    out.putInt(STATE_UA_PRESET,uaPreset);
+    out.putString(STATE_UA_CUSTOM,customUa);
+    out.putBoolean(STATE_UA_USE_CUSTOM,useCustomUa);
   }
 
   void onConfigurationChanged(){
@@ -238,6 +265,8 @@ final class OnboardingFlow {
     welcomeName=welcomeIntro=null;
     statusView=null;
     baseInput=null;
+    uaChoice=null;
+    connectionSummaryView=null;
     primaryButton=null;
     secondaryButton=null;
     workingIndicator=null;
@@ -437,19 +466,83 @@ final class OnboardingFlow {
       public void onTextChanged(CharSequence s,int start,int before,int count){
         saveBaseDraft(s.toString());
         if(statusView!=null)statusView.setText("");
+        refreshConnectionSummary();
       }
       public void afterTextChanged(Editable s){}
     });
     body.addView(baseInput,new LinearLayout.LayoutParams(-1,dp(60)));
     addSpace(body,14);
-    String verified=activity.normalizeLanzouBaseOrigin(activity.sessionLanzouBaseOrigin);
-    if(activity.hasUsableLanzouBaseOriginForStartup()){
-      TextView current=activity.text(
-          activity.getString(R.string.onboarding_current_base,verified),13,activity.PRIMARY);
-      body.addView(current,new LinearLayout.LayoutParams(-1,-2));
-    }
-    addSpace(body,16);
+    LinearLayout uaRow=new LinearLayout(activity);
+    uaRow.setGravity(Gravity.CENTER_VERTICAL);
+    TextView uaTitle=label(R.string.onboarding_ua_label,15,activity.TEXT);
+    uaTitle.setGravity(Gravity.CENTER_VERTICAL);
+    uaRow.addView(uaTitle,new LinearLayout.LayoutParams(dp(88),dp(52)));
+    uaChoice=activity.uaDropdownView(selectedUaLabel());
+    uaChoice.setContentDescription(activity.getString(R.string.onboarding_ua_accessibility,selectedUaLabel()));
+    uaChoice.setOnClickListener(v->showUaPicker());
+    uaRow.addView(uaChoice,new LinearLayout.LayoutParams(0,dp(52),1));
+    body.addView(uaRow,new LinearLayout.LayoutParams(-1,dp(60)));
+    addSpace(body,8);
+    connectionSummaryView=activity.text(connectionSummary(),13,activity.PRIMARY);
+    connectionSummaryView.setLineSpacing(dp(3),1f);
+    body.addView(connectionSummaryView,new LinearLayout.LayoutParams(-1,-2));
+    addSpace(body,14);
     explanation(body,R.string.onboarding_base_required);
+  }
+
+  private String selectedUaLabel(){
+    return uaLabel(uaPreset,useCustomUa?customUa:"");
+  }
+
+  private String uaLabel(int preset,String custom){
+    return custom==null||custom.isEmpty()
+        ?LanzouCore.uaPresetLabel(preset)
+        :activity.getString(R.string.onboarding_ua_custom);
+  }
+
+  private String connectionSummary(){
+    String draft=baseInput==null
+        ?activity.normalizeLanzouBaseOrigin(baseDraft)
+        :activity.normalizeLanzouBaseOrigin(baseInput.getText().toString());
+    String selectedCustom=useCustomUa?customUa:"";
+    if(connectionMatches(draft,uaPreset,selectedCustom)){
+      String verified=activity.normalizeLanzouBaseOrigin(activity.sessionLanzouBaseOrigin);
+      String currentUa=activity.sessionCustomUserAgent.isEmpty()
+          ?LanzouCore.uaPresetLabel(activity.sessionUaFileListPreset)
+          :activity.getString(R.string.onboarding_ua_custom);
+      return activity.getString(R.string.onboarding_current_connection,verified,currentUa);
+    }
+    return activity.getString(R.string.onboarding_pending_connection,
+        draft.isEmpty()?activity.getString(R.string.onboarding_pending_origin):draft,
+        selectedUaLabel());
+  }
+
+  private void refreshConnectionSummary(){
+    if(connectionSummaryView!=null)connectionSummaryView.setText(connectionSummary());
+  }
+
+  private void showUaPicker(){
+    String[] labels=new String[UA_PRESETS.length+(customUa.isEmpty()?0:1)];
+    for(int i=0;i<UA_PRESETS.length;i++)labels[i]=LanzouCore.uaPresetLabel(UA_PRESETS[i]);
+    if(!customUa.isEmpty())labels[labels.length-1]=activity.getString(R.string.onboarding_ua_custom);
+    AlertDialog prompt=new AlertDialog.Builder(activity)
+        .setTitle(R.string.onboarding_ua_title)
+        .setItems(labels,(dialog,which)->{
+          if(which<UA_PRESETS.length){
+            uaPreset=LanzouCore.normalizeUserAgentPreset(UA_PRESETS[which]);
+            useCustomUa=false;
+          }else{
+            useCustomUa=true;
+          }
+          if(uaChoice!=null){
+            uaChoice.setText(selectedUaLabel());
+            uaChoice.setContentDescription(activity.getString(
+                R.string.onboarding_ua_accessibility,selectedUaLabel()));
+          }
+          refreshConnectionSummary();
+          if(statusView!=null)statusView.setText("");
+        }).create();
+    activity.showRounded(prompt);
   }
 
   private void renderMarket(LinearLayout body){
@@ -541,6 +634,10 @@ final class OnboardingFlow {
   }
 
   private void verifyBase(boolean random){
+    verifyBase(random,false);
+  }
+
+  private void verifyBase(boolean random,boolean automaticRandom){
     if(busy)return;
     if(baseInput!=null)saveBaseDraft(baseInput.getText().toString());
     String normalized=activity.normalizeLanzouBaseOrigin(baseDraft);
@@ -549,39 +646,57 @@ final class OnboardingFlow {
       setStatus(activity.getString(R.string.onboarding_base_invalid));
       return;
     }
-    String saved=activity.normalizeLanzouBaseOrigin(activity.sessionLanzouBaseOrigin);
-    if(!random&&activity.hasUsableLanzouBaseOriginForStartup()&&canAdvanceFromBase(normalized,saved)){
+    int probePreset=LanzouCore.normalizeUserAgentPreset(uaPreset);
+    String probeCustom=useCustomUa?customUa:"";
+    if(!random&&connectionMatches(normalized,probePreset,probeCustom)){
       moveTo(MARKET);
       return;
     }
+    if(baseInput!=null)baseInput.setError(null);
     int generation=requestGeneration.incrementAndGet();
     startBusy(random?R.string.onboarding_random_progress:R.string.onboarding_verify_progress);
     MainActivity.BaseOriginReference ref=activity.baseOriginProbeReference();
     activity.io.execute(()->{
       try{
         LanzouCore.BaseOriginProbe result=random?
-            activity.core.findUsableBaseOriginRandomized(ref.url,ref.password,null):
-            activity.core.probeBaseOrigin(normalized,ref.url,ref.password);
+            activity.core.findUsableBaseOriginRandomized(ref.url,ref.password,
+                (probe,done,total)->activity.runOnUiThread(()->{
+                  if(!active||step!=BASE||generation!=requestGeneration.get())return;
+                  setStatus(activity.getString(R.string.onboarding_random_candidate,
+                      probe.origin,uaLabel(probe.uaPreset,"")));
+                })):
+            activity.core.probeBaseOrigin(normalized,ref.url,ref.password,probePreset,probeCustom);
         activity.runOnUiThread(()->{
           if(!active||step!=BASE||generation!=requestGeneration.get())return;
           endBusy();
           if(activity.usableBaseOriginProbe(result)){
             String origin=activity.normalizeLanzouBaseOrigin(result.origin);
-            activity.applyVerifiedBaseOrigin(origin);
-            saveBaseDraft(origin);
+            int verifiedPreset=LanzouCore.normalizeUserAgentPreset(result.uaPreset);
+            String verifiedCustom=random?"":probeCustom;
+            applyVerifiedConnection(origin,verifiedPreset,verifiedCustom);
             moveTo(MARKET);
             return;
           }
           if(result!=null&&result.challenge){
             String candidate=activity.normalizeLanzouBaseOrigin(result.origin);
+            if(candidate.isEmpty())candidate=normalized;
+            int candidatePreset=LanzouCore.normalizeUserAgentPreset(result.uaPreset);
+            String candidateCustom=random?"":probeCustom;
             saveBaseDraft(candidate);
+            uaPreset=candidatePreset;
+            customUa=candidateCustom;
+            useCustomUa=!candidateCustom.isEmpty();
             render();
             String challenge=activity.lanzouUrlAtOrigin(ref.url,candidate);
-            activity.launchLanzouVerification(challenge,()->verifyBase(false));
+            activity.launchLanzouVerification(challenge,()->verifyBase(false,false),
+                LanzouCore.connectionUserAgent(candidatePreset,candidateCustom));
             return;
           }
           setStatus(activity.getString(R.string.onboarding_base_unavailable));
           if(baseInput!=null)baseInput.setError(activity.getString(R.string.onboarding_base_unavailable));
+          if(!random&&!automaticRandom&&activity.sessionLanzouTimeoutFailover){
+            verifyBase(true,true);
+          }
         });
       }catch(InterruptedException interrupted){
         Thread.currentThread().interrupt();
@@ -590,10 +705,38 @@ final class OnboardingFlow {
         activity.runOnUiThread(()->{
           if(!active||generation!=requestGeneration.get())return;
           endBusy();
+          if(!random&&!automaticRandom&&activity.sessionLanzouTimeoutFailover){
+            verifyBase(true,true);
+            return;
+          }
           setStatus(activity.getString(R.string.onboarding_base_failed,activity.friendlyError(error)));
         });
       }
     });
+  }
+
+  private boolean connectionMatches(String origin,int preset,String custom){
+    if(!activity.hasUsableLanzouBaseOriginForStartup())return false;
+    String saved=activity.normalizeLanzouBaseOrigin(activity.sessionLanzouBaseOrigin);
+    if(!canAdvanceFromBase(origin,saved))return false;
+    String savedCustom=LanzouCore.normalizeCustomUserAgent(activity.sessionCustomUserAgent);
+    if(!custom.isEmpty())return custom.equals(savedCustom);
+    return savedCustom.isEmpty()
+        &&LanzouCore.normalizeUserAgentPreset(activity.sessionUaFileListPreset)==preset;
+  }
+
+  private void applyVerifiedConnection(String origin,int preset,String custom){
+    String normalized=activity.normalizeLanzouBaseOrigin(origin);
+    if(normalized.isEmpty())return;
+    String normalizedCustom=LanzouCore.normalizeCustomUserAgent(custom);
+    activity.applyVerifiedConnection(normalized,preset,normalizedCustom);
+    uaPreset=LanzouCore.normalizeUserAgentPreset(preset);
+    customUa=normalizedCustom;
+    useCustomUa=!normalizedCustom.isEmpty();
+    saveBaseDraft(normalized);
+    String label=uaLabel(uaPreset,normalizedCustom);
+    activity.safeStartupNotice(activity.getString(
+        R.string.onboarding_connection_verified,normalized,label));
   }
 
   private void addGithubSource(){

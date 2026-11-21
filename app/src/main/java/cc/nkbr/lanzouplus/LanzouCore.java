@@ -84,24 +84,61 @@ final class LanzouCore {
         /** Every suffix below answered a random <prefix>.lanzouX.com probe with a real Lanzou page; parked (a/d/s/z) suffixes are excluded. */
         private static final char[] RANDOM_PREFIX_AUTO_SUFFIXES={'x','p','l','o','m','q','i','k','b','e','g','j','t','u','v','y'};
     private static final char[] RANDOM_PREFIX_USER_COMPAT_SUFFIXES={'w'};
+    private static final ThreadLocal<String> PROBE_EXACT_USER_AGENT=new ThreadLocal<>();
         private static String randomLanzouPrefixOrigin(char suffix){ThreadLocalRandom random=ThreadLocalRandom.current();char[] prefix=new char[5];for(int i=0;i<prefix.length;i++)prefix[i]=(char)('a'+random.nextInt(26));return "https://"+new String(prefix)+".lanzou"+suffix+".com";}
     private static boolean originalLanzouwReference(String referenceUrl){try{DirectLink target=parseFolderTarget(referenceUrl==null?"":referenceUrl.trim());String original=validatedRouteOrigin(target.rootUrl);if(original.isEmpty())return false;return "lanzouw.com".equals(lanzouSiteCookieKey(new URL(original).getHost()));}catch(Exception ignored){return false;}}
         private static List<String> randomPrefixBaseOrigins(String referenceUrl,int desiredCount){LinkedHashSet<String> values=new LinkedHashSet<>();ArrayList<Character> suffixes=new ArrayList<>();for(char suffix:RANDOM_PREFIX_AUTO_SUFFIXES)suffixes.add(suffix);if(originalLanzouwReference(referenceUrl))for(char suffix:RANDOM_PREFIX_USER_COMPAT_SUFFIXES)suffixes.add(suffix);Collections.shuffle(suffixes);int desired=Math.max(1,Math.max(desiredCount,suffixes.size())),attempts=Math.max(desired*4,suffixes.size()*3);for(int i=0;values.size()<desired&&i<attempts;i++){char suffix=suffixes.get(i%suffixes.size());values.add(randomLanzouPrefixOrigin(suffix));}return new ArrayList<>(values);}
+    private static List<BaseOriginProbeCandidate> randomizedBaseOriginCandidates(String referenceUrl,int desiredCount){
+      return randomizedBaseOriginCandidates(referenceUrl,desiredCount,"",-1);
+    }
+    /**
+     * Keeps the existing random-link pool size. The two stable mirrors and the legal reference origin
+     * always lead the first batch; the remaining slots stay random and every origin gets a random UA.
+     */
+    private static List<BaseOriginProbeCandidate> randomizedBaseOriginCandidates(String referenceUrl,int desiredCount,String excludedOrigin,int excludedPreset){
+      List<String> randomized=randomPrefixBaseOrigins(referenceUrl,Math.max(8,desiredCount));
+      int total=Math.max(12,randomized.size()),knownTarget=Math.min(4,Math.max(1,total/4));
+      LinkedHashSet<String> origins=new LinkedHashSet<>();
+      addProbeOrigin(origins,"https://www.lanzoux.com");
+      addProbeOrigin(origins,"https://www.lanzouw.com");
+      addProbeOrigin(origins,referenceUrl);
+      List<String> known=new ArrayList<>(Arrays.asList(LANZOU_BASE_ORIGINS));
+      Collections.shuffle(known);
+      for(String origin:known){if(origins.size()>=knownTarget)break;addProbeOrigin(origins,origin);}
+      for(String origin:randomized){if(origins.size()>=total)break;addProbeOrigin(origins,origin);}
+      List<Integer> presets=new ArrayList<>(Arrays.asList(UA_PRESET_MOBILE_CHROME,UA_PRESET_DESKTOP_CHROME,UA_PRESET_DESKTOP_EDGE,UA_PRESET_MOBILE_HUAWEI,UA_PRESET_MOBILE_FIREFOX));
+      Collections.shuffle(presets);
+      String excluded=validatedRouteOrigin(excludedOrigin);
+      boolean hasExcludedPreset=excludedPreset>=UA_PRESET_MOBILE_CHROME&&excludedPreset<=UA_PRESET_MOBILE_FIREFOX;
+      List<BaseOriginProbeCandidate> out=new ArrayList<>(origins.size());
+      int slot=0;
+      for(String origin:origins){
+        int index=slot++%presets.size(),preset=presets.get(index);
+        if(!excluded.isEmpty()&&origin.equals(excluded)&&hasExcludedPreset&&preset==excludedPreset)preset=presets.get((index+1)%presets.size());
+        out.add(new BaseOriginProbeCandidate(origin,preset));
+      }
+      return out;
+    }
+    private static void addProbeOrigin(LinkedHashSet<String> origins,String raw){String origin=validatedRouteOrigin(raw);if(!origin.isEmpty())origins.add(origin);}
     List<BaseOriginProbe> probeBaseOrigins(String referenceUrl,String referencePassword,BaseOriginProbeProgress progress)throws InterruptedException{
     String[] origins=baseOrigins();if(origins.length==0)return Collections.emptyList();int workers=adaptiveSourceWorkers(0,origins.length);ExecutorCompletionService<BaseOriginProbe> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);Map<String,BaseOriginProbe> values=new HashMap<>();List<Future<BaseOriginProbe>> futures=new ArrayList<>(origins.length);int next=0,running=0,done=0;try{while(next<origins.length&&running<workers){String origin=origins[next++];futures.add(completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword)));running++;}while(running>0){Future<BaseOriginProbe> future=completed.take();running--;done++;try{BaseOriginProbe result=future.get();values.put(result.origin,result);if(progress!=null)progress.onResult(result,done,origins.length);}catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}if(next<origins.length){String origin=origins[next++];futures.add(completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword)));running++;}}}finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
     List<BaseOriginProbe> ordered=new ArrayList<>(origins.length);for(String origin:origins){BaseOriginProbe result=values.get(origin);if(result!=null)ordered.add(result);}return ordered;
   }
         BaseOriginProbe findUsableBaseOriginRandomized(String referenceUrl,String referencePassword,BaseOriginProbeProgress progress)throws InterruptedException{
+      return findUsableBaseOriginRandomized(referenceUrl,referencePassword,progress,"",-1);
+    }
+        BaseOriginProbe findUsableBaseOriginRandomized(String referenceUrl,String referencePassword,BaseOriginProbeProgress progress,String excludedOrigin,int excludedPreset)throws InterruptedException{
       probeTrace("search start ref="+referenceUrl);
-            List<String> origins=new ArrayList<>(randomPrefixBaseOrigins(referenceUrl,Math.max(1,adaptiveSourceWorkers(0,LANZOU_BASE_ORIGINS.length))));if(origins.isEmpty())return null;
-      int workers=adaptiveSourceWorkers(0,origins.size());
+      String normalizedExcludedOrigin=validatedRouteOrigin(excludedOrigin);
+            List<BaseOriginProbeCandidate> candidates=randomizedBaseOriginCandidates(referenceUrl,Math.max(1,adaptiveSourceWorkers(0,LANZOU_BASE_ORIGINS.length)),excludedOrigin,excludedPreset);if(candidates.isEmpty())return null;
+      int workers=adaptiveSourceWorkers(0,candidates.size());
       ExecutorCompletionService<BaseOriginProbe> completed=new ExecutorCompletionService<>(SOURCE_UA_POOL);
-      List<Future<BaseOriginProbe>> futures=new ArrayList<>(origins.size());
+      List<Future<BaseOriginProbe>> futures=new ArrayList<>(candidates.size());
       List<BaseOriginProbe> usable=new ArrayList<>();BaseOriginProbe challenge=null;int next=0,running=0,done=0;
             long selectionWindowMillis=Math.max(160L,Math.min(700L,STARTUP_BASE_ORIGIN_TIMEOUT_MS/Math.max(8L,(long)workers*2L)));
       long selectionWindowNanos=TimeUnit.MILLISECONDS.toNanos(selectionWindowMillis),selectionDeadline=0L;
       try{
-        while(next<origins.size()&&running<workers){String origin=origins.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword));futures.add(f);running++;}
+        while(next<candidates.size()&&running<workers){BaseOriginProbeCandidate candidate=candidates.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(candidate.origin,referenceUrl,referencePassword,candidate.uaPreset,""));futures.add(f);running++;}
         while(running>0){
           Future<BaseOriginProbe> future;
           if(usable.isEmpty()){future=completed.take();}
@@ -113,28 +150,15 @@ final class LanzouCore {
           running--;done++;
           try{
             BaseOriginProbe result=future.get();
-            if(progress!=null)progress.onResult(result,done,origins.size());
-            if(result.available&&(!result.referenceTested||result.referenceReachable)){usable.add(result);if(selectionDeadline==0L)selectionDeadline=System.nanoTime()+selectionWindowNanos;}
+            if(progress!=null)progress.onResult(result,done,candidates.size());
+            boolean excludedCombination=!normalizedExcludedOrigin.isEmpty()&&excludedPreset>=UA_PRESET_MOBILE_CHROME&&excludedPreset<=UA_PRESET_MOBILE_FIREFOX&&result.uaPreset==excludedPreset&&normalizedExcludedOrigin.equals(validatedRouteOrigin(result.origin));
+            if(result.available&&(!result.referenceTested||result.referenceReachable)&&!excludedCombination){usable.add(result);if(selectionDeadline==0L)selectionDeadline=System.nanoTime()+selectionWindowNanos;}
             else if(challenge==null&&result.challenge)challenge=result;
           }catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}
-          if(next<origins.size()){String origin=origins.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword));futures.add(f);running++;}
+          if(next<candidates.size()){BaseOriginProbeCandidate candidate=candidates.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(candidate.origin,referenceUrl,referencePassword,candidate.uaPreset,""));futures.add(f);running++;}
           if(!usable.isEmpty()&&System.nanoTime()>=selectionDeadline)break;
         }
-        if(!usable.isEmpty()){
-          BaseOriginProbe selected=usable.get(ThreadLocalRandom.current().nextInt(usable.size()));
-          probeTrace("random selected="+selected.origin+" usableCandidates="+usable.size());
-          return selected;
-        }
-        while(running>0){
-          Future<BaseOriginProbe> future=completed.take();running--;done++;
-          try{
-            BaseOriginProbe result=future.get();
-            if(progress!=null)progress.onResult(result,done,origins.size());
-            if(result.available&&(!result.referenceTested||result.referenceReachable)){probeTrace("random late selected="+result.origin);return result;}
-            if(challenge==null&&result.challenge)challenge=result;
-          }catch(ExecutionException error){Throwable cause=error.getCause();if(cause instanceof InterruptedException)throw(InterruptedException)cause;}
-          if(next<origins.size()){String origin=origins.get(next++);Future<BaseOriginProbe> f=completed.submit(()->probeBaseOrigin(origin,referenceUrl,referencePassword));futures.add(f);running++;}
-        }
+        if(!usable.isEmpty()){BaseOriginProbe selected=usable.get(ThreadLocalRandom.current().nextInt(usable.size()));probeTrace("random selected="+selected.origin+" uaPreset="+selected.uaPreset+" usableCandidates="+usable.size());return selected;}
         probeTrace("final="+(challenge==null?"null":("origin="+challenge.origin+" available="+challenge.available+" challenge="+challenge.challenge+" refReachable="+challenge.referenceReachable)));return challenge;
       }finally{for(Future<?> future:futures)if(!future.isDone())future.cancel(true);}
     }
@@ -143,27 +167,47 @@ final class LanzouCore {
     String selected=validatedRouteOrigin(origin);
     if(selected.isEmpty())return new BaseOriginProbe("",0L,false,false,false,false);
     String target=selected+"/",referenceTarget=baseOriginTarget(selected,referenceUrl);
-    boolean referenceTested=!referenceTarget.equals(target),challenged=false;
+    boolean referenceRequested=referenceUrl!=null&&!referenceUrl.trim().isEmpty(),referenceTested=referenceRequested,challenged=false;
     SourceProfile profile=sourceProfile(referenceTested?referenceTarget:target);
     for(byte ua:learnedFirstUaCandidates(UA_SCOPE_FILE_LIST,profile.directoryUa)){
-      try{
-        checkDeadline(deadline);
-        boolean referenceReachable;
-        if(referenceTested){
-          try{referenceReachable=probeBaseOriginReference(selected,referenceTarget,referencePassword,deadline,ua,profile);}
-          catch(ShareCancelledException|PageCapabilityException deadReference){
-            // A dead or unparsable reference share says nothing about the line itself; fall back to the host home page.
-            referenceReachable=probeBaseOriginHome(selected,target,deadline,ua);
-          }
-        }else referenceReachable=probeBaseOriginHome(selected,target,deadline,ua);
-        if(referenceReachable)return new BaseOriginProbe(selected,elapsedMillis(started),true,false,referenceTested,true);
-      }catch(InterruptedException interrupted){throw interrupted;}
-      catch(Exception error){
-        challenged|=userVerificationRequired(error)!=null;
-        try{checkDeadline(deadline);}catch(SocketTimeoutException timeout){break;}
-      }
+      BaseOriginProbe result=probeBaseOriginRequest(selected,target,referenceTarget,referencePassword,referenceRequested,ua,userAgent(ua),-1,started,deadline);
+      if(result.available)return new BaseOriginProbe(result.origin,result.latencyMillis,true,false,result.referenceTested,true);
+      challenged|=result.challenge;
     }
     return new BaseOriginProbe(selected,elapsedMillis(started),false,challenged,referenceTested,false);
+  }
+  /**
+   * Strict probe used by randomized origin selection and verification-window diagnostics. The exact
+   * UA remains thread-local for the whole request chain, so concurrent probes cannot leak a preset.
+   * A supplied share reference is never replaced by the origin home page.
+   */
+  BaseOriginProbe probeBaseOrigin(String origin,String referenceUrl,String referencePassword,int uaPreset,String customUa)throws InterruptedException{
+    long started=System.nanoTime(),deadline=started+TimeUnit.MILLISECONDS.toNanos(STARTUP_BASE_ORIGIN_TIMEOUT_MS);
+    int normalizedPreset=normalizeUserAgentPreset(uaPreset);
+    String selected=validatedRouteOrigin(origin);
+    if(selected.isEmpty())return new BaseOriginProbe("",0L,false,false,false,false,normalizedPreset);
+    String target=selected+"/",referenceTarget=baseOriginTarget(selected,referenceUrl);
+    boolean referenceRequested=referenceUrl!=null&&!referenceUrl.trim().isEmpty();
+    return probeBaseOriginRequest(selected,target,referenceTarget,referencePassword,referenceRequested,uaSlotForPreset(normalizedPreset),connectionUserAgent(normalizedPreset,customUa),normalizedPreset,started,deadline);
+  }
+  private BaseOriginProbe probeBaseOriginRequest(String selected,String target,String referenceTarget,String referencePassword,boolean referenceRequested,byte ua,String exactUserAgent,int uaPreset,long started,long deadline)throws InterruptedException{
+    boolean referenceTested=referenceRequested,challenged=false;
+    SourceProfile profile=sourceProfile(referenceTested?referenceTarget:target);
+    String previous=PROBE_EXACT_USER_AGENT.get();
+    int oldScope=pushUaScope(UA_SCOPE_FILE_LIST);
+    PROBE_EXACT_USER_AGENT.set(exactUserAgent);
+    try{
+      checkDeadline(deadline);
+      if(referenceTested&&referenceTarget.equals(target))return new BaseOriginProbe(selected,elapsedMillis(started),false,false,true,false,uaPreset);
+      if(referenceTested){
+        PageResult result=probeBaseOriginReference(selected,referenceTarget,referencePassword,deadline,ua,profile);
+        String resolved=result==null?"":validatedRouteOrigin(result.routeOrigin);
+        if(!resolved.isEmpty())return new BaseOriginProbe(resolved,elapsedMillis(started),true,false,true,true,uaPreset);
+      }else if(probeBaseOriginHome(selected,target,deadline,ua))return new BaseOriginProbe(selected,elapsedMillis(started),true,false,false,true,uaPreset);
+    }catch(InterruptedException interrupted){throw interrupted;}
+    catch(Exception error){challenged=userVerificationRequired(error)!=null;}
+    finally{restoreUaScope(oldScope);if(previous==null)PROBE_EXACT_USER_AGENT.remove();else PROBE_EXACT_USER_AGENT.set(previous);}
+    return new BaseOriginProbe(selected,elapsedMillis(started),false,challenged,referenceTested,false,uaPreset);
   }
   /**
    * Origin probing without a share reference used to demand a share template from the host home page, which every
@@ -172,7 +216,7 @@ final class LanzouCore {
    */
   private boolean probeBaseOriginHome(String origin,String target,long deadline,byte ua)throws Exception{
     try(NetworkGovernor.Lease ignored=NETWORK_GOVERNOR.acquireForeground(()->closed.get()||Thread.currentThread().isInterrupted())){
-      DirectLink page=getGuarded(target,deadline,userAgent(ua));requireLanzouPage(page.url);requireReachableBaseOrigin(page);return true;
+      DirectLink page=getGuarded(target,deadline,requestUserAgent(target,userAgent(ua)));requireLanzouPage(page.url);requireReachableBaseOrigin(page);return true;
     }
   }
   private static void requireReachableBaseOrigin(DirectLink page)throws IOException{
@@ -185,16 +229,16 @@ final class LanzouCore {
     if(lower.contains("bakstotre.com/assets")||lower.contains("images.bakstotre.com")||lower.contains("woozooo")||lower.contains("蓝奏"))return;
     throw new PageCapabilityException("蓝奏线路未返回蓝奏页面",false);
   }
-  private boolean probeBaseOriginReference(String origin,String referenceTarget,String referencePassword,long deadline,byte ua,SourceProfile profile)throws Exception{
+  private PageResult probeBaseOriginReference(String origin,String referenceTarget,String referencePassword,long deadline,byte ua,SourceProfile profile)throws Exception{
     RouteCandidate route=new RouteCandidate(referenceTarget,origin,ua,UA_SCOPE_FILE_LIST);
     PageResult result=browsePageRouteWithRecovery(referenceTarget,referencePassword==null?"":referencePassword,true,1,deadline,true,profile,route);
     probeTrace("refPage origin="+origin+" ua="+ua+" null="+(result==null)+" usable="+(result!=null&&result.usable)+" unauthorized="+(result!=null&&result.unauthorized)+" empty="+(result!=null&&result.definitiveEmpty)+" items="+(result==null||result.folder==null?-1:result.folder.items.size())+" title="+(result==null||result.folder==null?"":result.folder.title));
-    if(result==null||!result.usable&&!result.definitiveEmpty)return false;
-    profile.observeRoute(UA_SCOPE_FILE_LIST,result.routeOrigin,result.ua);return true;
+    if(result==null||!result.usable&&!result.definitiveEmpty)return null;
+    if(PROBE_EXACT_USER_AGENT.get()==null)profile.observeRoute(UA_SCOPE_FILE_LIST,result.routeOrigin,result.ua);return result;
   }
   static final java.util.List<String> PROBE_TRACE=new java.util.concurrent.CopyOnWriteArrayList<>();
   static String PROBE_TRACE_PATH="";
-  private static void probeTrace(String message){String line=System.currentTimeMillis()+": "+message;PROBE_TRACE.add(line);android.util.Log.e("LZPROBE",line);if(!PROBE_TRACE_PATH.isEmpty()){try(java.io.FileWriter writer=new java.io.FileWriter(PROBE_TRACE_PATH,true)){writer.write(line+"\n");writer.close();}catch(Throwable ignored){}}}
+  private static void probeTrace(String message){if(!BuildConfig.DEBUG)return;String line=System.currentTimeMillis()+": "+message;PROBE_TRACE.add(line);android.util.Log.e("LZPROBE",line);if(!PROBE_TRACE_PATH.isEmpty()){try(java.io.FileWriter writer=new java.io.FileWriter(PROBE_TRACE_PATH,true)){writer.write(line+"\n");writer.close();}catch(Throwable ignored){}}}
   private static long elapsedMillis(long started){return Math.max(0L,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started));}
   private static String baseOriginTarget(String origin,String referenceUrl){try{String root=parseFolderTarget(referenceUrl==null?"":referenceUrl.trim()).rootUrl;if(root.isEmpty())return origin+"/";URL sample=new URL(root);String sampleHost=completeLanzouHostAlias(sample.getHost());if(sampleHost.isEmpty()||!LANZOU_HOST.matcher(sampleHost).matches())return origin+"/";return new URL(new URL(origin+"/"),sample.getFile()).toString();}catch(Exception ignored){return origin+"/";}}
   static String completeLanzouHostAlias(String rawHost){String host=rawHost==null?"":rawHost.trim().toLowerCase(Locale.ROOT);while(host.endsWith("."))host=host.substring(0,host.length()-1);if(host.isEmpty())return"";if(LANZOU_HOST.matcher(host).matches())return host;if(LANZOU_HOST_WITHOUT_COM.matcher(host).matches())return host+".com";return host;}
@@ -606,7 +650,8 @@ final class LanzouCore {
    */
   void beginNewGenerationForTest(){long next=indexGeneration.incrementAndGet();indexCancelled.set(false);indexCursor=null;if(next==0)indexGeneration.incrementAndGet();}
   static final class IndexSnapshot{final int done,total,failed;final String source;final long updatedAt;IndexSnapshot(int done,int total,String source,long updatedAt){this(done,total,source,updatedAt,0);}IndexSnapshot(int done,int total,String source,long updatedAt,int failed){this.done=done;this.total=total;this.failed=Math.max(0,failed);this.source=source==null?"":source;this.updatedAt=updatedAt;}boolean complete(){return done>=total;}}
-  static final class BaseOriginProbe{final String origin;final long latencyMillis;final boolean available,challenge,referenceTested,referenceReachable;BaseOriginProbe(String origin,long latencyMillis,boolean available,boolean challenge,boolean referenceTested,boolean referenceReachable){this.origin=origin;this.latencyMillis=latencyMillis;this.available=available;this.challenge=challenge;this.referenceTested=referenceTested;this.referenceReachable=referenceReachable;}}
+  private static final class BaseOriginProbeCandidate{final String origin;final int uaPreset;BaseOriginProbeCandidate(String origin,int uaPreset){this.origin=origin;this.uaPreset=uaPreset;}}
+  static final class BaseOriginProbe{final String origin;final long latencyMillis;final boolean available,challenge,referenceTested,referenceReachable;final int uaPreset;BaseOriginProbe(String origin,long latencyMillis,boolean available,boolean challenge,boolean referenceTested,boolean referenceReachable){this(origin,latencyMillis,available,challenge,referenceTested,referenceReachable,-1);}BaseOriginProbe(String origin,long latencyMillis,boolean available,boolean challenge,boolean referenceTested,boolean referenceReachable,int uaPreset){this.origin=origin;this.latencyMillis=latencyMillis;this.available=available;this.challenge=challenge;this.referenceTested=referenceTested;this.referenceReachable=referenceReachable;this.uaPreset=uaPreset;}}
   interface BaseOriginProbeProgress{void onResult(BaseOriginProbe result,int done,int total);}
   private static final class BatchSource {final int line;String url,password,error;Models.Source source;boolean added,duplicate,child;BatchSource(int line){this.line=line;}}
   private static final class TextMatch{final int start,end;final String value;TextMatch(int start,int end,String value){this.start=start;this.end=end;this.value=value;}}
@@ -1558,6 +1603,7 @@ final class LanzouCore {
   private static int configuredUserAgentPreset(int scope){if(scope==UA_SCOPE_DIRECTORY_SEARCH)return configuredDirectorySearchUaPreset;if(scope==UA_SCOPE_API_SEARCH)return configuredApiSearchUaPreset;if(scope==UA_SCOPE_DIRECT)return configuredDirectUaPreset;return configuredFileListUaPreset;}
   private static int currentUaScope(){Integer scope=UA_SCOPE.get();return scope==null?UA_SCOPE_FILE_LIST:scope;}
   private static byte uaSlotForPreset(int preset){switch(normalizeUserAgentPreset(preset)){case UA_PRESET_DESKTOP_CHROME:return UA_DESKTOP_CHROME;case UA_PRESET_DESKTOP_EDGE:return UA_DESKTOP_EDGE;case UA_PRESET_MOBILE_HUAWEI:return UA_MOBILE_HUAWEI;case UA_PRESET_MOBILE_FIREFOX:return UA_MOBILE_FIREFOX;default:return UA_MOBILE_CHROME;}}
+  static String connectionUserAgent(int preset,String customUa){String custom=normalizeCustomUserAgent(customUa);if(!custom.isEmpty())return custom;return userAgent(uaSlotForPreset(preset));}
   private static boolean uaIsDesktop(byte ua){if(ua==UA_CUSTOM){String value=configuredCustomUserAgent==null?"":configuredCustomUserAgent.toLowerCase(Locale.ROOT);return !value.contains("android")&&!value.contains("mobile")&&(value.contains("windows")||value.contains("macintosh")||value.contains("x11")||value.contains("linux x86_64"));}return ua==UA_DESKTOP_CHROME||ua==UA_DESKTOP_EDGE||ua==UA_DESKTOP_RENDER;}
     static String verificationUserAgent(){return configuredUserAgent(UA_SCOPE_FILE_LIST);}
   private static String userAgent(byte ua){switch(ua){case UA_DESKTOP_CHROME:return DESKTOP_SEARCH_UA;case UA_DESKTOP_RENDER:return DESKTOP_RENDER_UA;case UA_DESKTOP_EDGE:return DESKTOP_EDGE_UA;case UA_MOBILE_HUAWEI:return MOBILE_HUAWEI_UA;case UA_MOBILE_COMPAT:return MOBILE_COMPAT_UA;case UA_MOBILE_FIREFOX:return MOBILE_FIREFOX_UA;case UA_CUSTOM:return configuredCustomUserAgent==null||configuredCustomUserAgent.isEmpty()?ANDROID_UA:configuredCustomUserAgent;default:return ANDROID_UA;}}
@@ -1617,9 +1663,9 @@ final class LanzouCore {
         private static void markChallengedOrigin(String origin){String value=origin==null?"":origin.trim();if(!value.isEmpty()){CHALLENGED_ORIGINS.put(value,System.currentTimeMillis());for(Map.Entry<Integer,SharedRouteHint> entry:SHARED_ROUTE_HINTS.entrySet()){SharedRouteHint hint=entry.getValue();if(hint!=null&&value.equals(hint.origin)&&SHARED_ROUTE_HINTS.remove(entry.getKey(),hint))clearPersistedSharedRoute(entry.getKey());}}}
     private static boolean challengedOrigin(String origin){Long at=CHALLENGED_ORIGINS.get(origin);if(at==null)return false;if(System.currentTimeMillis()-at>CHALLENGED_ORIGIN_TTL_MS){CHALLENGED_ORIGINS.remove(origin,at);return false;}return true;}
         private static void rememberSharedRoute(int scope,String origin,byte ua){rememberSharedRoute(scope,origin,ua,Long.MAX_VALUE);}
-    private static synchronized void rememberSharedRoute(int scope,String origin,byte ua,long latencyMillis){if(scope==UA_SCOPE_DIRECT||origin==null||origin.isEmpty()||ua==UA_UNKNOWN||challengedOrigin(origin))return;try{if("lanzouw.com".equals(lanzouSiteCookieKey(new URL(origin).getHost())))return;}catch(Exception ignored){return;}long sample=latencyMillis<=0L?1L:latencyMillis;SharedRouteHint previous=SHARED_ROUTE_HINTS.get(scope),next=previous;if(previous==null)next=new SharedRouteHint(origin,ua,sample);else if(previous.origin.equals(origin)){long latency=sample==Long.MAX_VALUE&&previous.measured()?previous.latencyMillis:previous.measured()&&sample<Long.MAX_VALUE?Math.max(1L,(previous.latencyMillis*3L+sample)/4L):sample;next=new SharedRouteHint(origin,ua,latency);}else if(sample<Long.MAX_VALUE&&(!previous.measured()||sample<previous.latencyMillis))next=new SharedRouteHint(origin,ua,sample);else if(!previous.measured()&&sample==Long.MAX_VALUE)return;else return;SHARED_ROUTE_HINTS.put(scope,next);SHARED_ROUTE_HINTS_LOADED.add(scope);Context context=appContext;if(context!=null){android.content.SharedPreferences.Editor editor=context.getSharedPreferences(ROUTE_HINT_PREFS,Context.MODE_PRIVATE).edit().putString("origin_"+scope,next.origin).putInt("ua_"+scope,next.ua);if(next.measured())editor.putLong("latency_"+scope,next.latencyMillis);else editor.remove("latency_"+scope);editor.apply();}}
+    private static synchronized void rememberSharedRoute(int scope,String origin,byte ua,long latencyMillis){if(PROBE_EXACT_USER_AGENT.get()!=null||scope==UA_SCOPE_DIRECT||origin==null||origin.isEmpty()||ua==UA_UNKNOWN||challengedOrigin(origin))return;try{if("lanzouw.com".equals(lanzouSiteCookieKey(new URL(origin).getHost())))return;}catch(Exception ignored){return;}long sample=latencyMillis<=0L?1L:latencyMillis;SharedRouteHint previous=SHARED_ROUTE_HINTS.get(scope),next=previous;if(previous==null)next=new SharedRouteHint(origin,ua,sample);else if(previous.origin.equals(origin)){long latency=sample==Long.MAX_VALUE&&previous.measured()?previous.latencyMillis:previous.measured()&&sample<Long.MAX_VALUE?Math.max(1L,(previous.latencyMillis*3L+sample)/4L):sample;next=new SharedRouteHint(origin,ua,latency);}else if(sample<Long.MAX_VALUE&&(!previous.measured()||sample<previous.latencyMillis))next=new SharedRouteHint(origin,ua,sample);else if(!previous.measured()&&sample==Long.MAX_VALUE)return;else return;SHARED_ROUTE_HINTS.put(scope,next);SHARED_ROUTE_HINTS_LOADED.add(scope);Context context=appContext;if(context!=null){android.content.SharedPreferences.Editor editor=context.getSharedPreferences(ROUTE_HINT_PREFS,Context.MODE_PRIVATE).edit().putString("origin_"+scope,next.origin).putInt("ua_"+scope,next.ua);if(next.measured())editor.putLong("latency_"+scope,next.latencyMillis);else editor.remove("latency_"+scope);editor.apply();}}
     private static SharedRouteHint sharedRouteHint(int scope,String referenceUrl){if(scope==UA_SCOPE_DIRECT||originalLanzouwReference(referenceUrl)||!validatedRouteOrigin(configuredPreferredBaseOrigin).isEmpty())return null;SharedRouteHint hint=SHARED_ROUTE_HINTS.get(scope);if(hint==null&&SHARED_ROUTE_HINTS_LOADED.add(scope)){Context context=appContext;if(context!=null){android.content.SharedPreferences prefs=context.getSharedPreferences(ROUTE_HINT_PREFS,Context.MODE_PRIVATE);String origin=validatedRouteOrigin(prefs.getString("origin_"+scope,""));byte ua=(byte)prefs.getInt("ua_"+scope,UA_UNKNOWN);long latency=prefs.getLong("latency_"+scope,Long.MAX_VALUE);if(!origin.isEmpty()&&ua!=UA_UNKNOWN&&!challengedOrigin(origin)){try{if(!"lanzouw.com".equals(lanzouSiteCookieKey(new URL(origin).getHost()))){hint=new SharedRouteHint(origin,ua,latency);SHARED_ROUTE_HINTS.put(scope,hint);}}catch(Exception ignored){}}}}if(hint==null)return null;if(challengedOrigin(hint.origin)){if(SHARED_ROUTE_HINTS.remove(scope,hint))clearPersistedSharedRoute(scope);return null;}return hint.measured()?hint:null;}
-    private static void invalidateSharedRoute(int scope,String origin,byte ua){SharedRouteHint hint=SHARED_ROUTE_HINTS.get(scope);if(hint!=null&&hint.ua==ua&&hint.origin.equals(origin)&&SHARED_ROUTE_HINTS.remove(scope,hint))clearPersistedSharedRoute(scope);}
+    private static void invalidateSharedRoute(int scope,String origin,byte ua){if(PROBE_EXACT_USER_AGENT.get()!=null)return;SharedRouteHint hint=SHARED_ROUTE_HINTS.get(scope);if(hint!=null&&hint.ua==ua&&hint.origin.equals(origin)&&SHARED_ROUTE_HINTS.remove(scope,hint))clearPersistedSharedRoute(scope);}
   private <T> RouteOutcome<T> attemptRoute(RouteCandidate route,RouteAttempt<T> attempt,ConnectionTracker tracker){
     ConnectionTracker previous=SEARCH_CONNECTIONS.get();int oldScope=pushUaScope(route.scope);
     if(tracker==null)SEARCH_CONNECTIONS.remove();else SEARCH_CONNECTIONS.set(tracker);
@@ -2581,7 +2627,7 @@ final class LanzouCore {
     String endpoint=passwordEndpoint(session.page);if(endpoint.isEmpty())throw new DirectPasswordException("目录需要密码但未找到授权接口");
     Map<String,String> form=new LinkedHashMap<>();form.put("pwd",pwd);for(Map.Entry<String,String> entry:passwordUnlockFields(session.page.html).entrySet())form.putIfAbsent(entry.getKey(),entry.getValue());
     JSONObject data=postPasswordUnlock(session,endpoint,form,deadline,profile,ua);String redirect=passwordRedirect(data);if(redirect.isEmpty())throw new DirectPasswordException(firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"),"目录密码验证失败"));
-    String routedRoot=new URL(new URL(session.page.url),redirect).toString();invalidateBrowseSessions(session.target.rootUrl,pwd);RouteCandidate route=new RouteCandidate(routedRoot,origin(routedRoot),ua,currentUaScope());DirectLink unlocked=browseSession(session.target.rootUrl,pwd,deadline,true,route);sourceProfile(session.target.rootUrl).observeRoute(currentUaScope(),route.origin,ua);unlocked.passwordUnlocked=true;unlocked.authorized=false;return unlocked;
+    String routedRoot=new URL(new URL(session.page.url),redirect).toString();invalidateBrowseSessions(session.target.rootUrl,pwd);RouteCandidate route=new RouteCandidate(routedRoot,origin(routedRoot),ua,currentUaScope());DirectLink unlocked=browseSession(session.target.rootUrl,pwd,deadline,true,route);if(PROBE_EXACT_USER_AGENT.get()==null)sourceProfile(session.target.rootUrl).observeRoute(currentUaScope(),route.origin,ua);unlocked.passwordUnlocked=true;unlocked.authorized=false;return unlocked;
   }
 
   private static JSONObject postPasswordUnlock(DirectLink session,String endpoint,Map<String,String> form,long deadline,SourceProfile profile,byte ua)throws Exception{
@@ -2633,6 +2679,13 @@ final class LanzouCore {
     return guardedSharePage(url,deadline,ua,"");
   }
   private static DirectLink guardedSharePage(String url,long deadline,byte ua,String cookie)throws Exception{
+    String exact=PROBE_EXACT_USER_AGENT.get();
+    if(exact!=null&&!exact.isEmpty()){
+      DirectLink page=getGuarded(url,deadline,exact,cookie);
+      requireLanzouPage(page.url);
+      requireActiveShare(page,url);
+      return page;
+    }
     Exception verdict=null;
     byte[] rotation=currentUaScope()==UA_SCOPE_FILE_LIST?listingUaCandidates(currentUaScope(),ua):uaRotationCandidates(ua);
     for(byte candidate:rotation){
@@ -2687,16 +2740,16 @@ final class LanzouCore {
 
   private DirectLink browseSessionUnshared(String url,String password,long deadline,boolean force,RouteCandidate route)throws Exception{
 
-    DirectLink target=parseFolderTarget(url),routed=parseFolderTarget(route.url);String key=routed.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+route.ua;long now=System.currentTimeMillis();pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);
-    if(!force&&hit!=null&&now-hit.createdAt<SESSION_TTL_MS)return hit;if(hit!=null)browseSessions.remove(key,hit);
-        long routeStarted=System.nanoTime();DirectLink session=new DirectLink();session.target=target;session.page=guardedSharePage(routed.rootUrl,deadline,route.ua);session.ua=pageUa(session.page,route.ua);session.routeOrigin=origin(session.page.url);SourceProfile learned=sourceProfile(url);observePageCapabilities(learned,session.page,session.ua);session.template=pageTemplate(session.page.html);learned.observeTemplate(session.ua,session.template);session.createdAt=now;
+    DirectLink target=parseFolderTarget(url),routed=parseFolderTarget(route.url);String key=routed.rootUrl+'\n'+password+'\n'+target.folderId+'\n'+route.ua;long now=System.currentTimeMillis();boolean exactProbe=PROBE_EXACT_USER_AGENT.get()!=null;
+    if(!exactProbe){pruneBrowseSessions(now);DirectLink hit=browseSessions.get(key);if(!force&&hit!=null&&now-hit.createdAt<SESSION_TTL_MS)return hit;if(hit!=null)browseSessions.remove(key,hit);}
+        long routeStarted=System.nanoTime();DirectLink session=new DirectLink();session.target=target;session.page=guardedSharePage(routed.rootUrl,deadline,route.ua);session.ua=pageUa(session.page,route.ua);session.routeOrigin=origin(session.page.url);SourceProfile learned=sourceProfile(url);if(PROBE_EXACT_USER_AGENT.get()==null){observePageCapabilities(learned,session.page,session.ua);learned.observeTemplate(session.ua,pageTemplate(session.page.html));}session.template=pageTemplate(session.page.html);session.createdAt=now;
     if(password.isEmpty()&&requiresSharePassword(session.page.html))throw new DirectPasswordException();
     populateListingRequest(session,url,password,hiddenDirectoryFileId(session.page.html));
     String searchEndpoint=searchEndpoint(session.page),searchSign=searchSign(session.page.html);
     Models.Folder meta=new Models.Folder();meta.url=url;meta.password=password;meta.folderId=target.folderId;meta.title=sharePageTitle(session.page.html);
                 meta.publisher=sharePagePublisher(session.page.html);meta.avatarUrl=sharePageAvatar(session.page);if(!meta.avatarUrl.isEmpty())rememberPublisherAvatar(session.page.url,meta.publisher,meta.avatarUrl);else meta.avatarUrl=cachedPublisherAvatar(session.page.url,meta.publisher);meta.description=sharePageDescription(session.page.html,session.page.url);meta.saveUrl=sharePageSaveUrl(session.page.html);meta.remoteSearch=!searchEndpoint.isEmpty()&&!searchSign.isEmpty();
 
-    if(!target.title.isEmpty())meta.title=target.title;if(!target.description.isEmpty())meta.description=target.description;session.metadata=meta;browseSessions.put(key,session);pruneBrowseSessions(now);if(route.scope!=UA_SCOPE_DIRECTORY_SEARCH&&route.scope!=UA_SCOPE_API_SEARCH)rememberSharedRoute(route.scope,session.routeOrigin,session.ua,elapsedMillis(routeStarted));return session;
+    if(!target.title.isEmpty())meta.title=target.title;if(!target.description.isEmpty())meta.description=target.description;session.metadata=meta;if(!exactProbe){browseSessions.put(key,session);pruneBrowseSessions(now);}if(!exactProbe&&route.scope!=UA_SCOPE_DIRECTORY_SEARCH&&route.scope!=UA_SCOPE_API_SEARCH)rememberSharedRoute(route.scope,session.routeOrigin,session.ua,elapsedMillis(routeStarted));return session;
   }
   /**
    * Build the listing form from what the share page actually declares. In particular, ls/pwd/webfoldersign
@@ -2704,8 +2757,8 @@ final class LanzouCore {
    */
   private static void populateListingRequest(DirectLink session,String logicalUrl,String password,String hiddenFileId)throws Exception{
     String html=session.page==null||session.page.html==null?"":session.page.html;
-    Map<String,String> pageForm=formValues(html);
     String explicitEndpoint=cap(html,"url\\s*:\\s*['\"]([^'\"]*filemoreajax\\.php\\?[^'\"]*)['\"]");
+    Map<String,String> pageForm=formValues(html,explicitEndpoint);
     session.endpoint=sameOriginEndpoint(session.page,explicitEndpoint,"/filemoreajax.php");
     String pageFid=pageForm.getOrDefault("fid",""),pageUid=pageForm.getOrDefault("uid","");
     if(session.endpoint.isEmpty()&&!pageFid.isEmpty())session.endpoint=sameOriginEndpointAny(session.page,"/filemoreajax.php?file="+pageFid);
@@ -2767,10 +2820,18 @@ final class LanzouCore {
 
   private static List<Models.Item> apiFolders(DirectLink session,long deadline,int page,boolean strict,int[] rawCount,SourceProfile profile)throws Exception{
     List<Models.Item> out=new ArrayList<>();try{
-      if(session.folderEndpoint.isEmpty())return out;Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));JSONObject data=postPage(session,session.folderEndpoint,form,deadline,page,profile,"目录子文件夹接口返回异常");int state=data.optInt("zt",-1);if(state==2)return out;JSONArray array=data.optJSONArray("text");if(array==null)return out;if(rawCount!=null)rawCount[0]=array.length();
+      if(session.folderEndpoint.isEmpty())return out;Map<String,String> form=folderRequestFields(session);form.put("pg",String.valueOf(page));JSONObject data=postPage(session,session.folderEndpoint,form,deadline,page,profile,"目录子文件夹接口返回异常");int state=data.optInt("zt",-1);if(state==2)return out;JSONArray array=data.optJSONArray("text");if(array==null)return out;if(rawCount!=null)rawCount[0]=array.length();
       for(int i=0;i<array.length();i++){JSONObject value=array.optJSONObject(i);if(value==null)continue;String id=firstNonEmpty(value.optString("fol_id"),value.optString("folder_id"),value.optString("id"));String title=strip(firstNonEmpty(value.optString("name"),value.optString("folder_name"),value.optString("name_all")));if(id.isEmpty()||id.equals("null")||title.isEmpty())continue;String description=strip(firstNonEmpty(value.optString("folder_des"),value.optString("description"),value.optString("desc"),value.optString("introduce"),value.optString("info")));String size=cleanMetadataCell(firstNonEmpty(value.optString("size"),value.optString("filesize"),value.optString("file_size"),value.optString("size_all")));String time=normalizeTimeCell(firstNonEmpty(value.optString("time"),value.optString("time_all"),value.optString("date"),value.optString("uploadtime"),value.optString("upload_time"),value.optString("update_time")));
         Models.Item item=new Models.Item();item.folder=true;item.folderId=id;item.title=title;item.description=description;item.size=size;item.time=time;item.url=apiFolderUrl(value,session.target.rootUrl,id,title,description);item.shareUrl=item.url;item.iconUrl="https://images.bakstotre.com/assets/images/type/folder.gif";item.source=session.metadata.title;item.password=session.metadata.password;out.add(item);}
     }catch(Exception error){if(strict)throw error;}return out;
+  }
+  private static Map<String,String> folderRequestFields(DirectLink session){
+    Map<String,String> form=new LinkedHashMap<>(session.form);
+    String html=session.page==null||session.page.html==null?"":session.page.html;
+    Map<String,String> own=formValues(html,cap(html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?[^'\"]*)['\"]"));
+    form.putAll(own);
+    if(session.metadata!=null&&!session.metadata.password.isEmpty()&&form.containsKey("pwd"))form.put("pwd",session.metadata.password);
+    return form;
   }
 
   private static JSONObject postListing(DirectLink session,Map<String,String> form,long deadline,int page,SourceProfile profile)throws Exception{return postPage(session,session.endpoint,form,deadline,page,profile,"目录接口返回异常");}
@@ -2781,7 +2842,9 @@ final class LanzouCore {
     JSONObject data=postPageOnce(session,endpoint,form,deadline,page,profile,errorMessage);
     if(data.optInt("zt",-1)==4){
       refreshListingSession(session,deadline,profile);
-      Map<String,String> retryForm=new LinkedHashMap<>(session.form);
+      Map<String,String> retryForm;
+      if(folderRequest){retryForm=new LinkedHashMap<>(form);retryForm.putAll(folderRequestFields(session));}
+      else retryForm=new LinkedHashMap<>(session.form);
       if(form.containsKey("pg"))retryForm.put("pg",form.get("pg"));
       String retryEndpoint=folderRequest?session.folderEndpoint:session.endpoint;
       if(retryEndpoint.isEmpty())throw new IOException("目录刷新后未找到接口");
@@ -2820,7 +2883,7 @@ final class LanzouCore {
     session.routeOrigin=origin(refreshed.url);
     session.createdAt=System.currentTimeMillis();
     populateListingRequest(session,session.target==null?"":session.target.rootUrl,session.metadata==null?"":session.metadata.password,hiddenDirectoryFileId(refreshed.html));
-    profile.observeRoute(currentUaScope(),session.routeOrigin,session.ua);
+    if(PROBE_EXACT_USER_AGENT.get()==null)profile.observeRoute(currentUaScope(),session.routeOrigin,session.ua);
     if(session.endpoint.isEmpty())throw new IOException("目录刷新后未找到接口");
   }
 
@@ -3045,7 +3108,7 @@ final class LanzouCore {
   }
 
   private void prepareSearchReplay(Models.Item folder,int failedPage,BatchBudget budget,BooleanSupplier cancelled)throws Exception{invalidateBrowseSessions(folder.url,folder.password);SourceProfile profile=sourceProfile(folder.url);byte ua=firstCapableUaCandidate(UA_SCOPE_DIRECTORY_SEARCH,profile.directoryUa,profile.directorySeen,profile.directoryAvailable);awaitSearchDelay(profile.interval(ua,failedPage),budget,cancelled);}
-  private void invalidateBrowseSessions(String url,String password){DirectLink target=parseFolderTarget(url);String pwd=password==null?"":password;for(Map.Entry<String,DirectLink> entry:new ArrayList<>(browseSessions.entrySet())){DirectLink session=entry.getValue();if(session==null||session.target==null||session.metadata==null)continue;if(session.target.rootUrl.equals(target.rootUrl)&&session.target.folderId.equals(target.folderId)&&pwd.equals(session.metadata.password))browseSessions.remove(entry.getKey(),session);}}
+  private void invalidateBrowseSessions(String url,String password){if(PROBE_EXACT_USER_AGENT.get()!=null)return;DirectLink target=parseFolderTarget(url);String pwd=password==null?"":password;for(Map.Entry<String,DirectLink> entry:new ArrayList<>(browseSessions.entrySet())){DirectLink session=entry.getValue();if(session==null||session.target==null||session.metadata==null)continue;if(session.target.rootUrl.equals(target.rootUrl)&&session.target.folderId.equals(target.folderId)&&pwd.equals(session.metadata.password))browseSessions.remove(entry.getKey(),session);}}
     private static boolean recoverableBrowseError(Exception error){return !(error instanceof ShareCancelledException)&&!(error instanceof UserVerificationRequiredException)&&(error instanceof RecoverableBrowseException||error instanceof IOException||error instanceof JSONException);}
 
   private static boolean isRecoverableBrowseMessage(String message){String value=message==null?"":message.trim();return value.isEmpty()||value.contains("稍后")||value.contains("重试")||value.contains("操作失败")||value.contains("请求过快")||value.contains("频率")||value.contains("验证");}
@@ -3138,6 +3201,7 @@ final class LanzouCore {
     try{String value=USER_VERIFICATION_AGENTS.get(completeLanzouHostAlias(new URL(rawUrl).getHost()));return value==null?requested:value;}
     catch(java.net.MalformedURLException error){return requested;}
   }
+  private static String requestUserAgent(String rawUrl,String requested){String exact=PROBE_EXACT_USER_AGENT.get();return exact==null||exact.isEmpty()?verifiedUserAgent(rawUrl,requested):exact;}
   static boolean browserUseful(DirectLink page){String html=page==null||page.html==null?"":page.html;if(html.isEmpty()||page.httpStatus>=400)return false;if(isCancelledShareText(html)||isUnavailableShareShell(html)||!page.verificationComplete&&isWafChallengePage(html))return false;return isDirectorySharePage(html)||isSingleFileSharePage(html)||pageTemplate(html)!=TEMPLATE_UNKNOWN;}
   /** JavaScript transfer pages own the hash->XHR->download step; retain their UA and cookie session. */
   @android.annotation.SuppressLint("SetJavaScriptEnabled")
@@ -3197,7 +3261,7 @@ final class LanzouCore {
   private static int browserWaitMillis(long deadline)throws SocketTimeoutException{int remaining=deadline==NO_DEADLINE?(int)METADATA_BROWSE_TIMEOUT_MS:remainingMillis(deadline);return Math.max(1,Math.min(remaining,(int)METADATA_BROWSE_TIMEOUT_MS));}
   private static String browserCacheKey(String url,String userAgent){try{URL u=new URL(url);return origin(u.toString())+'\n'+u.getFile()+(u.getRef()==null?"":"#"+u.getRef())+'\n'+(userAgent==null?"":userAgent);}catch(Exception ignored){return url+'\n'+(userAgent==null?"":userAgent);}}
   private static DirectLink copyPage(DirectLink value){if(value==null)return null;DirectLink out=new DirectLink();out.url=value.url;out.html=value.html;out.cookie=value.cookie;out.createdAt=value.createdAt;out.requestUserAgent=value.requestUserAgent;out.browserRendered=value.browserRendered;out.verificationComplete=value.verificationComplete;out.downloadResponse=value.downloadResponse;out.httpStatus=value.httpStatus;return out;}
-  private static DirectLink cachedBrowserPage(String url,String userAgent){DirectLink cached=BROWSER_PAGE_CACHE.get(browserCacheKey(url,verifiedUserAgent(url,userAgent)));return cached!=null&&System.currentTimeMillis()-cached.createdAt<SESSION_TTL_MS&&verifiedBrowserUseful(cached,false)?copyPage(cached):null;}
+  private static DirectLink cachedBrowserPage(String url,String userAgent){DirectLink cached=BROWSER_PAGE_CACHE.get(browserCacheKey(url,requestUserAgent(url,userAgent)));return cached!=null&&System.currentTimeMillis()-cached.createdAt<SESSION_TTL_MS&&verifiedBrowserUseful(cached,false)?copyPage(cached):null;}
   private static DirectLink renderedPageIfUseful(DirectLink nativePage,String requestUrl,String requestCookie,long deadline,String userAgent)throws Exception{
     if(browserUseful(nativePage))return nativePage;
     if(!configuredWebViewFallbackEnabled)return nativePage;
@@ -3212,7 +3276,7 @@ final class LanzouCore {
     }
     return nativePage;
   }
-  private static String[] browserFallbackUserAgents(String requested){LinkedHashSet<String> values=new LinkedHashSet<>();values.add(requested==null||requested.trim().isEmpty()?configuredUserAgent(currentUaScope()):requested.trim());for(byte ua:learnedFirstUaCandidates(currentUaScope(),UA_UNKNOWN))values.add(userAgent(ua));return values.toArray(new String[0]);}
+  private static String[] browserFallbackUserAgents(String requested){String exact=PROBE_EXACT_USER_AGENT.get();if(exact!=null&&!exact.isEmpty())return new String[]{exact};LinkedHashSet<String> values=new LinkedHashSet<>();values.add(requested==null||requested.trim().isEmpty()?configuredUserAgent(currentUaScope()):requested.trim());for(byte ua:learnedFirstUaCandidates(currentUaScope(),UA_UNKNOWN))values.add(userAgent(ua));return values.toArray(new String[0]);}
   private static DirectLink renderBrowserPage(String url,String requestCookie,long deadline,String userAgent)throws Exception{
     DirectLink cached=cachedBrowserPage(url,userAgent);if(cached!=null)return cached;
     if(SEARCH_CONNECTIONS.get()!=null)throw new IOException("全源搜索不启动 WebView");
@@ -3226,7 +3290,7 @@ final class LanzouCore {
     final java.util.concurrent.atomic.AtomicReference<Runnable> snapshotTask=new java.util.concurrent.atomic.AtomicReference<>();
     final java.util.concurrent.atomic.AtomicBoolean terminal=new java.util.concurrent.atomic.AtomicBoolean(),evaluating=new java.util.concurrent.atomic.AtomicBoolean(),released=new java.util.concurrent.atomic.AtomicBoolean(),verificationAttempted=new java.util.concurrent.atomic.AtomicBoolean();
     final android.os.Handler handler=new android.os.Handler(android.os.Looper.getMainLooper());
-    final String target=url.trim(),ua=verifiedUserAgent(target,userAgent==null||userAgent.isEmpty()?configuredUserAgent(currentUaScope()):userAgent);
+    final String target=url.trim(),ua=requestUserAgent(target,userAgent==null||userAgent.isEmpty()?configuredUserAgent(currentUaScope()):userAgent);
     final Runnable cleanup=()->{
       android.webkit.WebView web=holder.getAndSet(null);
       try{LanzouSliderVerification verification=slider.getAndSet(null);if(verification!=null)verification.close();if(web!=null){web.stopLoading();web.destroy();}}
@@ -3298,8 +3362,8 @@ final class LanzouCore {
     return page;
   }
     private static void applyChromiumHints(HttpURLConnection c,String userAgent){String ua=userAgent==null?"":userAgent,major=cap(ua,"Chrome/([0-9]+)");if(major.isEmpty())return;boolean mobile=ua.toLowerCase(Locale.ROOT).contains("android")||ua.toLowerCase(Locale.ROOT).contains("mobile");c.setRequestProperty("Sec-CH-UA","\"Chromium\";v=\""+major+"\", \"Google Chrome\";v=\""+major+"\", \"Not)A;Brand\";v=\"24\"");c.setRequestProperty("Sec-CH-UA-Mobile",mobile?"?1":"?0");c.setRequestProperty("Sec-CH-UA-Platform",mobile?"\"Android\"":"\"Windows\"");}
-  private static void applyNavigationHeaders(HttpURLConnection c,String userAgent){userAgent=verifiedUserAgent(c.getURL().toString(),userAgent);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");c.setRequestProperty("Accept-Encoding","gzip, deflate");c.setRequestProperty("Cache-Control","no-cache");c.setRequestProperty("Pragma","no-cache");c.setRequestProperty("DNT","1");c.setRequestProperty("Upgrade-Insecure-Requests","1");c.setRequestProperty("Sec-Fetch-Dest","document");c.setRequestProperty("Sec-Fetch-Mode","navigate");c.setRequestProperty("Sec-Fetch-Site","none");c.setRequestProperty("Sec-Fetch-User","?1");applyChromiumHints(c,userAgent);}
-  private static void applyAjaxHeaders(HttpURLConnection c,String userAgent){userAgent=verifiedUserAgent(c.getURL().toString(),userAgent);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*; q=0.01");c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");c.setRequestProperty("Accept-Encoding","gzip, deflate");c.setRequestProperty("Cache-Control","no-cache");c.setRequestProperty("Pragma","no-cache");c.setRequestProperty("Sec-Fetch-Dest","empty");c.setRequestProperty("Sec-Fetch-Mode","cors");c.setRequestProperty("Sec-Fetch-Site","same-origin");applyChromiumHints(c,userAgent);}
+  private static void applyNavigationHeaders(HttpURLConnection c,String userAgent){userAgent=requestUserAgent(c.getURL().toString(),userAgent);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");c.setRequestProperty("Accept-Encoding","gzip, deflate");c.setRequestProperty("Cache-Control","no-cache");c.setRequestProperty("Pragma","no-cache");c.setRequestProperty("DNT","1");c.setRequestProperty("Upgrade-Insecure-Requests","1");c.setRequestProperty("Sec-Fetch-Dest","document");c.setRequestProperty("Sec-Fetch-Mode","navigate");c.setRequestProperty("Sec-Fetch-Site","none");c.setRequestProperty("Sec-Fetch-User","?1");applyChromiumHints(c,userAgent);}
+  private static void applyAjaxHeaders(HttpURLConnection c,String userAgent){userAgent=requestUserAgent(c.getURL().toString(),userAgent);c.setRequestProperty("User-Agent",userAgent);c.setRequestProperty("Accept","application/json, text/javascript, */*; q=0.01");c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");c.setRequestProperty("Accept-Encoding","gzip, deflate");c.setRequestProperty("Cache-Control","no-cache");c.setRequestProperty("Pragma","no-cache");c.setRequestProperty("Sec-Fetch-Dest","empty");c.setRequestProperty("Sec-Fetch-Mode","cors");c.setRequestProperty("Sec-Fetch-Site","same-origin");applyChromiumHints(c,userAgent);}
   private static DirectLink getPage(String url,String cookie,long deadline,String userAgent)throws Exception{
     try{return getPage(url,cookie,deadline,userAgent,false);}
     catch(Exception error){
@@ -3370,14 +3434,49 @@ final class LanzouCore {
    * wrap the proof values (t/k) in helper functions, so literal-returning helpers are resolved by name; an unresolved
    * expression is left out instead of being guessed.
    */
-  private static Map<String,String> formValues(String h){
+  private static Map<String,String> formValues(String h){return formValues(h,"");}
+  private static Map<String,String> formValues(String h,String requestUrl){
     Map<String,String> out=new LinkedHashMap<>(),vars=new HashMap<>();
     Matcher vm=parsePattern("(?s)\\b(?:var|let|const)\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(['\"])(.*?)\\2").matcher(h);while(vm.find())vars.put(vm.group(1),vm.group(3));
     Matcher am=parsePattern("(?s)(?:^|[;{,}])\\s*([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(['\"])(.*?)\\2").matcher(h);while(am.find())vars.putIfAbsent(am.group(1),am.group(3));
     Matcher fm=parsePattern("(?is)(?:function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^)]*\\)\\s*\\{|([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*function\\s*\\([^)]*\\)\\s*\\{)[^{}]{0,400}?return\\s*['\"]([^'\"]+)['\"]").matcher(h);while(fm.find())vars.putIfAbsent(firstNonEmpty(fm.group(1),fm.group(2)),fm.group(3));
+    String scope=ajaxDataScope(h,requestUrl);
+    if(scope.isEmpty())scope=h;
     String fields="(?:lx|uid|puid|rep|t|k|up|webfoldersign|ls|vip|pg|pwd|folder_id)";
-    collectFormFields(parsePattern("(?s)['\"]?("+fields+")['\"]?\\s*:\\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][A-Za-z0-9_$]*)\\s*(?:\\(\\s*\\))?|(-?[0-9]+))").matcher(h),vars,out);
+    collectFormFields(parsePattern("(?s)['\"]?("+fields+")['\"]?\\s*:\\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_$][A-Za-z0-9_$]*)\\s*(?:\\(\\s*\\))?|(-?[0-9]+))").matcher(scope),vars,out);
     return out;
+  }
+  /** Restricts request fields to the data object attached to the actual listing endpoint, never an earlier AJAX block. */
+  private static String ajaxDataScope(String html,String requestUrl){
+    String marker=ajaxEndpointTail(requestUrl);
+    if(marker.isEmpty())return "";
+    Matcher urls=parsePattern("(?is)\\burl\\s*:\\s*(['\"])([^'\"]*(?:filemoreajax|foldermoreajax)\\.php\\?[^'\"]*)\\1").matcher(html);
+    int start=-1;
+    while(urls.find())if(marker.equals(ajaxEndpointTail(urls.group(2)))){start=urls.end();break;}
+    if(start<0)return "";
+    int limit=Math.min(html.length(),start+800);
+    Matcher data=parsePattern("(?is)\\bdata\\s*:\\s*\\{").matcher(html);data.region(start,limit);
+    if(!data.find())return "";
+    if(parsePattern("(?is)\\burl\\s*:").matcher(html).region(start,data.start()).find())return "";
+    int close=matchingBrace(html,data.end()-1);
+    return close>data.end()?html.substring(data.end(),close):"";
+  }
+  private static String ajaxEndpointTail(String value){
+    String text=value==null?"":value.trim();
+    int file=text.indexOf("filemoreajax.php"),folder=text.indexOf("foldermoreajax.php");
+    int at=file<0?folder:folder<0?file:Math.min(file,folder);
+    return at<0?"":text.substring(at);
+  }
+  private static int matchingBrace(String value,int open){
+    int depth=0;char quote=0;
+    for(int i=open;i<value.length();i++){
+      char ch=value.charAt(i);
+      if(quote!=0){if(ch=='\\')i++;else if(ch==quote)quote=0;continue;}
+      if(ch=='\''||ch=='"'){quote=ch;continue;}
+      if(ch=='{')depth++;
+      else if(ch=='}'&&--depth==0)return i;
+    }
+    return -1;
   }
   /** Known listing fields only; CSS/text pairs such as "font:..." never enter the request. */
   private static void collectFormFields(Matcher fields,Map<String,String> vars,Map<String,String> out){
@@ -3407,7 +3506,7 @@ final class LanzouCore {
     static String origin(String u)throws Exception{URL x=new URL(u);int port=x.getPort();return x.getProtocol()+"://"+x.getHost()+(port>=0&&port!=x.getDefaultPort()?":"+port:"");}
   private static String read(File f)throws Exception{try(FileInputStream in=new FileInputStream(f)){byte[]b=new byte[(int)f.length()];int n=in.read(b);return new String(b,0,n,StandardCharsets.UTF_8);}}
   private static void writeAtomic(File f,String s)throws Exception{File t=new File(f.getPath()+".tmp");try(FileOutputStream o=new FileOutputStream(t)){o.write(s.getBytes(StandardCharsets.UTF_8));o.getFD().sync();}if(!t.renameTo(f)){f.delete();if(!t.renameTo(f))throw new IOException("缓存替换失败");}}
-    private void writeDirectoryCache(File file,String value)throws Exception{synchronized(file.getPath().intern()){writeAtomic(file,value);}directoryCacheChanged();}
+    private void writeDirectoryCache(File file,String value)throws Exception{if(PROBE_EXACT_USER_AGENT.get()!=null)return;synchronized(file.getPath().intern()){writeAtomic(file,value);}directoryCacheChanged();}
   private static JSONObject toJson(Models.Folder f)throws Exception{JSONObject o=new JSONObject();o.put("title",f.title).put("publisher",f.publisher).put("publisherAvatar",f.avatarUrl).put("description",f.description).put("save",f.saveUrl).put("url",f.url).put("password",f.password).put("folderId",f.folderId).put("page",f.page).put("hasMore",f.hasMore).put("remoteSearch",f.remoteSearch).put("failedMembers",f.failedMembers).put("nextPageReadyAt",f.nextPageReadyAt);JSONArray a=new JSONArray();for(Models.Item x:f.items)a.put(new JSONObject().put("title",x.title).put("url",x.url).put("shareUrl",x.shareUrl).put("size",x.size).put("time",x.time).put("icon",x.iconUrl).put("source",x.source).put("password",x.password).put("description",x.description).put("folderId",x.folderId).put("error",x.error).put("folder",x.folder));o.put("items",a);return o;}
   private static Models.Folder fromJson(String s)throws Exception{JSONObject o=new JSONObject(s);Models.Folder f=new Models.Folder();f.title=o.optString("title");f.publisher=o.optString("publisher");f.avatarUrl=o.optString("publisherAvatar");f.description=o.optString("description");f.saveUrl=o.optString("save");f.url=o.optString("url");f.password=o.optString("password");f.folderId=o.optString("folderId");f.page=o.optInt("page",1);f.hasMore=o.optBoolean("hasMore");f.remoteSearch=o.optBoolean("remoteSearch");f.failedMembers=o.optInt("failedMembers");f.nextPageReadyAt=o.optLong("nextPageReadyAt");JSONArray a=o.optJSONArray("items");if(a!=null)for(int i=0;i<a.length();i++){JSONObject j=a.getJSONObject(i);Models.Item x=new Models.Item();x.title=j.optString("title");x.url=j.optString("url");x.shareUrl=j.optString("shareUrl",x.url);x.size=j.optString("size");x.time=j.optString("time");x.iconUrl=j.optString("icon");x.source=j.optString("source");x.password=j.optString("password");x.description=j.optString("description");x.folderId=j.optString("folderId");x.error=j.optString("error");x.folder=j.optBoolean("folder");f.items.add(x);}return f;}
 

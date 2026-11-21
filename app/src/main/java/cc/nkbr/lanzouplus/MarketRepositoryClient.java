@@ -30,11 +30,6 @@ final class MarketRepositoryClient {
     final String githubUrl,repositoryName,title,publisherName,description,version,versionMode;
     final String status,updatedAt,addedAt;
     final long snapshotRevision;
-    /** {@code project} rows point at GitHub repositories; {@code index} rows at an HTTPS index file. */
-    final String type,url;
-    final long builtAt,entryCount,sourceCount;
-    final int coveredSourceCount;
-    final long sizeBytes;
     /** Published index bundled with a project row, or {@code null} when the project has none. */
     final StaticIndexInfo index;
     CatalogEntry(String githubUrl,String repositoryName,String title,String publisherName,
@@ -50,24 +45,9 @@ final class MarketRepositoryClient {
       this.publisherName=publisherName;this.description=description;this.version=version;
       this.versionMode=versionMode;this.status=status;this.snapshotRevision=snapshotRevision;
       this.updatedAt=updatedAt;this.addedAt=addedAt;
-      this.type="project";this.url=githubUrl;this.builtAt=0L;this.entryCount=0L;this.sourceCount=0L;
-      this.coveredSourceCount=0;
-      this.sizeBytes=0L;
       this.index=index;
     }
-    /** One shared static index: the download link replaces the GitHub repository link. */
-    private CatalogEntry(String url,String title,String description,long builtAt,long entryCount,
-        long sourceCount,int coveredSourceCount,long sizeBytes){
-      this.githubUrl=url;this.repositoryName=title;this.title=title;this.publisherName="";
-      this.description=description;this.version="";this.versionMode="";this.status="index";
-      this.snapshotRevision=0L;this.updatedAt="";this.addedAt="";this.type="index";this.url=url;
-      this.builtAt=builtAt;this.entryCount=entryCount;this.sourceCount=sourceCount;
-      this.coveredSourceCount=Math.max(0,Math.min((int)Math.max(0,sourceCount),coveredSourceCount));
-      this.sizeBytes=Math.max(0L,sizeBytes);
-      this.index=null;
-    }
     static CatalogEntry parse(JSONObject value)throws Exception{
-      if("index".equals(value.optString("type","").trim()))return parseIndex(value);
       String url=MarketRepository.canonicalUrl(value.getString("githubUrl"));
       String repositoryName=value.optString("repositoryName",url.substring(url.lastIndexOf('/')+1)).trim();
       String title=value.optString("title",repositoryName).trim();
@@ -92,41 +72,21 @@ final class MarketRepositoryClient {
           index.optLong("builtAt",0L),index.optInt("entryCount",0),declared,url,
           index.optLong("size",index.optLong("sizeBytes",0L)),covered);
     }
-    private static CatalogEntry parseIndex(JSONObject value)throws Exception{
-      String url=value.optString("url","").trim();
-      if(!url.startsWith("https://"))throw new IOException("索引条目必须使用 HTTPS 下载地址");
-      String title=value.optString("title","").trim();
-      if(title.isEmpty())throw new IOException("索引条目缺少标题");
-      return new CatalogEntry(url,title,value.optString("description",""),
-          value.optLong("builtAt",0L),value.optLong("entryCount",0L),value.optLong("sourceCount",0L),
-          value.optInt("coveredSourceCount",value.optInt("sourceCount",0)),value.optLong("size",0L));
-    }
     JSONObject json()throws Exception{
-      if(isIndex())return new JSONObject().put("type","index").put("title",title).put("url",url)
-          .put("description",description).put("builtAt",builtAt).put("entryCount",entryCount)
-          .put("sourceCount",sourceCount).put("coveredSourceCount",coveredSourceCount)
-          .put("size",sizeBytes);
       JSONObject out=new JSONObject().put("githubUrl",githubUrl).put("repositoryName",repositoryName)
           .put("title",title).put("publisherName",publisherName).put("description",description)
           .put("version",version).put("versionMode",versionMode).put("status",status)
-          .put("snapshotRevision",snapshotRevision).put("updatedAt",updatedAt).put("addedAt",addedAt)
-          .put("type","project");
+          .put("snapshotRevision",snapshotRevision).put("updatedAt",updatedAt).put("addedAt",addedAt);
       if(index!=null)out.put("index",indexJson(index));
       return out;
     }
     private static JSONObject indexJson(StaticIndexInfo info)throws Exception{
-      return new JSONObject().put("url",info.path).put("size",info.sizeBytes)
+      return new JSONObject().put("url",info.path).put("name",info.name).put("size",info.sizeBytes)
           .put("builtAt",info.builtAt).put("entryCount",info.entryCount)
           .put("sourceCount",info.sourceCount).put("coveredSourceCount",info.coveredSourceCount);
     }
     String displayTitle(){return title==null||title.trim().isEmpty()?repositoryName:title.trim();}
     String displayPublisher(){return publisherName==null?"":publisherName.trim();}
-    boolean isIndex(){return "index".equals(type);}
-    /** Build time from the catalog, shown as the card's 建立日期; empty when the entry omits it. */
-    String builtAtText(){
-      if(builtAt<=0L)return "";
-      return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.CHINA).format(new Date(builtAt));
-    }
     boolean hasVersion(){return !version.isEmpty()&&MarketRepository.isVersionMode(versionMode);}
   }
 
@@ -141,7 +101,7 @@ final class MarketRepositoryClient {
     final int offset,limit;
     Catalog(List<CatalogEntry> entries,long total,int offset,int limit){this.entries=entries;this.total=total;this.offset=offset;this.limit=limit;}
     List<String> urls(){List<String> out=new ArrayList<>();for(CatalogEntry entry:entries)out.add(entry.githubUrl);return out;}
-    String fingerprint(){StringBuilder out=new StringBuilder();for(CatalogEntry entry:entries)out.append(entry.githubUrl).append('\u0001').append(entry.type).append('\u0001').append(entry.snapshotRevision).append('\u0001').append(entry.updatedAt).append('\u0001').append(entry.status).append('\u0001').append(entry.title).append('\u0001').append(entry.publisherName).append('\u0001').append(entry.description).append('\u0001').append(entry.version).append('\u0001').append(entry.versionMode).append('\u0001').append(entry.builtAt).append('\u0001').append(entry.entryCount).append('\u0001').append(entry.sourceCount).append('\u0001').append(entry.coveredSourceCount).append('\u0001').append(entry.sizeBytes).append('\u0001').append(entry.index==null?"":entry.index.path).append('\u0001').append(entry.index==null?0:entry.index.sizeBytes).append('\u0001').append(entry.index==null?0:entry.index.builtAt).append('\u0001').append(entry.index==null?0:entry.index.coveredSourceCount).append('\n');return out.toString();}
+    String fingerprint(){StringBuilder out=new StringBuilder();for(CatalogEntry entry:entries)out.append(entry.githubUrl).append('\u0001').append(entry.snapshotRevision).append('\u0001').append(entry.updatedAt).append('\u0001').append(entry.status).append('\u0001').append(entry.title).append('\u0001').append(entry.publisherName).append('\u0001').append(entry.description).append('\u0001').append(entry.version).append('\u0001').append(entry.versionMode).append('\u0001').append(entry.index==null?"":entry.index.name).append('\u0001').append(entry.index==null?"":entry.index.path).append('\u0001').append(entry.index==null?0:entry.index.sizeBytes).append('\u0001').append(entry.index==null?0:entry.index.builtAt).append('\u0001').append(entry.index==null?0:entry.index.entryCount).append('\u0001').append(entry.index==null?0:entry.index.sourceCount).append('\u0001').append(entry.index==null?0:entry.index.coveredSourceCount).append('\n');return out.toString();}
   }
   interface Transport {
     byte[] get(String url,int limit)throws Exception;
@@ -430,12 +390,17 @@ final class MarketRepositoryClient {
     if(value.optInt("schema",0)!=1)throw new IOException("市场静态清单格式版本不受支持");
     JSONArray rows=value.optJSONArray("repositories");
     if(rows==null)throw new IOException("市场清单未读取完整，请重试");
+    return readCatalogRows(rows);
+  }
+  /** Reads remote and cached project rows; legacy standalone index rows are no longer catalog entries. */
+  static List<CatalogEntry> readCatalogRows(JSONArray rows)throws Exception{
+    if(rows==null)throw new IOException("市场清单未读取完整，请重试");
     List<CatalogEntry> entries=new ArrayList<>();
     for(int i=0;i<rows.length();i++){
       JSONObject row=rows.optJSONObject(i);
       if(row==null)continue;
-      try{entries.add(CatalogEntry.parse(row));}
-      catch(Exception invalid){if(!"index".equals(row.optString("type","").trim()))throw invalid;}
+      if("index".equals(row.optString("type","").trim()))continue;
+      entries.add(CatalogEntry.parse(row));
     }
     return Collections.unmodifiableList(entries);
   }
@@ -449,45 +414,33 @@ final class MarketRepositoryClient {
   /** Ceiling for one downloaded static index; the store re-checks the file size on import. */
   static final int INDEX_LIMIT=64*1024*1024;
 
-  static final class IndexDownload{
-    final byte[] bytes;
-    final JSONObject document;
-    final int entryCount,sourceCount;
-    IndexDownload(byte[] bytes,JSONObject document,int entryCount,int sourceCount){
-      this.bytes=bytes;this.document=document;this.entryCount=entryCount;this.sourceCount=sourceCount;
+  /** Downloads the original index asset; {@link StaticIndexStore} detects gzip and validates import. */
+  byte[] downloadIndex(String raw)throws Exception{
+    String url=raw==null?"":raw.trim();
+    if(!url.startsWith("https://"))throw new IOException("索引下载地址必须使用 HTTPS");
+    if(!isGithubReleaseAsset(url))return transport.get(url,INDEX_LIMIT);
+    try{
+      return transport.get(url,INDEX_LIMIT);
+    }catch(Exception direct){
+      try{
+        return transport.get(UpdateClient.githubMirrorAsset(url),INDEX_LIMIT);
+      }catch(Exception mirrored){
+        mirrored.addSuppressed(direct);
+        throw mirrored;
+      }
     }
   }
 
-  /** Downloads a market index link once and validates its shape before any local write. */
-  IndexDownload downloadIndex(String raw)throws Exception{
-    String url=raw==null?"":raw.trim();
-    if(!url.startsWith("https://"))throw new IOException("索引下载地址必须使用 HTTPS");
-    byte[] bytes=transport.get(url,INDEX_LIMIT);
-    JSONObject document=validateStaticIndex(bytes);
-    JSONArray entries=document.getJSONArray("entries");
-    return new IndexDownload(bytes,document,entries.length(),
-        document.optInt("sourceCount",0));
-  }
-
-  /**
-   * A market index is a JSON object with an {@code entries} array. {@code schema} is optional for
-   * plain exports but, when present, must be 1; a wrong or empty shape names the broken field.
-   */
-  static JSONObject validateStaticIndex(byte[] bytes)throws Exception{
-    if(bytes==null||bytes.length==0)throw new IOException("索引文件为空");
-    String text=new String(bytes,StandardCharsets.UTF_8).trim();
-    if(text.isEmpty())throw new IOException("索引文件为空");
-    JSONObject value;
-    try{value=new JSONObject(text);}
-    catch(JSONException error){throw new IOException("索引文件不是有效的 JSON 对象");}
-    int schema=value.optInt("schema",0);
-    if(schema!=0&&schema!=1)throw new IOException("索引文件版本不受支持（schema="+schema+"）");
-    JSONArray entries=value.optJSONArray("entries");
-    if(entries==null)throw new IOException("索引文件缺少 entries 数组");
-    if(entries.length()==0)throw new IOException("索引文件 entries 为空");
-    for(int i=0;i<entries.length();i++)if(entries.optJSONObject(i)==null)
-      throw new IOException("索引文件第 "+(i+1)+" 个条目不是对象");
-    return value;
+  /** GitHub release assets have a direct route plus the same public proxy used by app updates. */
+  private static boolean isGithubReleaseAsset(String raw){
+    try{
+      URL url=new URL(raw);
+      return "https".equalsIgnoreCase(url.getProtocol())&&"github.com".equalsIgnoreCase(url.getHost())
+          &&url.getUserInfo()==null&&url.getPort()==-1
+          &&url.getPath().matches("/[^/]+/[^/]+/releases/download/[^/]+/.+");
+    }catch(Exception invalid){
+      return false;
+    }
   }
 
   interface SubmissionProgress{void status(String message);}
@@ -545,7 +498,7 @@ final class MarketRepositoryClient {
     metadata.validateSubmission(url);
     String versionMode=MarketRepository.resolveVersionMode(metadata.versionMode,metadata.version);
     CatalogEntry listed=null;
-    for(CatalogEntry entry:catalogAll(true))if(!entry.isIndex()&&catalogKey(entry.githubUrl).equals(key)){listed=entry;break;}
+    for(CatalogEntry entry:catalogAll(true))if(catalogKey(entry.githubUrl).equals(key)){listed=entry;break;}
     if(listed==null||!listed.hasVersion())return null;
     if(!versionMode.equals(listed.versionMode))throw new SubmissionRejected(409,
         "repository_version_mode_changed",
@@ -563,7 +516,7 @@ final class MarketRepositoryClient {
     String url=MarketRepository.canonicalUrl(raw),key=catalogKey(url);
     if(progress!=null)progress.status("正在读取 GitHub 市场清单并检查版本…");
     CatalogEntry listed=null;
-    for(CatalogEntry entry:catalogAll(true))if(!entry.isIndex()&&catalogKey(entry.githubUrl).equals(key)){listed=entry;break;}
+    for(CatalogEntry entry:catalogAll(true))if(catalogKey(entry.githubUrl).equals(key)){listed=entry;break;}
     if(progress!=null)progress.status("正在读取 GitHub 工程资料…");
     String identity=url.substring("https://github.com/".length()),root=rawRoot(identity);
     MarketRepository metadata=new MarketRepository(new JSONObject(

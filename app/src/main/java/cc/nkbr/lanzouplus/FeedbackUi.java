@@ -470,6 +470,8 @@ final class FeedbackUi {
       final TextView content;
       final TextView meta;
       final TextView progress;
+      final TextView replyHeading;
+      final TextView reply;
 
       Row() {
         root = new LinearLayout(owner);
@@ -492,6 +494,13 @@ final class FeedbackUi {
         progress = SharedPopupSurface.label(owner, "", 11, owner.MUTED);
         progress.setPadding(0, owner.dp(4), 0, 0);
         root.addView(progress, new LinearLayout.LayoutParams(-1, -2));
+        replyHeading = SharedPopupSurface.label(owner, "", 11, owner.PRIMARY);
+        replyHeading.setPadding(0, owner.dp(8), 0, 0);
+        root.addView(replyHeading, new LinearLayout.LayoutParams(-1, -2));
+        reply = SharedPopupSurface.label(owner, "", 14, owner.TEXT);
+        reply.setTextIsSelectable(true);
+        reply.setLineSpacing(owner.dp(2), 1f);
+        root.addView(reply, new LinearLayout.LayoutParams(-1, -2));
       }
 
       void bind(FeedbackContract.Entry entry) {
@@ -513,6 +522,13 @@ final class FeedbackUi {
         }
         progress.setText(timeline);
         progress.setVisibility(timeline.length() == 0 ? View.GONE : View.VISIBLE);
+        boolean hasReply = !entry.reply.trim().isEmpty();
+        replyHeading.setText(entry.repliedAt > 0
+            ? owner.getString(R.string.feedback_reply_at, FeedbackContract.formatTime(entry.repliedAt))
+            : owner.getString(R.string.feedback_reply));
+        replyHeading.setVisibility(hasReply || entry.repliedAt > 0 ? View.VISIBLE : View.GONE);
+        reply.setText(entry.reply);
+        reply.setVisibility(hasReply ? View.VISIBLE : View.GONE);
       }
     }
   }

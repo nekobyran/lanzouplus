@@ -27,6 +27,8 @@
     <string name="feedback_close">关闭</string>
     <string name="feedback_read_at">已读 %1$s</string>
     <string name="feedback_done_at">完成 %1$s</string>
+    <string name="feedback_reply">管理员回复</string>
+    <string name="feedback_reply_at">管理员回复 · %1$s</string>
     <string name="feedback_status_new">待处理</string>
     <string name="feedback_status_read">已读</string>
     <string name="feedback_status_done">已完成</string>

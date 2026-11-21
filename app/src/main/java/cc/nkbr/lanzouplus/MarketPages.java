@@ -58,7 +58,7 @@ final class MarketPages {
     String raw;try(InputStream input=new FileInputStream(file)){raw=new String(MarketRepositoryClient.bytes(input,512*1024),java.nio.charset.StandardCharsets.UTF_8);}
     JSONObject value=new JSONObject(raw);
     JSONArray array=value.optJSONArray("repositories");
-    if(array!=null)for(int i=0;i<array.length();i++)entries.add(MarketRepositoryClient.CatalogEntry.parse(array.getJSONObject(i)));
+    if(array!=null)entries.addAll(MarketRepositoryClient.readCatalogRows(array));
     return new MarketIndex(value.optString("fingerprint"),entries);
   }
   static MarketIndex readIndexOrEmpty(File file){

@@ -129,9 +129,11 @@ final class FeedbackContract {
     final long readAt;
     final long doneAt;
     final long updatedAt;
+    final String reply;
+    final long repliedAt;
 
     Entry(String id, String content, IdentityValue identity, Status status, long createdAt,
-        long readAt, long doneAt, long updatedAt) {
+        long readAt, long doneAt, long updatedAt, String reply, long repliedAt) {
       this.id = id;
       this.content = content;
       this.identity = identity;
@@ -140,6 +142,8 @@ final class FeedbackContract {
       this.readAt = readAt;
       this.doneAt = doneAt;
       this.updatedAt = updatedAt;
+      this.reply = reply;
+      this.repliedAt = repliedAt;
     }
   }
 
@@ -288,12 +292,18 @@ final class FeedbackContract {
     }
     if (value.isEmpty()) throw new Failure("schema_invalid", "反馈身份标记为空");
     if ("device".equals(kind)) value = canonicalDeviceCode(value);
+    Object reply = item.opt("reply");
+    if (reply != null && reply != JSONObject.NULL && !(reply instanceof String)) {
+      throw new Failure("schema_invalid", "反馈回复格式无效");
+    }
     return new Entry(id, content, new IdentityValue(kind, value),
         Status.parse(item.optString("status", "")),
         parseTime(item.opt("createdAt"), "createdAt", false),
         parseTime(item.opt("readAt"), "readAt", true),
         parseTime(item.opt("doneAt"), "doneAt", true),
-        parseTime(item.opt("updatedAt"), "updatedAt", false));
+        parseTime(item.opt("updatedAt"), "updatedAt", false),
+        reply == null || reply == JSONObject.NULL ? "" : (String) reply,
+        parseTime(item.opt("repliedAt"), "repliedAt", true));
   }
 
   static Submission parseSubmission(String raw) throws Failure {

@@ -2692,7 +2692,6 @@ final class LanzouCore {
     return "";
   }
   private static String passwordRedirect(JSONObject data){String value=firstNonEmpty(data.optString("url"),data.optString("dom"),data.optString("href"),data.optString("info"));if(value.startsWith("http")||value.startsWith("/")||value.matches("(?i)^(?:b|s/|u/).+"))return value;return"";}
-  private static Map<String,String> passwordUnlockFields(String html){Map<String,String> out=formValues(html);return out;}
   private static String sameOriginEndpointAny(DirectLink page,String raw){if(raw.isEmpty())return"";try{URL base=new URL(page.url),endpoint=new URL(base,raw);if(!base.getProtocol().equalsIgnoreCase(endpoint.getProtocol())||!base.getHost().equalsIgnoreCase(endpoint.getHost())||effectivePort(base)!=effectivePort(endpoint))return"";return endpoint.toString();}catch(Exception ignored){return"";}}
 
     private DirectLink browseSession(String url,String password,long deadline,boolean force,byte ua)throws Exception{

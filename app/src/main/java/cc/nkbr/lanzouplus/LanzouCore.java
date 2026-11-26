@@ -42,6 +42,8 @@ final class LanzouCore {
   private static final int CLASSIC_DESKTOP_INITIAL_PAGE_INTERVAL_MS=520,CLASSIC_DESKTOP_NEXT_PAGE_INTERVAL_MS=320;
   private static final int UNKNOWN_INITIAL_PAGE_INTERVAL_MS=640,UNKNOWN_NEXT_PAGE_INTERVAL_MS=420;
   private static final int MAX_PAGE_INTERVAL_MS=4200;
+  /** Upper bound of (origin, UA) pairs probed in one failover round. */
+  private static final int MAX_BASE_ORIGIN_CANDIDATES=22;
   private static final long NETWORK_WORKER_STACK_BYTES=262144L;
 
   private static final long EXECUTOR_KEEP_ALIVE_SECONDS=30L;
@@ -63,12 +65,8 @@ final class LanzouCore {
           private static int adaptiveSearchIndexItems(){Runtime r=Runtime.getRuntime();long maxHeap=Math.max(1L,r.maxMemory()),used=Math.max(0L,r.totalMemory()-r.freeMemory()),available=Math.max(1L,maxHeap-used);long byHeap=maxHeap/16384L,byFree=available/4096L;return(int)Math.min(12000L,Math.max(1200L,Math.min(byHeap,byFree)));}
     private static final int COMPOSITE_ICON_ENRICH_MAX=512;
     private static int searchIndexFlushItems(){Runtime runtime=Runtime.getRuntime();long maxMiB=Math.max(64L,runtime.maxMemory()/(1024L*1024L));int processors=Math.max(1,runtime.availableProcessors());long adaptive=Math.max(512L,Math.min(8192L,maxMiB*processors/2L));return(int)adaptive;}
-        /**
-         * Verified 2026-11-19 with the Chrome/138 mobile UA: each host below answered 200 and served a real Lanzou
-         * share page (filemoreajax) over TLS. Dropped because they do not serve Lanzou shares at all:
-         * lanzoua/d/s/z.com (parklogic "Redirecting..." shells) and lanzoun/lanzour.com (TLS handshake failure).
-         */
-        private static final String[] LANZOU_BASE_ORIGINS={"https://www.lanzoux.com","https://wwc.lanzoux.com","https://www.lanzouq.com","https://www.lanzoui.com","https://www.lanzoul.com","https://www.lanzouw.com","https://www.lanzoup.com","https://www.lanzouo.com","https://www.lanzoum.com","https://www.lanzoub.com","https://www.lanzouc.com","https://www.lanzoue.com","https://www.lanzouf.com","https://www.lanzoug.com","https://www.lanzouh.com","https://www.lanzouj.com","https://www.lanzouk.com","https://www.lanzout.com","https://www.lanzouu.com","https://www.lanzouv.com","https://www.lanzouy.com"};
+        /** Measured origins and per-family UA compatibility live in {@link LanzouRouteCatalog}. */
+        private static final String[] LANZOU_BASE_ORIGINS=LanzouRouteCatalog.BASE_ORIGINS;
                 private static final String CANONICAL_SOURCE_ORIGIN="https://www.lanzoux.com";
                 private static final String PUBLIC_BASE_ORIGIN_PROBE_URL="https://www.lanzoux.com/b00hr9mbxg",PUBLIC_BASE_ORIGIN_PROBE_PASSWORD="";
             private static volatile String configuredPreferredBaseOrigin="";
@@ -110,12 +108,21 @@ final class LanzouCore {
       Collections.shuffle(presets);
       String excluded=validatedRouteOrigin(excludedOrigin);
       boolean hasExcludedPreset=excludedPreset>=UA_PRESET_MOBILE_CHROME&&excludedPreset<=UA_PRESET_MOBILE_FIREFOX;
-      List<BaseOriginProbeCandidate> out=new ArrayList<>(origins.size());
-      int slot=0;
+      List<BaseOriginProbeCandidate> out=new ArrayList<>(origins.size()*2);
+      int slot=0,index=0;
       for(String origin:origins){
-        int index=slot++%presets.size(),preset=presets.get(index);
-        if(!excluded.isEmpty()&&origin.equals(excluded)&&hasExcludedPreset&&preset==excludedPreset)preset=presets.get((index+1)%presets.size());
-        out.add(new BaseOriginProbeCandidate(origin,preset));
+        /* A failed domain often only fails for the UA that was used. The leading origins therefore get
+           a few UA passes of their own, so the retry covers the same host with a different browser
+           before it has to leave the host at all. */
+        int passes=index==0?3:index<3?2:1;
+        for(int pass=0;pass<passes&&out.size()<MAX_BASE_ORIGIN_CANDIDATES;pass++){
+          int preset=presets.get(slot++%presets.size());
+          if(!excluded.isEmpty()&&hasExcludedPreset&&origin.equals(excluded)&&preset==excludedPreset)for(int candidate:presets)if(candidate!=excludedPreset){preset=candidate;break;}
+          boolean duplicate=false;
+          for(BaseOriginProbeCandidate existing:out)if(existing.origin.equals(origin)&&existing.uaPreset==preset){duplicate=true;break;}
+          if(!duplicate)out.add(new BaseOriginProbeCandidate(origin,preset));
+        }
+        index++;
       }
       return out;
     }
@@ -188,7 +195,10 @@ final class LanzouCore {
     if(selected.isEmpty())return new BaseOriginProbe("",0L,false,false,false,false,normalizedPreset);
     String target=selected+"/",referenceTarget=baseOriginTarget(selected,referenceUrl);
     boolean referenceRequested=referenceUrl!=null&&!referenceUrl.trim().isEmpty();
-    return probeBaseOriginRequest(selected,target,referenceTarget,referencePassword,referenceRequested,uaSlotForPreset(normalizedPreset),connectionUserAgent(normalizedPreset,customUa),normalizedPreset,started,deadline);
+    /* Every candidate looks like a different visitor of the same browser family, so a blocked
+       signature is not mistaken for a blocked host. */
+    String exact=customUa==null||customUa.isEmpty()?LanzouRouteCatalog.randomUserAgent(normalizedPreset):connectionUserAgent(normalizedPreset,customUa);
+    return probeBaseOriginRequest(selected,target,referenceTarget,referencePassword,referenceRequested,uaSlotForPreset(normalizedPreset),exact,normalizedPreset,started,deadline);
   }
   private BaseOriginProbe probeBaseOriginRequest(String selected,String target,String referenceTarget,String referencePassword,boolean referenceRequested,byte ua,String exactUserAgent,int uaPreset,long started,long deadline)throws InterruptedException{
     boolean referenceTested=referenceRequested,challenged=false;
@@ -270,9 +280,9 @@ final class LanzouCore {
   private static String routeTarget(String origin,String referenceUrl)throws Exception{DirectLink target=parseFolderTarget(referenceUrl);String routed=baseOriginTarget(origin,target.rootUrl);return target.folderId.isEmpty()?routed:virtualFolderUrl(routed,target.folderId,target.title,target.description);}
         private static List<RouteCandidate> learnedDirectRoutes(String referenceUrl,SourceProfile profile){if(profile==null)return Collections.emptyList();LinkedHashMap<String,Byte> learned=profile.directRoutes();if(learned.isEmpty())return Collections.emptyList();List<Map.Entry<String,Byte>> entries=new ArrayList<>(learned.entrySet());Collections.reverse(entries);List<RouteCandidate> out=new ArrayList<>(entries.size());for(Map.Entry<String,Byte> entry:entries){String origin=validatedRouteOrigin(entry.getKey());byte ua=entry.getValue()==null?UA_UNKNOWN:entry.getValue();if(origin.isEmpty()||ua==UA_UNKNOWN)continue;try{out.add(new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,UA_SCOPE_DIRECT));}catch(Exception ignored){}}return out;}
                         private static List<String> searchAwareRouteOrigins(String referenceUrl,int scope,String learnedOrigin){List<String> origins=randomizedRouteOrigins(referenceUrl,learnedOrigin);SharedRouteHint shared=sharedRouteHint(scope,referenceUrl);if(shared!=null){origins.remove(shared.origin);origins.add(0,shared.origin);return origins;}if(SEARCH_CONNECTIONS.get()!=null&&scope!=UA_SCOPE_DIRECT&&validatedRouteOrigin(configuredPreferredBaseOrigin).isEmpty()&&(learnedOrigin==null||learnedOrigin.isEmpty())&&!originalLanzouwReference(referenceUrl)&&origins.size()>1){List<String> healthy=new ArrayList<>(),challenged=new ArrayList<>();for(String origin:origins){if(challengedOrigin(origin))challenged.add(origin);else healthy.add(origin);}if(healthy.size()>1){int shift=Math.floorMod(referenceUrl==null?0:referenceUrl.hashCode(),healthy.size());if(shift!=0)Collections.rotate(healthy,-shift);}healthy.addAll(challenged);origins=healthy;}return origins;}
-        private static List<RouteCandidate> routeCandidates(String referenceUrl,int scope,SourceProfile profile){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);byte learnedUa=profile==null?UA_UNKNOWN:profile.learnedUa(scope);SharedRouteHint shared=sharedRouteHint(scope,referenceUrl);if(shared!=null)try{RouteCandidate route=new RouteCandidate(routeTarget(shared.origin,referenceUrl),shared.origin,shared.ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}List<String> origins=searchAwareRouteOrigins(referenceUrl,scope,learnedOrigin);if(scope==UA_SCOPE_DIRECT)for(RouteCandidate route:learnedDirectRoutes(referenceUrl,profile))values.putIfAbsent(route.key(),route);else if(!learnedOrigin.isEmpty()&&learnedUa!=UA_UNKNOWN)try{RouteCandidate route=new RouteCandidate(routeTarget(learnedOrigin,referenceUrl),learnedOrigin,learnedUa,scope);values.put(route.key(),route);}catch(Exception ignored){}byte[] uas=learnedFirstUaCandidates(scope,learnedUa);if(scope==UA_SCOPE_DIRECT&&uas.length>2){int desktop=-1;for(int i=1;i<uas.length;i++)if(uaIsDesktop(uas[i])){desktop=i;break;}if(desktop>1){byte value=uas[desktop];System.arraycopy(uas,1,uas,2,desktop-1);uas[1]=value;}}if(uas.length>0&&!origins.isEmpty()){int primaryUaCount=Math.max(1,Math.min(uas.length,(int)Math.ceil(Math.sqrt((double)uas.length))));for(String origin:origins)for(int slot=0;slot<primaryUaCount;slot++){byte ua=uas[slot];try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}for(String origin:origins)for(int slot=primaryUaCount;slot<uas.length;slot++){byte ua=uas[slot];try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}}return new ArrayList<>(values.values());}
+        private static List<RouteCandidate> routeCandidates(String referenceUrl,int scope,SourceProfile profile){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);byte learnedUa=profile==null?UA_UNKNOWN:profile.learnedUa(scope);SharedRouteHint shared=sharedRouteHint(scope,referenceUrl);if(shared!=null)try{RouteCandidate route=new RouteCandidate(routeTarget(shared.origin,referenceUrl),shared.origin,shared.ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}List<String> origins=searchAwareRouteOrigins(referenceUrl,scope,learnedOrigin);if(scope==UA_SCOPE_DIRECT)for(RouteCandidate route:learnedDirectRoutes(referenceUrl,profile))values.putIfAbsent(route.key(),route);else if(!learnedOrigin.isEmpty()&&learnedUa!=UA_UNKNOWN)try{RouteCandidate route=new RouteCandidate(routeTarget(learnedOrigin,referenceUrl),learnedOrigin,learnedUa,scope);values.put(route.key(),route);}catch(Exception ignored){}byte[] uas=learnedFirstUaCandidates(scope,learnedUa);if(uas.length>0){byte primary=uas[0];origins.sort(java.util.Comparator.comparingInt(origin->LanzouRouteCatalog.presetRank(origin,primary)));}if(scope==UA_SCOPE_DIRECT&&uas.length>2){int desktop=-1;for(int i=1;i<uas.length;i++)if(uaIsDesktop(uas[i])){desktop=i;break;}if(desktop>1){byte value=uas[desktop];System.arraycopy(uas,1,uas,2,desktop-1);uas[1]=value;}}if(uas.length>0&&!origins.isEmpty()){int primaryUaCount=Math.max(1,Math.min(uas.length,(int)Math.ceil(Math.sqrt((double)uas.length))));for(String origin:origins)for(int slot=0;slot<primaryUaCount;slot++){byte ua=uas[slot];try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}for(String origin:origins)for(int slot=primaryUaCount;slot<uas.length;slot++){byte ua=uas[slot];try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}}return new ArrayList<>(values.values());}
 
-    private static List<RouteCandidate> routeCandidatesForUa(String referenceUrl,int scope,SourceProfile profile,byte ua){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);List<String> origins=new ArrayList<>(searchAwareRouteOrigins(referenceUrl,scope,learnedOrigin));origins.sort(java.util.Comparator.comparingInt(value->verifiedUserAgent(value,null)==null?1:0));for(String origin:origins)try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}return new ArrayList<>(values.values());}
+    private static List<RouteCandidate> routeCandidatesForUa(String referenceUrl,int scope,SourceProfile profile,byte ua){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();String learnedOrigin=profile==null?"":profile.learnedOrigin(scope);List<String> origins=new ArrayList<>(searchAwareRouteOrigins(referenceUrl,scope,learnedOrigin));origins.sort(java.util.Comparator.comparingInt((String origin)->LanzouRouteCatalog.presetRank(origin,ua)).thenComparingInt(origin->verifiedUserAgent(origin,null)==null?1:0));for(String origin:origins)try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);values.putIfAbsent(route.key(),route);}catch(Exception ignored){}return new ArrayList<>(values.values());}
         private static RouteCandidate learnedRoute(String referenceUrl,int scope,SourceProfile profile){if(profile!=null){String origin=profile.learnedOrigin(scope);byte ua=profile.learnedUa(scope);if(!origin.isEmpty()&&ua!=UA_UNKNOWN)try{return new RouteCandidate(routeTarget(origin,referenceUrl),origin,ua,scope);}catch(Exception ignored){}}SharedRouteHint shared=sharedRouteHint(scope,referenceUrl);if(shared==null)return null;try{return new RouteCandidate(routeTarget(shared.origin,referenceUrl),shared.origin,shared.ua,scope);}catch(Exception ignored){return null;}}
     private static List<RouteCandidate> routesAfter(List<RouteCandidate> routes,RouteCandidate used){if(used==null)return routes;List<RouteCandidate> out=new ArrayList<>(routes.size());for(RouteCandidate route:routes)if(!route.key().equals(used.key()))out.add(route);return out;}
         private static List<RouteCandidate> capabilityFallbackRoutesForUa(String referenceUrl,int scope,byte ua,RouteCandidate used){LinkedHashMap<String,RouteCandidate> values=new LinkedHashMap<>();for(String normalized:searchAwareRouteOrigins(referenceUrl,scope,"")){if(normalized.isEmpty())continue;try{RouteCandidate route=new RouteCandidate(routeTarget(normalized,referenceUrl),normalized,ua,scope);if(used==null||!route.key().equals(used.key()))values.putIfAbsent(route.key(),route);}catch(Exception ignored){}}return new ArrayList<>(values.values());}
@@ -397,7 +407,7 @@ final class LanzouCore {
         int prewarmSearchNetworkNow(){prewarmSearchRuntime();if(closed.get())return 0;List<Models.Source> all;try{all=spreadFullSearchSources(directoryIndexWorkSources());}catch(Exception ignored){return 0;}List<Models.Source> candidates=new ArrayList<>();for(Models.Source source:all)if(source.searchable&&(source.password==null||source.password.isEmpty()))candidates.add(source);if(candidates.isEmpty())for(Models.Source source:all)if(source.password==null||source.password.isEmpty())candidates.add(source);if(candidates.isEmpty())return 0;int profileWarm=Math.max(1,adaptiveProfileImageWorkers(Integer.MAX_VALUE)),searchWarm=Math.max(1,adaptiveSearchWarmWorkers(candidates.size())),target=Math.max(1,Math.min(candidates.size(),(int)Math.ceil(Math.sqrt((double)profileWarm*(double)searchWarm)))),span=Math.max(target,Math.min(candidates.size(),searchWarm)),stride=Math.max(1,span/target),round=Math.floorMod(searchNetworkWarmRound.getAndIncrement(),Math.max(1,span)),start=Math.floorMod(round*target,span),success=0;Set<String> sampled=new HashSet<>();for(int n=0;n<target&&!closed.get();n++){int index=Math.floorMod(start+n*stride,span);Models.Source source=candidates.get(index);if(!sampled.add(source.url))continue;try(NetworkGovernor.Lease ignored=NETWORK_GOVERNOR.acquireBackground(()->closed.get()||Thread.currentThread().isInterrupted())){long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(searchRouteTimeoutMillis());browseSession(source.url,source.password,deadline,false);success++;}catch(InterruptedException interrupted){Thread.currentThread().interrupt();break;}catch(Exception ignored){}}if(success>0)searchNetworkWarmAt=System.currentTimeMillis();return success;}
     void prewarmSearchNetwork(){long now=System.currentTimeMillis();if(closed.get()||now-searchNetworkWarmAt<SESSION_TTL_MS||!searchNetworkWarmQueued.compareAndSet(false,true))return;try{backgroundPool.execute(()->{try{prewarmSearchNetworkNow();}finally{searchNetworkWarmQueued.set(false);}});}catch(RejectedExecutionException ignored){searchNetworkWarmQueued.set(false);}}
     private DirectCookiePool directCookiePool(){DirectCookiePool value=directCookiePool;if(value!=null)return value;synchronized(this){value=directCookiePool;if(value==null)directCookiePool=value=new DirectCookiePool(context);return value;}}
-  static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid,routeOrigin,requestUserAgent;DirectLink target,page;Map<String,String> form;Models.Folder metadata;long createdAt;boolean authorized,redirected,passwordUnlocked,browserRendered,verificationComplete,downloadResponse;byte ua,template;int httpStatus; }
+  static final class DirectLink { String url,fileName,html,cookie,rootUrl,folderId,title,description,endpoint,folderEndpoint,fid,routeOrigin,requestUserAgent;DirectLink target,page;Map<String,String> form;Models.Folder metadata;JSONObject pendingListing;long createdAt;boolean authorized,redirected,passwordUnlocked,browserRendered,verificationComplete,downloadResponse;byte ua,template;int httpStatus; }
   private static class DirectRetryException extends IOException{final long retryAfterMs;final boolean rateLimited;DirectRetryException(String message,long retryAfterMs,boolean rateLimited){super(message);long floor=rateLimited?1000L:180L;this.retryAfterMs=Math.max(floor,retryAfterMs);this.rateLimited=rateLimited;}}
   private static final class DirectCookieQuotaException extends DirectRetryException{DirectCookieQuotaException(){super("蓝奏当前会话下载额度已用完",30000L,true);}}
   static final class DirectPasswordException extends IOException{DirectPasswordException(){super("需要访问密码");}DirectPasswordException(String message){super(message==null||message.trim().isEmpty()?"需要访问密码":message.trim());}}
@@ -748,8 +758,8 @@ final class LanzouCore {
                         String pwd=password==null?"":password.trim();if(pwd.length()>64||containsControl(pwd))throw new DirectPasswordException("密码格式无效");long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DIRECT_RESOLVE_TIMEOUT_MS);SourceProfile profile=directRouteProfile(shareUrl);List<RouteCandidate> routes=routeCandidates(shareUrl,UA_SCOPE_DIRECT,profile);if(routes.isEmpty())throw new IOException("没有可用的蓝奏线路");Set<String> attempted=ConcurrentHashMap.newKeySet();RouteCandidate learned=learnedRoute(shareUrl,UA_SCOPE_DIRECT,profile),fast=directFastRoute(routes,learned,profile);
 
 
-        Exception retainedVerification=null;if(fast!=null)try{DirectLink value=resolveDirectRoute(shareUrl,pwd,fast,directLearnedRouteDeadline(deadline),attempted);profile.observeRoute(UA_SCOPE_DIRECT,fast.origin,fast.ua);observeRouteSuccess();return value;}catch(Exception error){if(error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error))throw error;if(routePressureError(error))observeRouteFailure(error);routes=routesAfter(routes,fast);if(userVerificationRequired(error)!=null)retainedVerification=error;if(routes.isEmpty())throw error;}
-                RouteOutcome<DirectLink> outcome;try{outcome=raceRoutes(routes,route->resolveDirectRoute(shareUrl,pwd,route,deadline,attempted),value->true,error->error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error));}catch(Exception error){throw retainRouteChallenge(error,retainedVerification);}profile.observeRoute(UA_SCOPE_DIRECT,outcome.route.origin,outcome.route.ua);return outcome.value;
+        Exception retainedVerification=null;boolean passwordTerminal=pwd.isEmpty();if(fast!=null)try{DirectLink value=resolveDirectRoute(shareUrl,pwd,fast,directLearnedRouteDeadline(deadline),attempted);profile.observeRoute(UA_SCOPE_DIRECT,fast.origin,fast.ua);observeRouteSuccess();return value;}catch(Exception error){if(passwordTerminal&&error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error))throw error;if(routePressureError(error))observeRouteFailure(error);routes=routesAfter(routes,fast);if(userVerificationRequired(error)!=null)retainedVerification=error;if(routes.isEmpty())throw error;}
+                RouteOutcome<DirectLink> outcome;try{outcome=raceRoutes(routes,route->resolveDirectRoute(shareUrl,pwd,route,deadline,attempted),value->true,error->passwordTerminal&&error instanceof DirectPasswordException||directRetry(error)==null&&terminalDirectFailure(error));}catch(Exception error){throw retainRouteChallenge(error,retainedVerification);}profile.observeRoute(UA_SCOPE_DIRECT,outcome.route.origin,outcome.route.ua);return outcome.value;
     
     
   }
@@ -771,7 +781,16 @@ final class LanzouCore {
   private static long retryAfterMillis(String value,long fallback){if(value==null||value.trim().isEmpty())return fallback;try{return Math.max(1000,Long.parseLong(value.trim())*1000L);}catch(NumberFormatException ignored){return fallback;}}
   private static void requireDirectRateLimit(JSONObject data)throws DirectRetryException{if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RATE_LIMIT_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏请求频率受限":info,30000,true);}
   private static void requireDirectPasswordResult(JSONObject data)throws DirectPasswordException{if(data.optInt("zt")==1)return;String info=firstNonEmpty(data.optString("inf"),data.optString("info"),data.optString("msg"));if(DIRECT_PASSWORD_INFO.matcher(info).find())throw new DirectPasswordException(info);}
-  private static void requireDirectBusinessResult(JSONObject data)throws DirectRetryException,DirectPasswordException{requireDirectRateLimit(data);requireDirectPasswordResult(data);if(data.optInt("zt")==1)return;String info=data.optString("inf","").trim();if(DIRECT_RETRY_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏直链响应需要重试":info,3000,false);}
+  /**
+   * A route that carries a stale transfer signature answers with a generic "密码错误" even for a
+   * share that has no password at all. Only a page that really shows a password gate may raise the
+   * password prompt; everything else stays a recoverable route failure so the other routes keep
+   * racing instead of aborting the whole download.
+   */
+  private static void requireDirectTransferResult(JSONObject data,String pageHtml)throws Exception{
+    try{requireDirectPasswordResult(data);}catch(DirectPasswordException error){if(!requiresSharePassword(pageHtml))throw new IOException("蓝奏下载校验未通过");throw error;}
+  }
+
 
   private DirectLink resolveDirectWithSession(String logicalShareUrl,String routedShareUrl,String password,NetSession session)throws Exception{
         DirectLink share=session.getGuarded(routedShareUrl,"");requireLanzouPage(share.url);requireActiveShare(share);observePageCapabilities(sourceProfile(logicalShareUrl),share,session.ua);
@@ -802,12 +821,12 @@ final class LanzouCore {
               String ajax=cap(verify.html,"url\\s*:\\s*['\"]([^'\"]*ajax\\.php[^'\"]*)['\"]");
               if(ajax.isEmpty())ajax="ajax.php";
               Map<String,String> form=new LinkedHashMap<>();
-              form.put("file",file);form.put("el","2");form.put("sign",sign);
+              form.put("file",file);String el=cap(verify.html,"down_r\\(\\s*(\\d+)\\s*\\)");form.put("el",el.isEmpty()?"2":el);form.put("sign",sign);
               String endpoint=new URL(new URL(verify.url),ajax).toString();
               boolean pending=false;
               for(int exchange=0;exchange<3;exchange++){
                 if(exchange>0)session.sleep(DIRECT_RETRY_WAIT_MS);
-                JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectPasswordResult(data);
+                JSONObject data=new JSONObject(session.post(endpoint,form,verify));requireDirectRateLimit(data);requireDirectTransferResult(data,verify.html);
                 String direct=data.optString("url").trim();
                 String directLower=direct.toLowerCase(Locale.ROOT);
                 if(direct.startsWith("?")||directLower.contains("signerror")||direct.contains("验证码错误")){pending=true;continue;}
@@ -832,7 +851,7 @@ final class LanzouCore {
         form.put("p",password==null?"":password);
         String ajax=legacyAjaxEndpoint(page.html);if(ajax.isEmpty())ajax="/ajaxm.php";
         JSONObject data=new JSONObject(session.post(new URL(new URL(page.url),ajax).toString(),form,page));
-        requireDirectBusinessResult(data);if(data.optInt("zt")!=1)throw new IOException(data.optString("inf","蓝奏解析失败"));
+        requireDirectRateLimit(data);requireDirectTransferResult(data,page.html);if(data.optInt("zt")!=1){String info=data.optString("inf","").trim();if(DIRECT_RETRY_INFO.matcher(info).find())throw new DirectRetryException(info.isEmpty()?"蓝奏直链响应需要重试":info,3000,false);throw new IOException(info.isEmpty()?"蓝奏解析失败":info);}
         String path=data.optString("url"),dom=data.optString("dom").replaceAll("/+$","");
         String url=path.startsWith("http")?path:dom+"/file/"+path.replaceAll("^/+","");
         if(!url.startsWith("http"))throw new IOException("蓝奏返回了无效直链");
@@ -1750,17 +1769,36 @@ final class LanzouCore {
   private static String normalizeUserSourceUrl(String raw)throws IOException{
     return parseUserSourceInput(raw,"").url;
   }
+  private static String passwordFromPastedText(String raw,String url){
+    if(raw==null||raw.isEmpty())return "";
+    Matcher smart=SMART_PASSWORD.matcher(raw);
+    if(smart.find())return smart.group(1);
+    if(url==null||url.isEmpty())return "";
+    /* "链接 下一行或尾部只写密码" is how most shares are circulated; only a lone token counts. */
+    String rest=raw;int at=rest.indexOf(url);
+    if(at>=0)rest=rest.substring(0,at)+" "+rest.substring(at+url.length());
+    else{
+      String bare=url.replaceFirst("^https?://","");at=rest.indexOf(bare);
+      if(at>=0)rest=rest.substring(0,at)+" "+rest.substring(at+bare.length());
+    }
+    rest=rest.trim();
+    if(rest.isEmpty())return "";
+    Matcher trailing=TRAILING_PASSWORD.matcher(" "+rest);
+    return trailing.find()?trailing.group(1):"";
+  }
   private static UserSourceInput parseUserSourceInput(String raw,String explicitPassword)throws IOException{
     try{
             String entered=(raw==null?"":LanzouPageNavigation.cleanShareInput(raw)).replace('。','.').replace('．','.');
-      if(PremiumPublicShare.matches(entered)){String password=explicitPassword==null?"":explicitPassword.trim();if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");return new UserSourceInput(entered,password);}
+      String pastedPassword=explicitPassword==null?"":explicitPassword.trim();
+      if(pastedPassword.isEmpty())pastedPassword=passwordFromPastedText(raw,entered);
+      if(PremiumPublicShare.matches(entered)){String password=pastedPassword;if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");return new UserSourceInput(entered,password);}
       DirectLink folderTarget=parseFolderTarget(entered);String value=folderTarget.rootUrl;
             if(!URL_SCHEME.matcher(value).matches()&&HOST_PATH.matcher(value).matches())value="https://"+value;
       URI uri=new URI(value);String scheme=uri.getScheme(),host=uri.getHost(),path=uri.getRawPath();
       if(scheme==null||(!scheme.equalsIgnoreCase("http")&&!scheme.equalsIgnoreCase("https"))||host==null||uri.getRawUserInfo()!=null)throw new IOException("请输入有效的网页或蓝奏链接");
       uri=completeLanzouUriAlias(uri);host=uri.getHost();path=uri.getRawPath();
       boolean lanzou=LANZOU_HOST.matcher(host).matches();
-      String password=explicitPassword==null?"":explicitPassword.trim();
+      String password=pastedPassword;
       if(password.length()>64||containsControl(password))throw new IOException("密码格式无效");
       if(!lanzou)return new UserSourceInput(uri.toString(),password);
       if(path==null||path.isEmpty()||path.equals("/"))throw new IOException("请输入蓝奏目录分享链接");
@@ -2603,7 +2641,9 @@ final class LanzouCore {
       if(!session.folderEndpoint.isEmpty()){int[] count=new int[1];List<Models.Item> folders=apiFolders(session,deadline,1,true,count,profile);out.apiFolderCount=count[0];for(Models.Item folder:folders)items.put(folder.url,folder);}
     }
     Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));
-    JSONObject data=postListing(session,form,deadline,page,profile);JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);String stateInfo=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));if(state==2&&!pwd.isEmpty()&&!session.passwordUnlocked&&DIRECT_PASSWORD_INFO.matcher(stateInfo).find()){session=unlockPasswordSession(session,pwd,deadline,profile,ua);out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));data=postListing(session,form,deadline,page,profile);array=data.optJSONArray("text");state=data.optInt("zt",-1);stateInfo=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));}if(state==1&&array==null)array=new JSONArray();
+    JSONObject data=page==1&&session.pendingListing!=null?session.pendingListing:postListing(session,form,deadline,page,profile);
+    if(page==1&&session.pendingListing!=null){session.pendingListing=null;session.authorized=true;}
+    JSONArray array=data.optJSONArray("text");int valid=0,state=data.optInt("zt",-1);String stateInfo=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));if(state==2&&!pwd.isEmpty()&&!session.passwordUnlocked&&DIRECT_PASSWORD_INFO.matcher(stateInfo).find()){session=unlockPasswordSession(session,pwd,deadline,profile,ua);out=copyFolder(session.metadata);out.page=page;out.url=url;out.password=pwd;out.folderId=session.target.folderId;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(page));data=session.pendingListing!=null?session.pendingListing:postListing(session,form,deadline,page,profile);if(session.pendingListing!=null){session.pendingListing=null;session.authorized=true;}array=data.optJSONArray("text");state=data.optInt("zt",-1);stateInfo=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));}if(state==1&&array==null)array=new JSONArray();
         if(state==2){if(!items.isEmpty()){out.items.addAll(items.values());out.hasMore=false;if(directoryCachingEnabled)writeDirectoryCache(cache,toJson(out).toString());return new PageResult(out,true,false,false,session);}boolean definitiveEmpty=directoryEmptyResponse(data,stateInfo);if(definitiveEmpty){out.hasMore=false;if(directoryCachingEnabled)writeDirectoryCache(cache,toJson(out).toString());return new PageResult(out,false,false,true,session);}return new PageResult(out,false,DIRECT_PASSWORD_INFO.matcher(stateInfo).find(),false,session);}if(state==1){session.authorized=true;}if(state==1&&array!=null)for(int i=0;i<array.length();i++){
       JSONObject value=array.optJSONObject(i);if(value==null)continue;Models.Item item=item(value,origin(session.target.rootUrl),out.title,pwd);if(item.url.isEmpty()||item.url.endsWith("/-1"))continue;valid++;items.put(item.url,item);
     }
@@ -2624,17 +2664,33 @@ final class LanzouCore {
 
   private DirectLink unlockPasswordSession(DirectLink session,String pwd,long deadline,SourceProfile profile,byte ua)throws Exception{
     if(pwd==null||pwd.isEmpty())throw new DirectPasswordException();
-    String endpoint=passwordEndpoint(session.page);if(endpoint.isEmpty())throw new DirectPasswordException("目录需要密码但未找到授权接口");
-    Map<String,String> form=new LinkedHashMap<>();form.put("pwd",pwd);for(Map.Entry<String,String> entry:passwordUnlockFields(session.page.html).entrySet())form.putIfAbsent(entry.getKey(),entry.getValue());
-    JSONObject data=postPasswordUnlock(session,endpoint,form,deadline,profile,ua);String redirect=passwordRedirect(data);if(redirect.isEmpty())throw new DirectPasswordException(firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"),"目录密码验证失败"));
+    String endpoint=passwordEndpoint(session);if(endpoint.isEmpty())throw new DirectPasswordException("目录需要密码但未找到授权接口");
+    Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pwd",pwd);form.put("pg","1");
+    JSONObject data=postPasswordUnlock(session,endpoint,form,deadline,profile,ua);int state=data.optInt("zt",-1);JSONArray listing=data.optJSONArray("text");String message=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));
+    /* The real answer to a correct password is the first listing page itself (zt=1 with text), not a
+       redirect. Treating that as a failure is what turned a valid kdml into "密码错误". */
+    if(state==1&&listing!=null){
+      session.passwordUnlocked=true;session.authorized=true;session.pendingListing=data;session.form.put("pwd",pwd);
+      if(session.metadata!=null)session.metadata.password=pwd;
+      return session;
+    }
+    if(state==1||state==2||state==3)throw new DirectPasswordException(message.isEmpty()?"目录密码验证失败":message);
+    String redirect=passwordRedirect(data);if(redirect.isEmpty())throw new DirectPasswordException(message.isEmpty()?"目录密码验证失败":message);
     String routedRoot=new URL(new URL(session.page.url),redirect).toString();invalidateBrowseSessions(session.target.rootUrl,pwd);RouteCandidate route=new RouteCandidate(routedRoot,origin(routedRoot),ua,currentUaScope());DirectLink unlocked=browseSession(session.target.rootUrl,pwd,deadline,true,route);if(PROBE_EXACT_USER_AGENT.get()==null)sourceProfile(session.target.rootUrl).observeRoute(currentUaScope(),route.origin,ua);unlocked.passwordUnlocked=true;unlocked.authorized=false;return unlocked;
   }
 
   private static JSONObject postPasswordUnlock(DirectLink session,String endpoint,Map<String,String> form,long deadline,SourceProfile profile,byte ua)throws Exception{
-    String url=new URL(new URL(session.page.url),endpoint).toString(),key="pwd|"+origin(session.page.url)+'|'+session.ua;JSONObject data=null;for(int attempt=0;attempt<2;attempt++){awaitPageSlot(key,deadline,profile.interval(ua,1),null);String raw=post(url,form,session.page,deadline,userAgent(ua));if(!raw.trim().startsWith("{"))throw new IOException("目录密码接口返回异常");data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2||state==3)return data;if(state==4){deferPageSlot(key,profile.backoff(ua,1));continue;}return data;}return data==null?new JSONObject():data;
+    String url=new URL(new URL(session.page.url),endpoint).toString(),key="pwd|"+origin(session.page.url)+'|'+session.ua;JSONObject data=null;for(int attempt=0;attempt<2;attempt++){awaitPageSlot(key,deadline,profile.interval(ua,1),null);String raw=post(url,form,session.page,deadline,userAgent(ua));if(!raw.trim().startsWith("{"))throw new IOException("目录密码接口返回异常");data=new JSONObject(raw);int state=data.optInt("zt",-1);if(state==1||state==2||state==3)return data;if(state==4){deferPageSlot(key,profile.backoff(ua,1));pauseForListingRateLimit(deadline,profile,ua,1);continue;}return data;}return data==null?new JSONObject():data;
   }
 
-  private static String passwordEndpoint(DirectLink page){for(String candidate:new String[]{"/filemoreajax.php","/ajaxm.php","/ajax.php"}){String endpoint=sameOriginEndpointAny(page,candidate);if(!endpoint.isEmpty())return endpoint;}return"";}
+  private static String passwordEndpoint(DirectLink session){
+    if(session==null||session.page==null)return "";
+    /* The page's own listing endpoint already carries ?file=<fid>; posting the password there is what
+       the share page's own file() handler does. */
+    if(session.endpoint!=null&&!session.endpoint.isEmpty())return session.endpoint;
+    for(String candidate:new String[]{"/filemoreajax.php","/ajaxm.php","/ajax.php"}){String endpoint=sameOriginEndpointAny(session.page,candidate);if(!endpoint.isEmpty())return endpoint;}
+    return "";
+  }
   private static String passwordRedirect(JSONObject data){String value=firstNonEmpty(data.optString("url"),data.optString("dom"),data.optString("href"),data.optString("info"));if(value.startsWith("http")||value.startsWith("/")||value.matches("(?i)^(?:b|s/|u/).+"))return value;return"";}
   private static Map<String,String> passwordUnlockFields(String html){Map<String,String> out=formValues(html);return out;}
   private static String sameOriginEndpointAny(DirectLink page,String raw){if(raw.isEmpty())return"";try{URL base=new URL(page.url),endpoint=new URL(base,raw);if(!base.getProtocol().equalsIgnoreCase(endpoint.getProtocol())||!base.getHost().equalsIgnoreCase(endpoint.getHost())||effectivePort(base)!=effectivePort(endpoint))return"";return endpoint.toString();}catch(Exception ignored){return"";}}
@@ -2728,9 +2784,14 @@ final class LanzouCore {
     RouteCandidate learned=requestedUa==UA_UNKNOWN?learnedRoute(referenceUrl,scope,profile):null;
     if(learned!=null)out.put(learned.key(),learned);
     byte[] uas=requestedUa==UA_UNKNOWN?listingUaCandidates(scope,profile==null?UA_UNKNOWN:profile.learnedUa(scope)):new byte[]{requestedUa};
+    if(uas.length==0)uas=new byte[]{UA_MOBILE_CHROME};
     List<String> origins=new ArrayList<>(searchAwareRouteOrigins(referenceUrl,scope,profile==null?"":profile.learnedOrigin(scope)));
-    Collections.shuffle(origins,ThreadLocalRandom.current());
-    int start=origins.isEmpty()?0:ThreadLocalRandom.current().nextInt(origins.size()),added=0,remaining=Math.max(1,limit-out.size());
+    /* A host that only serves part of the UA families must not be drawn at random: rank the hosts by
+       the UA that is about to be used and keep the drawing order for equally ranked hosts. */
+    java.util.Collections.shuffle(origins,ThreadLocalRandom.current());
+    byte primary=uas[0];
+    origins.sort(java.util.Comparator.comparingInt((String origin)->LanzouRouteCatalog.presetRank(origin,primary)));
+    int start=0,added=0,remaining=Math.max(1,limit-out.size());
     for(int step=0;step<origins.size()&&added<remaining;step++){
       String origin=origins.get((start+step)%origins.size());
       try{RouteCandidate route=new RouteCandidate(routeTarget(origin,referenceUrl),origin,uas[added%uas.length],scope);if(out.putIfAbsent(route.key(),route)==null)added++;}catch(Exception ignored){}
@@ -2777,7 +2838,9 @@ final class LanzouCore {
     form.put("lx",firstNonEmpty(form.get("lx"),uid.isEmpty()?"2":"1"));
     form.put("rep",firstNonEmpty(form.get("rep"),"0"));
     if(hiddenFileId!=null&&!hiddenFileId.isEmpty())form.putIfAbsent("ls","1");
-    if(!password.isEmpty()&&(form.containsKey("pwd")||parsePattern("(?s)['\"]pwd['\"]\\s*:\\s*pwd\\b").matcher(html).find()))form.put("pwd",password);
+    /* Lanzou validates pwd on every listing page, not only on the unlock call: page 1 can answer
+       without it while page 2 returns zt=3 "密码不正确". */
+    if(!password.isEmpty())form.put("pwd",password);
     session.form=form;
   }
     private static String sharePageTitle(String html){String value=firstNonEmpty(strip(divInner(html,"user-title")),strip(divInner(html,"folder-title")),strip(elementByIdInner(html,"filenajax")),strip(cap(html,"(?is)<meta[^>]+(?:property|name)=[\"'](?:og:title|twitter:title)[\"'][^>]+content=[\"']([^\"']+)")),strip(cap(html,"(?is)<title[^>]*>(.*?)</title>")));return value.replaceFirst("(?i)\\s*[-_|]\\s*(?:蓝奏云|lanzou)\\s*$","").trim();}
@@ -2830,7 +2893,7 @@ final class LanzouCore {
     String html=session.page==null||session.page.html==null?"":session.page.html;
     Map<String,String> own=formValues(html,cap(html,"url\\s*:\\s*['\"]([^'\"]*foldermoreajax\\.php\\?[^'\"]*)['\"]"));
     form.putAll(own);
-    if(session.metadata!=null&&!session.metadata.password.isEmpty()&&form.containsKey("pwd"))form.put("pwd",session.metadata.password);
+    if(session.metadata!=null&&!session.metadata.password.isEmpty())form.put("pwd",session.metadata.password);
     return form;
   }
 
@@ -2840,6 +2903,13 @@ final class LanzouCore {
     if(endpoint.isEmpty())throw new IOException("未找到目录接口");
     boolean folderRequest=!session.folderEndpoint.isEmpty()&&endpoint.equals(session.folderEndpoint);
     JSONObject data=postPageOnce(session,endpoint,form,deadline,page,profile,errorMessage);
+    if(data.optInt("zt",-1)==4){
+      /* zt=4 is Lanzou's own rate gate: the t/k proof is fine, the request simply arrived too
+         soon. Spend the wait on the same proof and only re-open the page if that still fails. */
+      Map<String,String> retryForm=new LinkedHashMap<>(session.form);retryForm.putAll(form);
+      pauseForListingRateLimit(deadline,profile,session.ua,page);
+      data=postPageOnce(session,endpoint,retryForm,deadline,page,profile,errorMessage);
+    }
     if(data.optInt("zt",-1)==4){
       refreshListingSession(session,deadline,profile);
       Map<String,String> retryForm;
@@ -2858,6 +2928,10 @@ final class LanzouCore {
     if(DIRECT_PASSWORD_INFO.matcher(message).find())throw new DirectPasswordException(message);
     if(isRecoverableBrowseMessage(message))throw new RecoverableBrowseException(message);
     throw new IOException(message);
+  }
+  private static void pauseForListingRateLimit(long deadline,SourceProfile profile,byte ua,int page)throws Exception{
+    long sleepMs=Math.min(2800L,Math.max(1800L,profile.backoff(ua,page))),until=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(sleepMs);
+    while(System.nanoTime()<until){checkDeadline(deadline);Thread.sleep(60L);}
   }
   private static JSONObject postPageOnce(DirectLink session,String endpoint,Map<String,String> form,long deadline,int page,SourceProfile profile,String errorMessage)throws Exception{
     String url=new URL(new URL(session.page.url),endpoint).toString(),key=pageRateKey(session,endpoint);
@@ -3100,7 +3174,7 @@ final class LanzouCore {
     checkSearchCancelled(cancelled);DirectLink session=state.directorySession;Models.Folder out=copyFolder(session.metadata);out.page=state.page;out.url=state.folder.url;out.password=state.folder.password;out.folderId=session.target.folderId;out.apiFolderCount=Math.max(0,state.firstApiFolderCount);LinkedHashMap<String,Models.Item> items=new LinkedHashMap<>();
     if(state.page==1&&session.target.folderId.isEmpty())for(Models.Item folder:staticFolders(session))items.put(folder.url,folder);Map<String,String> form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(state.page));long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(SOURCE_PROBE_TIMEOUT_MS);SourceProfile profile=sourceProfile(state.folder.url);JSONObject data=postListing(session,form,deadline,state.page,profile);int code=data.optInt("zt",-1);String info=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));
     if(code==2&&DIRECT_PASSWORD_INFO.matcher(info).find()){
-      if(!state.folder.password.isEmpty()&&!session.passwordUnlocked){session=unlockPasswordSession(session,state.folder.password,deadline,profile,session.ua);state.directorySession=session;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(state.page));data=postListing(session,form,deadline,state.page,profile);code=data.optInt("zt",-1);info=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));}
+      if(!state.folder.password.isEmpty()&&!session.passwordUnlocked){session=unlockPasswordSession(session,state.folder.password,deadline,profile,session.ua);state.directorySession=session;form=new LinkedHashMap<>(session.form);form.put("pg",String.valueOf(state.page));data=session.pendingListing!=null?session.pendingListing:postListing(session,form,deadline,state.page,profile);if(session.pendingListing!=null){session.pendingListing=null;session.authorized=true;}code=data.optInt("zt",-1);info=firstNonEmpty(data.optString("info"),data.optString("msg"),data.optString("inf"));}
       if(code==2)throw new DirectPasswordException(info);
     }
     JSONArray array=data.optJSONArray("text");int valid=0;if(code==1&&(array==null||state.page>1&&array.length()==0))throw new IOException("目录分页返回空内容");if(code==1){session.authorized=true;if(array!=null)for(int i=0;i<array.length();i++){JSONObject value=array.optJSONObject(i);if(value==null)continue;Models.Item item=item(value,origin(session.target.rootUrl),out.title,state.folder.password);if(item.url.isEmpty()||item.url.endsWith("/-1"))continue;valid++;items.put(item.url,item);}}

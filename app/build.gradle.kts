@@ -9,7 +9,7 @@ android {
  buildFeatures { buildConfig = true; aidl = true }
  androidResources { additionalParameters += listOf("--no-xml-namespaces", "--no-compile-sdk-metadata") }
  packaging.resources.excludes += setOf("org/apache/commons/codec/language/bm/**", "org/apache/commons/codec/language/dmrules.txt")
- defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2001009; versionName = "2.1.8" }
+ defaultConfig { applicationId = "cc.nkbr.lanzouplus"; minSdk = 24; targetSdk = 36; versionCode = 2001010; versionName = "2.1.9" }
  flavorDimensions += "catalog"
  productFlavors {
   create("empty") {

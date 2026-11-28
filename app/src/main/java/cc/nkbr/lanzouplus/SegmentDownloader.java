@@ -159,10 +159,17 @@ final class SegmentDownloader {
     if(candidates.isEmpty())return found;
     int workers=Math.min(FAST_SEGMENTS,candidates.size());
     ExecutorService pool=Executors.newFixedThreadPool(workers,r->{Thread t=new Thread(r,"lanzou-probe");t.setDaemon(true);return t;});
-    List<Future<Probe>> tasks=new ArrayList<>();
-    for(String candidate:candidates)tasks.add(pool.submit(()->probe(candidate)));
-    for(Future<Probe> task:tasks){try{Probe probe=task.get(6500,TimeUnit.MILLISECONDS);if(probe!=null&&probe.total>0)found.add(probe);}catch(Exception ignored){}}
-    pool.shutdownNow();
+    CompletionService<Probe> completed=new ExecutorCompletionService<>(pool);
+    for(String candidate:candidates)completed.submit(()->probe(candidate));
+    long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(6500);
+    try{
+      for(int i=0;i<candidates.size();i++){
+        long remaining=deadline-System.nanoTime();if(remaining<=0)break;
+        Future<Probe> task=completed.poll(remaining,TimeUnit.NANOSECONDS);if(task==null)break;
+        try{Probe result=task.get();if(result!=null&&result.total>0)found.add(result);}catch(ExecutionException ignored){}
+      }
+    }catch(InterruptedException interrupted){Thread.currentThread().interrupt();}
+    finally{pool.shutdownNow();}
     found.sort((first,second)->Long.compare(second.bps,first.bps));
     return found;
   }
@@ -170,8 +177,8 @@ final class SegmentDownloader {
   private Probe probe(String url){
     HttpURLConnection connection=null;
     try{
-      connection=open(url,"bytes=0-131071",true,3500,4500);
-      long started=System.nanoTime();int code=connection.getResponseCode();
+      long started=System.nanoTime();connection=open(url,"bytes=0-131071",true,3500,4500);
+      int code=connection.getResponseCode();
       if(code!=200&&code!=206)return null;
       rejectHtml(connection);
       String range=connection.getHeaderField("Content-Range");
